@@ -1,0 +1,9 @@
+s:1014:"<p>Add a drop down menu to the main navigation bar.  You can configure links to be shown under a tools menu (in main navigation bar).  In the format of 'text|url|title|langs|fontawesome classes|capability to check'.  Only enter what you require.  If you don't need something but do need another thing further along then leave it blank but still use the '|' delimiter.  For example: 'text|url|||fontawesome classes'.  To find the FontAwesome(Free) classes for the icon you wish to use, go to <a href="https://fontawesome.com/search?o=r&amp;m=free" target="_blank" rel="noreferrer noopener">Font Awesome free</a> and search for the icon.  You can use the name, such as 'graduation-cap' or the complete list of classes 'fa-solid fa-graduation-cap'.  For example:</p>
+
+<pre>
+Record Screen|https://mysite.localhost|Record Screen||video
+Photos|https://mysite.localhost|Photos||fa-solid fa-image
+Exam Clock|https://mysite.localhost|Exam Clock|en|clock
+Cloc arholiad|https://mysite.localhost|Cloc arholiad|cy|clock
+</pre>
+";

@@ -1,0 +1,166 @@
+<?php
+
+class __Mustache_8ecd09440e3565a8a359fbcc7d1e506c extends Mustache_Template
+{
+    private $lambdaHelper;
+
+    public function renderInternal(Mustache_Context $context, $indent = '')
+    {
+        $this->lambdaHelper = new Mustache_LambdaHelper($this->mustache, $context);
+        $buffer = '';
+
+        $value = $context->find('str');
+        $buffer .= $this->section2451981983c7efa3ffd74cea9b3dadd1($context, $indent, $value);
+        $buffer .= '
+';
+        $value = $context->find('files');
+        $buffer .= $this->section717f334d87160b7de0e6b0b0502ce797($context, $indent, $value);
+
+        return $buffer;
+    }
+
+    private function section2451981983c7efa3ffd74cea9b3dadd1(Mustache_Context $context, $indent, $value)
+    {
+        $buffer = '';
+    
+        if (!is_string($value) && is_callable($value)) {
+            $source = 'file, assignsubmission_file';
+            $result = (string) call_user_func($value, $source, $this->lambdaHelper);
+            $buffer .= $result;
+        } elseif (!empty($value)) {
+            $values = $this->isIterable($value) ? $value : array($value);
+            foreach ($values as $value) {
+                $context->push($value);
+                
+                $buffer .= $indent . 'file, assignsubmission_file';
+                $context->pop();
+            }
+        }
+    
+        return $buffer;
+    }
+
+    private function section3174eb73177fd656f27a0d95efca0f47(Mustache_Context $context, $indent, $value)
+    {
+        $buffer = '';
+    
+        if (!is_string($value) && is_callable($value)) {
+            $source = '{{filepath}}';
+            $result = (string) call_user_func($value, $source, $this->lambdaHelper);
+            $buffer .= $result;
+        } elseif (!empty($value)) {
+            $values = $this->isIterable($value) ? $value : array($value);
+            foreach ($values as $value) {
+                $context->push($value);
+                
+                $value = $this->resolveValue($context->find('filepath'), $context);
+                $buffer .= ($value === null ? '' : call_user_func($this->mustache->getEscape(), $value));
+                $context->pop();
+            }
+        }
+    
+        return $buffer;
+    }
+
+    private function section84fd497a3a715cb844b1f3ad229a2a7a(Mustache_Context $context, $indent, $value)
+    {
+        $buffer = '';
+    
+        if (!is_string($value) && is_callable($value)) {
+            $source = '{{filesize}}';
+            $result = (string) call_user_func($value, $source, $this->lambdaHelper);
+            $buffer .= $result;
+        } elseif (!empty($value)) {
+            $values = $this->isIterable($value) ? $value : array($value);
+            foreach ($values as $value) {
+                $context->push($value);
+                
+                $value = $this->resolveValue($context->find('filesize'), $context);
+                $buffer .= ($value === null ? '' : call_user_func($this->mustache->getEscape(), $value));
+                $context->pop();
+            }
+        }
+    
+        return $buffer;
+    }
+
+    private function section002e5b7a8798f5a1898266a73f5e7de8(Mustache_Context $context, $indent, $value)
+    {
+        $buffer = '';
+    
+        if (!is_string($value) && is_callable($value)) {
+            $source = '{{coursename}}';
+            $result = (string) call_user_func($value, $source, $this->lambdaHelper);
+            $buffer .= $result;
+        } elseif (!empty($value)) {
+            $values = $this->isIterable($value) ? $value : array($value);
+            foreach ($values as $value) {
+                $context->push($value);
+                
+                $value = $this->resolveValue($context->find('coursename'), $context);
+                $buffer .= ($value === null ? '' : call_user_func($this->mustache->getEscape(), $value));
+                $context->pop();
+            }
+        }
+    
+        return $buffer;
+    }
+
+    private function section2d54b09df2e4700133bf9265a3cda509(Mustache_Context $context, $indent, $value)
+    {
+        $buffer = '';
+    
+        if (!is_string($value) && is_callable($value)) {
+            $source = 'filewithsize, assignsubmission_file, {"filename": {{#quote}}{{filepath}}{{/quote}}, "size": {{#quote}}{{filesize}}{{/quote}}, "coursename": {{#quote}}{{coursename}}{{/quote}} } ';
+            $result = (string) call_user_func($value, $source, $this->lambdaHelper);
+            $buffer .= $result;
+        } elseif (!empty($value)) {
+            $values = $this->isIterable($value) ? $value : array($value);
+            foreach ($values as $value) {
+                $context->push($value);
+                
+                $buffer .= 'filewithsize, assignsubmission_file, {"filename": ';
+                $value = $context->find('quote');
+                $buffer .= $this->section3174eb73177fd656f27a0d95efca0f47($context, $indent, $value);
+                $buffer .= ', "size": ';
+                $value = $context->find('quote');
+                $buffer .= $this->section84fd497a3a715cb844b1f3ad229a2a7a($context, $indent, $value);
+                $buffer .= ', "coursename": ';
+                $value = $context->find('quote');
+                $buffer .= $this->section002e5b7a8798f5a1898266a73f5e7de8($context, $indent, $value);
+                $buffer .= ' } ';
+                $context->pop();
+            }
+        }
+    
+        return $buffer;
+    }
+
+    private function section717f334d87160b7de0e6b0b0502ce797(Mustache_Context $context, $indent, $value)
+    {
+        $buffer = '';
+    
+        if (!is_string($value) && is_callable($value)) {
+            $source = '
+* {{#str}}filewithsize, assignsubmission_file, {"filename": {{#quote}}{{filepath}}{{/quote}}, "size": {{#quote}}{{filesize}}{{/quote}}, "coursename": {{#quote}}{{coursename}}{{/quote}} } {{/str}}
+';
+            $result = (string) call_user_func($value, $source, $this->lambdaHelper);
+            $buffer .= $result;
+        } elseif (!empty($value)) {
+            $values = $this->isIterable($value) ? $value : array($value);
+            foreach ($values as $value) {
+                $context->push($value);
+                
+                $buffer .= $indent . '* ';
+                $value = $context->find('str');
+                $buffer .= $this->section2d54b09df2e4700133bf9265a3cda509($context, $indent, $value);
+                $buffer .= '
+';
+                $context->pop();
+            }
+        }
+    
+        return $buffer;
+    }
+
+}

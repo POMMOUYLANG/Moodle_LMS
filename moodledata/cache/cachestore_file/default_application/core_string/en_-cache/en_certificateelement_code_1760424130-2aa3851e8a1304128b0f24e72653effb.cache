@@ -1,0 +1,5 @@
+a:8:{s:7:"display";s:7:"Display";s:12:"display_help";s:287:"How to display the code:
+
+* Code only (default): will display only the code to verify the certificate
+* Code and link: will display a link to the verfication page
+* URL: will display the verification URL as text (usually for printed certificates where it is not possible to click a link)";s:11:"displaycode";s:9:"Code only";s:15:"displaycodelink";s:14:"Code with link";s:13:"displayqrcode";s:7:"QR Code";s:10:"displayurl";s:16:"Verification URL";s:10:"pluginname";s:4:"Code";s:16:"privacy:metadata";s:49:"The Code plugin does not store any personal data.";}

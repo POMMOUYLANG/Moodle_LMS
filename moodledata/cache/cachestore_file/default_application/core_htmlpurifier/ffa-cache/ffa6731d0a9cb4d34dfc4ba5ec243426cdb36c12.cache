@@ -1,0 +1,1187 @@
+s:67363:"<h1>Change log in version 500.2.1 (2025040806)</h1>
+
+<ol>
+<li>Fix "Information block row displays column mode" - #44.</li>
+<li>Fix "Home Navigation Expand/Collapse".</li>
+<li>Fix "Missing 'Bulk actions' on course page".</li>
+<li>Fix "Persistent Warning after upgrade of theme" - #45.</li>
+<li>Fix 'Missing icons in Administration block'.</li>
+<li>Fix 'Cannot edit single section page section name at top of the page'.</li>
+<li>Fix 'News ticker tickertext setting shown when newstickercount is 0'.</li>
+<li>State Font Awesome icon for 'core:i/viewsection'.  Effectively ensuring it is the correct colour.</li>
+<li>Fix 'Position of course index link when there is a badge attached to it'.</li>
+<li>Fix 'Course index link when hover / focus'.</li>
+<li>Tidy course expand / collapse and action menu icons.</li>
+<li>Tidy 'Manage course categories and courses' page.</li>
+<li>State Font Awesome icon for 'core:i/bulk_edit'.  Effectively ensuring it is the correct colour.</li>
+<li>Tidy 'Tiles with overlay' 'frontpagerenderer' setting.</li>
+<li>Refix 'Frontpage course boxes' styling as previous fix caused issues on 'course/index.php' page.</li>
+<li>Fix 'Use a cog for the header context menu when using core Font Awesome to be consistent with the theme version of the font'.</li>
+<li>Fix 'Missing theme reset callback as the 'navbardisplaymenuarrow' setting changes the SCSS'.</li>
+<li>Fix 'Missing right margin on navbar zoom icons'.</li>
+</ol>
+
+<h1>Change log in version 500.2.0 (2025040805)</h1>
+
+<h2>Important</h2>
+
+<p>From feedback and consideration of such I have re-evaluated the organisation and understanding of what Adaptable provides in terms of functionality.  Going through the settings its clear that something needed to be done.  To bring order to the chaos as the theme has evolved over many years.  To bring understanding of what a setting does through its name and description.  To be the first point of understanding without maintaining secondary sources that so easily could become out of date and inaccurate.  To this end, this version brings a lot of changes.  From your perspective though, the upgrade should just work.  The names change but their values retained.  Importing JSON property settings that you've previously kept should still work as the code knows what has changed and will perform the transition for you, reporting on what its done.  The most significant change is the header, where I hope the words now express what each 'layout' (was 'style') is.</p>
+
+<p>To be consistent across releases for major versions, I've introduced a 'Feature version' property that you might notice.  That's there to ensure that upgrades that have already happened do not happen again and for the JSON property settings to make a similar decision upon.</p>
+
+<p>When I was updating my copy of the <a href="https://moodle.org/plugins/theme_boost_union">Boost Union</a> theme, I noticed that it provides additional information during the upgrade process.  To this end I have implemented my own solution that details what is happening during the process.  If you need to, then please make note of it as the information is not stored.  Credit to <a href="https://github.com/abias">Alexander Bias</a> for the idea.</p>
+
+<p>I have done a lot of tiding of the styles, removing what I understand to be redundant in the process.  If I have removed a style that was there but now is not and you use it, then please raise and issue with a full description and screen shot(s) and I'll consider putting it back.</p>
+
+<p>All of these changes come with risk, I'm only human and whilst I have striven to be accurate there is a chance that bugs have been introduced.  Therefore as always, testing on a test server is vital to confirm that you're happy before moving to production.  However no AI has been involved and hence the changes have been undertaken by decisions based upon experience, knowledge, and understanding of both software engineering and code.</p>
+
+<h2>Changes</h2>
+
+<ol>
+<li>Remove 'fonttitlecolorcourse' as redundant.</li>
+<li>Move header font settings to 'Header' settings tab.</li>
+<li>Clarify heading font settings.</li>
+<li>Removed 'topmenufontsize' setting as redundant.</li>
+<li>Remove redundant 'langmenu' styles.</li>
+<li>Move header 'style' colour settings to 'Header' settings tab and clarify the elements of the header.</li>
+<li>Fix 'main header row' menu text colour.</li>
+<li>Fix social icons on the 'main header row' colour.</li>
+<li>Add 'feature_version' internal setting to keep track of features across major Moodle versions.</li>
+<li>Upgrading and property import now reports on setting name updates.</li>
+<li>Added 'autocomplete="off"' to admin settings forms to hopefully prevent revertion of changes after importing settings, as the browser remembers what you had and not what the imported setting changed the value to.  This can happen if you then make changes without logging out then logging back in again.  Refreshing the settings page or going back to it does not help.</li>
+<li>Show version information when upgrading.</li>
+<li>Removed deprecated setting 'enableheading', replaced by 'enablecoursetitle'.</li>
+<li>Removed deprecated setting 'coursepageheaderhidesitetitle', replaced by 'coursepageheaderhidetitle'.</li>
+<li>Removed deprecated setting 'enablezoomshowtext', replaced by 'navbardisplaytitles'.</li>
+<li>Removed deprecated settings 'responsivecoursetitle' / 'responsivesitetitle', replaced by 'responsiveheadertitle'.</li>
+<li>Removed deprecated setting 'jssection', replaced by 'customjs'.</li>
+<li>Removed deprecated setting 'jssectionrestricted', replaced by 'customjsrestricted'.</li>
+<li>Decided not to remove BCU front page info boxes.</li>
+<li>Moved 'Marketing block colours' from 'Colours' to 'Marketing blocks'.  Note: It is still my intention to remove marketing blocks in favour of information blocks.</li>
+<li>Removed deprecated 'marketimage' CSS class.</li>
+<li>Moved 'favicon' and 'enablesavecanceloverlay' settings from 'Header' to 'General'.</li>
+<li>Changed 'Header social' to 'Header search and social'.</li>
+<li>Moved 'headersearchandsocial' and 'searchboxpadding' settings from 'Header' to 'Header search and social'.</li>
+<li>Tidy the footer.</li>
+<li>Changed setting 'pageheaderheight' to 'headermainrowminheight' and moved to the 'Header' settings tab.</li>
+<li>Align the main header row content with the menu row.</li>
+<li>Nearly all, bar responsive, breadcrumb settings on the 'Header' settings tab.</li>
+<li>All messages and notifications settings on the 'Header' settings tab.</li>
+<li>Footer colours on the 'Footer' settings tab.</li>
+<li>Moved 'tilesbordercolor' setting to the 'Frontpage courses list' settings tab.</li>
+<li>Coventry / Overlay colour settings on the 'Frontpage courses list' settings tab.</li>
+<li>Changed setting 'dividingline' to 'headertoprowdividingline' and moved to the 'Header' settings tab.</li>
+<li>Changed setting 'dividingline2' to 'footerdividingline' and moved to the 'Footer' settings tab.</li>
+<li>Remove strings already in core.</li>
+<li>Changed setting 'headerbkcolor' to 'headertoprowbkcolour' on the 'Header' settings tab.</li>
+<li>Changed setting 'headertextcolor' to 'headertoprowtextcolour' on the 'Header' settings tab.</li>
+<li>Changed setting 'headerbkcolor2' to 'headermainrowbkcolour' on the 'Header' settings tab.</li>
+<li>Changed setting 'headertextcolor2' to 'headermainrowtextcolour' on the 'Header' settings tab.</li>
+<li>Moved 'Activities' above 'Forum' on 'Colours' setting tab.</li>
+<li>Removed 'blockplace1' CSS class.</li>
+<li>Tidied up SCSS to remove some redundant styles and improve organisation.</li>
+<li>Validate value of 'coursetitlemaxwidth' when set externally to the UI.</li>
+<li>Fix section course section name and 'Collapse' / 'Expand' all text to follow the 'sectionheadingcolor' setting.</li>
+<li>Tidy course section header.</li>
+<li>Add new settings 'fontheaderlevelX' on the 'Fonts' settings tab, where X is 1 to 6 to set the size of the headings.</li>
+<li>Tidy settings save / discard floating buttons.</li>
+<li>Fix Font Awesome icons on the administration / navigation blocks.</li>
+<li>Fix editing button on pages.</li>
+<li>Improve 'fontsize' setting to allow pixel and rem value units.</li>
+<li>Fix dynamic property warnings in 'adaptable_admin_setting_configtemplate.php'.</li>
+<li>Changed setting 'responsiveheader' to use 'flex' based responsive values rather than 'block'.  This means that the
+'main-header-row' will have its content centred vertically.</li>
+<li>State that only header layout one responds to the 'responsiveheader' setting.</li>
+<li>State the setting error on the 'Information' tab if one or more settings fail to save.</li>
+<li>Fix 'Only output activity navigation markup if there is activity navigation to show'.</li>
+<li>Improve FontAwesome icons and replace 'compass' with 'circle' for navigation items.</li>
+<li>Fix 'Breadcrumb editing button icon too close to text'.</li>
+<li>Fix 'Badge background is a different colour when the underlying background is not white'.</li>
+<li>Add tools menu to 'mobileprimarynav' drawer.</li>
+<li>Add user favourites menu to 'mobileprimarynav' drawer.</li>
+<li>Fix 'Frontpage course boxes' styling.</li>
+<li>Remove 'boxfooter' from course box as can find no reason for its existence.</li>
+<li>Adjust position of course box button for 'Coventry tiles'.</li>
+<li>Fix 'Group mode icons on modules'.</li>
+<li>Fix core i/groupn.svg icon size.  Was 24 x 24, should be 20 x 16 in line with others.</li>
+<li>Add tools menu icon setting for each tools menu.</li>
+<li>Moved 'navbardisplayicons', 'navbardisplaytitles' and 'navbardisplaymenuarrow' settings from 'Navbar styles' to
+'Navbar' settings tab.</li>
+<li>Add user favourites menu icon setting for the user favourites menu.</li>
+<li>Fix spacing on language menu when the language name is shown in the dropdown title.</li>
+<li>Add 'secondarycolourtext' setting to set the text colour for elements that use the 'bg-secondary' Bootstrap CSS class, such as a badge.
+Also added '--ad-secondary-text' CSS variable to use.</li>
+<li>Changed setting 'maincolor' to 'maincolour' on the 'Colours' settings tab and added '--ad-main-colour' CSS variable to use.</li>
+<li>Changed setting 'fontcolor' to 'fontcolour' on the 'Colours' settings tab and added '--ad-font-colour' CSS variable to use.</li>
+<li>Changed setting 'regionmaincolor' to 'regionmaincolour' on the 'Colours' settings tab and added '--ad-regionmain-colour' CSS variable to use.</li>
+<li>Changed setting 'regionmaintextcolor' to 'regionmaintextcolour' on the 'Colours' settings tab and added '--ad-regionmaintext-colour' CSS variable to use.</li>
+<li>Changed setting 'linkcolor' to 'linkcolour' on the 'Colours' settings tab and added '--ad-link-colour' CSS variable to use.</li>
+<li>Added '--ad-linkhover-colour' CSS variable to use.</li>
+<li>Changed setting 'dimmedtextcolor' to 'dimmedtextcolour' on the 'Colours' settings tab and added '--ad-dimmedtext-colour' CSS variable to use.</li>
+<li>Added '--ad-selectiontext-colour' CSS variable to use.</li>
+<li>Added '--as-selectionbackground-colour' CSS variable to use.</li>
+<li>Ensure that the lang menu is only shown when specified for the layout in the config.php file.</li>
+<li>Tidy / improve search box in the navbar.</li>
+<li>Add site shortname (if not empty) to JSON properties filename.</li>
+<li>Changed setting 'coursepageblocksliderenabled' to 'coursepageblockinfoenabled' on the 'Courses' tab.</li>
+<li>Fix activities icon not being a Font Awesome one when adding an activity on a course.</li>
+<li>Improve 'This course' icons.</li>
+<li>Reduce block list indentation.</li>
+</ol>
+
+<p>Note: There is no thirteenth change.</p>
+
+<h1>Change log in version 500.1.2 (2025040804)</h1>
+
+<ol>
+<li>Fix 'Activity navigation does not update when module becomes visible because of access restrictions'.</li>
+<li>Add 'sidepostdrawerwidth' setting for the side post block drawer on the 'Block' settings tab to control the width.</li>
+<li>Upgrade theme version ('fav' setting) of Font Awesome to 7.0.0.</li>
+</ol>
+
+<h1>Change log in version 500.1.1 (2025040803)</h1>
+
+<ol>
+<li>Fix sub dropdown menu showing outside of the browser window.</li>
+<li>Remove 'backcolor' as now duplicates what 'maincolor' does.  Please use that instead for the background of the page. - #41.</li>
+<li>Fix width of frontpage course list panel widths when window width is less than 576px.</li>
+<li>Fix images 'marketing' blocks not showing - #42.</li>
+</ol>
+
+<h1>Change log in version 500.1.0 (2025040802)</h1>
+
+<ol>
+<li>Stable release for Moodle 5.0.</li>
+<li>Fix grade table header position.</li>
+<li>Change 'currentcolor' to set the left border of the current section instead of the background to avoid contrast issues.</li>
+<li>Apply 'coursesectionheader...' settings to the 'course-section-header' CSS class not just the 'sectionname' class.</li>
+<li>Fix dropdown menu for RTL and adjust on mouseover.</li>
+<li>Improve dropdown sub-menu accessibility.</li>
+</ol>
+
+<h1>Change log in version 500.0.2 (2025040801)</h1>
+
+<ol>
+<li>Don't fix quiz page width when taking the quiz.  Full view functionality can be used if required.</li>
+<li>Fix description of 'enablemyhome' setting.</li>
+<li>Fix name and description of 'enablemycourses' setting.</li>
+<li>Fix setting import / export missing setting strings for files.</li>
+<li>Fix default font of sans-serif not being applied.</li>
+</ol>
+
+<h1>Change log in version 500.0.1 (2025040800)</h1>
+
+<ol>
+<li>Change to 'Badge' colours, ref: https://moodledev.io/docs/5.0/guides/bs5migration#badges.  Not sure why the colours were
+hard coded here.  Removal of this SCSS will give greater flexibility to be consistent with the Bootstrap defined values.</li>
+<li>Make settings tabs work.</li>
+<li>BS data JS updates, ref: https://moodledev.io/docs/5.0/guides/bs5migration#refactor-bs5-data-attributes.</li>
+<li>Remove redundant 'dockable'.</li>
+<li>Fix user settings modal.</li>
+<li>Remove redundant 'context_mobile_settings_menu' method.</li>
+<li>Fix 'Navbar search' because of MDL-75669 JS code breaks if more than one 'search_input_navbar' is on a page.</li>
+<li>Change 'Directional utilities', ref: https://moodledev.io/docs/5.0/guides/bs5migration#directional-utilities.</li>
+<li>Change 'Screen reader utilities', ref: https://moodledev.io/docs/5.0/guides/bs5migration#screen-reader-utilities.</li>
+<li>Change 'Font utility classes', ref: https://moodledev.io/docs/5.0/guides/bs5migration#font-utility-classes.</li>
+<li>Change 'Refactor dropdowns positioning classes', ref: https://moodledev.io/docs/5.0/guides/bs5migration#refactor-dropdowns-positioning-classes.</li>
+<li>Change 'Refactor custom form elements', ref: https://moodledev.io/docs/5.0/guides/bs5migration#refactor-custom-form-elements.</li>
+<li>Fix course box filling whole width on the front page.</li>
+<li>Fix courses not showing in their boxes for the combination list on the front page.</li>
+<li>Improve the look of the course boxes on the front page.</li>
+<li>Clarify the difference between 'screen' and the browser 'view' as 'Full screen' has a different meaning.</li>
+<li>Change 'enablezoomshowtext' functionality to use 'navbardisplayicons' and 'navbardisplaytitles' instead.</li>
+<li>Fix modal close button location.</li>
+<li>Tidy alert position and reactive to 'view' state (Full or Standard).</li>
+<li>Remove duplicate divider when showing custom user menu items 'customusermenuitems' on the user dropdown.</li>
+</ol>
+
+<h1>Change log in version 405.1.5 (2024100506)</h1>
+
+<ol>
+<li>Fix visited 'btn-outline-secondary' text.  Note: Need to consider text colours for Bootstrap background ones?</li>
+<li>Update theme version of FontAwesome free to 6.7.2 from 6.7.1.</li>
+<li>Fix 'currentlanguage' assignment to non-existent class attribute in custom_menu_item.</li>
+<li>Fix 'Accessibility Issue with breadcrumb navigation' - ref: https://moodle.org/mod/forum/discuss.php?d=467094.</li>
+<li>Fix incorrect breadcrumb logic in relation to the 'enablehome', 'enablemyhome' (both not relevant to the breadcrumb) and
+'breadcrumbhome' settings.  Now 'breadcrumbhome' has a new value of 'Off' so that you can switch the display of 'Home' on
+the breadcrumb independently of the 'Home' on the navbar.</li>
+</ol>
+
+<h1>Change log in version 405.1.4 (2024100505)</h1>
+
+<ol>
+<li>Data instance id format in line with core.</li>
+<li>Fixed back and foreground colours for input, select and textarea's to be 'regionmaincolor' and 'regionmaintextcolor' respectively.</li>
+</ol>
+
+<h1>Change log in version 405.1.3 (2024100504)</h1>
+
+<ol>
+<li>Improve FontAwesome class name processing for setting values.</li>
+<li>Fix impact of MDL-79986 removing section anchors from the course format URL ('get_view_url()' in the format's 'lib.php' file)
+causing the 'Sections' in the 'This course' menu to no longer go to the given section on the page.</li>
+</ol>
+
+<h1>Change log in version 405.1.2 (2024100503)</h1>
+
+<ol>
+<li>Add 'logoalt' setting to provide a description of your logo for accessibility.  Multilang compatible.</li>
+<li>Convert 'msgbadgecolor' into 'notbadgebackgroundcolour' and create 'notbadgecolour' so that both the background and font colour
+can be set for the notifications.</li>
+<li>Fix duplicate custom menu items in 'mobileprimarynav' drawer.</li>
+</ol>
+
+<h1>Change log in version 405.1.1 (2024100502)</h1>
+
+<ol>
+<li>Fix 'Class "core\external\output\icon_system" not found' - #35.</li>
+<li>Add theme user settings, initially 'My courses custom sort' - Sponsors only functionality.</li>
+<li>Larger tools menu title and field setting boxes.  The former to help with multilang support.</li>
+<li>Fix navbar search magnifying glass position.</li>
+<li>Add user favourites menu - Sponsors only functionality.</li>
+<li>Tools menu settings should be 'PARAM_TEXT'.</li>
+<li>Allow sub-sub menus.</li>
+<li>Add 'navbardisplaytitles' setting to show / hide the navbar titles, disabled when 'navbardisplayicons' is unset.</li>
+<li>Rename 'navbardisplaysubmenuarrow' to 'navbardisplaymenuarrow' and fix places where this didn't apply.</li>
+<li>Fix original header search icon colour when open.</li>
+<li>Fix header search position and default setting value.</li>
+<li>Tidy header search.</li>
+<li>Update theme version of FontAwesome free to 6.7.1 from 6.6.0.</li>
+</ol>
+
+<h1>Change log in version 405.1.0 (2024100501)</h1>
+
+<ol>
+<li>Stable release for Moodle 4.5.</li>
+<li>Fix 'newstickercount' incorrect default value.</li>
+<li>Add Pace themes from https://codebyzach.github.io/pace/ and add 'pageloadingprogress' and 'pageloadingprogresstheme' settings
+to new 'General' tab.</li>
+<li>Block regions to Frontpage block regions rename.</li>
+<li>Prevent an open Adaptable settings window overwriting core settings in another.</li>
+<li>Setting tabs fully alphabetical.</li>
+</ol>
+
+<h1>Change log in version 405.0.1 (2024100500)</h1>
+
+<ol>
+<li>Block region tidy when editing, 'Add block' button for each region and added 'blockregioneditingtitleshown' setting
+under 'Block' with a default of true.</li>
+<li>Impact of MDL-81920 and MDL-81960.</li>
+<li>Release candidate initial release.</li>
+</ol>
+
+<h1>Change log in version 404.1.1 (2024032803)</h1>
+
+<ol>
+<li>Fix missing 'recaptcha' on login form.</li>
+<li>Only show secondary navigation if there is something to show.</li>
+<li>Refactored 'buttonfocuscolor' and 'buttonfocuscoloropacity' to be 'inputbuttonfocuscolour' and 'inputbuttonfocuscolouropacity'
+respectively as they really relate to the box shadow when focusing on an 'input' button.</li>
+<li>Created 'buttonfocuscolour' and 'buttontextfocuscolor' to apply a background and text colour on focused buttons.</li>
+<li>Flex Slider upgraded to 2.7.2.</li>
+<li>Pace updated to 1.2.4.</li>
+<li>AMD'ify Tickerme.</li>
+<li>AMD'ify jquery.easing.</li>
+<li>Removed outdated method of jQuery plugin usage.</li>
+<li>Moved ticker JS to sponsors only.</li>
+<li>Added 'enablesavecanceloverlayresetconfirm' string for save settings cancellation reset warning.</li>
+<li>Fix sticky header margin.</li>
+<li>Added 'regionmaintextcolor' and other small fixes.</li>
+<li>Added 'primarycolour' and 'secondarycolour', to control the respective Bootstrap colours as used in the SCSS in general.</li>
+<li>Added the ability to set text and background colours on the Ticker.</li>
+<li>Moved 'fontcolor' to 'Colours' tab and fix button colours.</li>
+<li>Dialog and tab tidy.</li>
+<li>Ticker style back to what it was.</li>
+<li>Fix collapsed information blocks not showing.</li>
+<li>Remove 'docked' styles.</li>
+<li>Fix 'Flexible blocks are too big on small screens'.</li>
+<li>Add name and description back to user profile page.</li>
+<li>Fix theme selector buttons.</li>
+<li>Tidy frontpage layout.</li>
+<li>Fix backup 'Return to course button'.</li>
+<li>Add file settings to import / export of settings.</li>
+<li>Fix unread notification text colour.</li>
+<li>Fix notification icons not showing when body font weight is &lt;= 300.</li>
+<li>Update theme version of FontAwesome free to 6.6.0 from 6.5.2.</li>
+<li>Increase tooltip font size to .9rem.</li>
+<li>Better file upload icon and for when FA4 shims disabled.</li>
+</ol>
+
+<h1>Change log in version 404.1.0 (2024032802)</h1>
+
+<ol>
+<li>Fix header information overridden when set in the context header leading to missing output.</li>
+<li>Add 'Information blocks'.  This is designed to be a replacement for the marketing blocks that are
+now deprecated.  The code that they use has always been problematic and subject to contained file
+based content being lost on occasion, or rather not lost but misplaced in terms of linkage at times.
+I've never been able to entirely rectify or resolve the issues.  Therefore instead of reinventing the
+wheel, I've gone for a block region based solution whereby proven and tested block code is employed.
+Instead of defining the content in the theme settings, you'll create blocks and place them in the
+'information' region on the front page.  Of course you'll find all of the other settings in place
+to control the layout and visibility as before, on the theme's 'Information blocks' settings tab.
+When editing you'll see the full block header with each block having the same width to allow easy
+manipulation, i.e. the layout you set is not applied.  Its only when editing is off that the layout
+is applied and the block titles removed.  If you see the word 'Overflow' then that means that you have
+more blocks than you've defined in the layout rows to allow.  Admins will see 'Marketing blocks are
+deprecated, please migrate to using the Information block region.'.  When editing, block regions will
+have their name at the top.  In testing with re-ordering the blocks I did find this problematic and
+could not work out entirely why as the theme code is doing what it should do, the core code is telling
+the back end via an AJAX call about the reordering, just that after doing so then it seemed that cron
+had to run for the changes to become permanent.  It is my intention that other settings employing the
+same code as the marketing blocks will also migrate to this improved solution.</li>
+<li>Improve the look of the calendar block controls and fix the next and previous icons.</li>
+<li>Improve the layout builder to have new clearer responsive images.</li>
+</ol>
+
+<h1>Change log in version 404.0.2 (2024032801)</h1>
+
+<ol>
+<li>Reduce drawer flicker on page load when the navbar is sticky.</li>
+<li>Add ability to move custom menus into a single menu to save navbar space by giving 'custommenutitle' setting a value.
+Note: At bottom of the 'Navbar' settings tab.</li>
+<li>Improve custom menu code to facilitate simple inclusion of Font Awesome icons.</li>
+<li>Fix dropdown menu id's.</li>
+<li>Remember the tab currently selected when saving settings.</li>
+<li>Functionality using a 'custom menu' such as 'Custom menu items', 'Header menus' and 'Tools menu' now supports the
+following format:
+text|url|title|langs|fontawesome classes or name|capability.
+where:
+ text - Text to show for the entry.
+ url - URL of the entry.
+ title - Title attribute in the link tag value.
+ langs - Only show on the given language codes - separate more than one with a comma.
+ fontawesome classes or name - State the Font Awesome classes or name for the icon that is placed before the text.
+ capability - State the capability to check that the user has on the page before showing, for example
+   'moodle/course:manageactivities' to only show to editing teachers.</li>
+<li>Renamed 'Tools menu dropdown' setting tab to 'Tools menu'.</li>
+<li>Fix 'itemid' not being regenerated for 'customjsfiles'.</li>
+<li>Add 'customusermenuitems' to the user menu.</li>
+<li>Add FontAwesome support to 'customusermenuitems' as the third parameter, name or CSS classes.</li>
+<li>Add duplicate entries for 'custommenuitems' and 'customusermenuitems' on a new 'Custom menu' settings tab.</li>
+<li>Settings language strings tidy.</li>
+<li>Social icons improvement to use either icon name or CSS classes.</li>
+<li>Replace 'menuhovercolor' with 'menubkhovercolor' and 'menufonthovercolor' to fix menu hovering.</li>
+<li>Add 'courseindexenabled' setting on the 'Course index' tab to enable / disable the 'Course Index'.</li>
+</ol>
+
+<h1>Change log in version 404.0.1 (2024032800)</h1>
+
+<ol>
+<li>Release candidate version for Moodle 4.4.</li>
+<li>Grade report improvements.</li>
+<li>Update theme version of FontAwesome free to 6.5.2 from 6.4.2.</li>
+</ol>
+
+<h1>Change log in version 403.1.4 (2023111805)</h1>
+
+<ol>
+<li>New setting 'mobileprimarynav' to control the display of the mobile primary navigation.  This is found on the
+'Header' tab in the theme settings.</li>
+<li>New setting 'customjsfiles' to allow the addition of one or more JavaScript files to be included before 'customjs'
+is output to the page.  Sponsors only functionality.</li>
+<li>Fix 'ORPHANED BLOCK - Originally displays in: Course page', ref: https://moodle.org/mod/forum/discuss.php?d=456522.</li>
+<li>Apply 'MDL-72923 message: Fixed levels of headings in messaging drawer'.</li>
+<li>Fix 'Font on file storage admin type settings'.</li>
+<li>Unix file endings - use 'find . -type f -print0 | xargs -0 dos2unix' in a Git Bash on Windows if you need to.</li>
+</ol>
+
+<h1>Change log in version 403.1.3 (2023111804)</h1>
+
+<ol>
+<li>Fix missing logo in alternative header for header style one.</li>
+<li>Fix jssection setting value causing breakage.</li>
+<li>Fix jssectionrestricted setting value not in nofooter layout.</li>
+<li>Deprecated 'jssection' and 'jssectionrestricted' settings, please copy values to 'customjs' and 'customjsrestricted'
+with any 'script' tags removed.</li>
+<li>Separated 'Custom CSS and JS' into two separate settings tabs, 'Custom CSS' and 'Custom JS', the latter is now in the
+'Local Adaptable' plugin.</li>
+<li>Fix 'btn a' style.</li>
+</ol>
+
+<h1>Change log in version 403.1.2 (2023111803)</h1>
+
+<ol>
+<li>Fix '$OUTPUT is null' - ref: https://moodle.org/mod/forum/discuss.php?d=453194#p1827606.</li>
+</ol>
+
+<h1>Change log in version 403.1.1 (2023111802)</h1>
+
+<ol>
+<li>Put the course title back in the header.</li>
+<li>New setting 'headertitle' replaces 'sitetitle'.</li>
+<li>New CSS id 'headertitle' replaces 'sitetitle', now 'sitetitle' is on the actual site title for styling purposes.</li>
+<li>New setting 'responsiveheadertitle' replaces 'responsivecoursetitle' / 'responsivesitetitle'.</li>
+<li>New setting 'coursepageheaderhidetitle' replaces 'coursepageheaderhidesitetitle'.</li>
+<li>Fix 'Wrong context for theme_adaptable/savediscard'.</li>
+<li>Remove call to 'context_header' so that the course title is not duplicated on the page.</li>
+<li>Improved header logic.  On a course page then if the course title is set to show 'enablecoursetitle' then it is
+shown with the 'categoryheadercustomtitleX' if there is one.  If not then the site title will show if 'sitetitle'
+is set and with 'categoryheadercustomtitleX' if there is one.  On a site page, then just the 'sitetitle' logic.</li>
+<li>Fix 'Module menu delete item hover colour'.</li>
+</ol>
+
+<h1>Change log in version 403.1.0 (2023111801)</h1>
+
+<ol>
+<li>Fix 'Grade report scrolling', ref: https://moodle.org/mod/forum/discuss.php?d=453194#p1821224.</li>
+<li>Tidy up header logic in relation to titles.</li>
+<li>Navbar and breadcrumb tidy.</li>
+<li>Fix 'error: class constructors must be invoked with 'new'' - ref: https://moodle.org/mod/forum/discuss.php?d=453804.</li>
+<li>Add 'buttontexthovercolor' setting to fix button hovers.</li>
+<li>Fix header search icon.</li>
+<li>Add 'headerbgimagetextcolour' and 'headertextcolor2' to fix lower header text colours.</li>
+<li>Fix position of '#savediscardsection'.</li>
+<li>Refactored layouts as a progressional aim towards use of templating to a greater extent.</li>
+</ol>
+
+<h1>Change log in version 403.0.1 (2023111800)</h1>
+
+<ol>
+<li>Release candidate for Moodle 4.3.</li>
+</ol>
+
+<h1>Change log in version 402.0.2 (2023092501)</h1>
+
+<ol>
+<li>Add the ability to show the marketing blocks when 'Logged out', 'Logged in' or 'Logged in or out',
+'marketingvisible' setting.</li>
+</ol>
+
+<h1>Change log in version 402.0.1 (2023092500)</h1>
+
+<ol>
+<li>Removed social wall format (https://moodle.org/plugins/format_socialwall/versions) as last known version was for Moodle 3.3.</li>
+<li>Add theme version of FontAwesome 6.4.2 from Foundation theme.</li>
+<li>Fix 'Dragging a block results in an unknown block region error'.</li>
+<li>Fix bars icon on navbar.</li>
+<li>Improved alert dismissal functionality.  The alert key only needs to change when the content does not.</li>
+<li>Corrected alert information that incorrectly stated that it was possible to restrict alerts to the front page.</li>
+<li>Move the 'Alerts', 'Category Headers', 'Login', 'My courses', 'News ticker', 'Tools menu', 'Tracking' and 'User profile'
+functionality to a separate 'Local Adaptable' plugin that will be available to sponsors only.  This has been an
+extremely difficult decision to make, however with the continued lack of support I consider that I have been
+left with no choice and thus have targetted functionality unlikely to be used by small installations.</li>
+</ol>
+
+<h1>Change log in version 401.1.7 (2022112308)</h1>
+
+<ol>
+<li>Add 'courseactivitynavigationenabled' setting in 'Courses' tab (changed from 'Course Formats') to turn on / off activity
+navigation.  Disabled by default.</li>
+<li>Fix "Spelling mistakes in 'theme_adaptable | responsivesectionnav'" - #14.</li>
+<li>Fix 'Front Page Course Limited to 20' - ref: https://moodle.org/mod/forum/discuss.php?d=450609.</li>
+<li>Fix 'Option to default right drawer to open for guests' - #16.</li>
+<li>Removed social wall format (https://moodle.org/plugins/format_socialwall/versions) as last known version was for Moodle 3.3.</li>
+<li>Add theme version of FontAwesome 6.4.2 from Foundation theme.</li>
+<li>Fix 'Dragging a block results in an unknown block region error'.</li>
+<li>Fix 'Grader report headings not sticky' - ref: https://moodle.org/mod/forum/discuss.php?d=451315S.</li>
+</ol>
+
+<h1>Change log in version 401.1.6 (2022112307)</h1>
+
+<ol>
+<li>Fix as much as possible URL's in strings - ref: https://moodle.org/mod/forum/discuss.php?d=446353.</li>
+<li>Fix long student names in the grade book - ref: https://moodle.org/mod/forum/discuss.php?d=447234.</li>
+<li>Fix 'Sidebars cannot be closed with sticky navbar' - ref: https://github.com/gjb2048/moodle-theme_adaptable/issues/8.</li>
+<li>Fix 'columns1 layout issue' - ref: https://moodle.org/mod/forum/discuss.php?d=446487#p1800161.</li>
+<li>Fix 'Block marketing - images' - #12.</li>
+<li>Fix 'Missing content region on dashboard'.</li>
+<li>Add link in the navbar to the 'My courses' page, with setting 'enablemycourses', not to be confused with the 'My courses' menu 'enablemysites'.</li>
+<li>Fix margin on 'Course overview' block has header buttons not lining up, fix is good but may impact on other unknown elements as removed style is too global in effect.</li>
+<li>Put back activity navigation.</li>
+<li>Add new setting 'slidervisible' to state when the slider should be shown, being one of 'Logged out', 'Logged in' or 'Logged in or out'.</li>
+<li>Re-fix use of $CFG-&gt;themedir for when it exists but Adaptable is still in the basedir - #273.</li>
+<li>Fix header search area too large.</li>
+</ol>
+
+<h1>Change log in version 401.1.5 (2022112306)</h1>
+
+<ol>
+<li>Fix zoom after header move in markup.</li>
+<li>Fix drawer positions when 'stickynavbar' is off.</li>
+<li>Remove setting 'theme_adaptable/showyourprogress' - Thanks to Eric Richer for the patch - #6.</li>
+</ol>
+
+<h1>Change log in version 401.1.4 (2022112305)</h1>
+
+<ol>
+<li>Change HTML based settings to use Moodle format for greater flexibility and don't trust user input!</li>
+<li>Fix 'Course index' on the right for the Grader Report.</li>
+<li>Fix 'Frontpage ticker location'.</li>
+<li>Improvements to the dynamic header functionality.</li>
+<li>Improve bsoptions.js.</li>
+<li>Reduce page load adjustment issues.</li>
+<li>Drawer open button improvement.</li>
+<li>Fix drawer position on grader report page.</li>
+<li>Add secondary navigation.</li>
+<li>Fix 'Use $CFG-&gt;themedir break SCSS inclusion' - #273.</li>
+</ol>
+
+<h1>Change log in version 401.1.3 (2022112304)</h1>
+
+<ol>
+<li>Fix 'Not Adaptable my courses and missing help menu's on mobile navigation'.</li>
+<li>Fix 'Piwik code is asking for string from local_analytics' - #5.</li>
+<li>Fix 'blockicons setting not being applied to the side post drawer'.</li>
+</ol>
+
+<h1>Change log in version 401.1.2 (2022112303)</h1>
+
+<ol>
+<li>Fix 'blockside' setting not being applied to the course index and side post.</li>
+<li>Fix 'No mobile navigation' on navbar.</li>
+</ol>
+
+<h1>Change log in version 401.1.1 (2022112302)</h1>
+
+<ol>
+<li>Layout style tidy.</li>
+<li>Change to using 'Course index' and 'Block drawer'.</li>
+</ol>
+
+<h1>Change log in version 401.1.0 (2022112301)</h1>
+
+<ol>
+<li>Add new 'dimmedtextcolor' setting for the 'dimmed_text' CSS class - #290.</li>
+<li>Fix missing log causing JS error on cache purge.</li>
+<li>Fix XSS issue.</li>
+<li>Add H5P custom CSS support, 'hvpcustomcss' setting on the 'Custom CSS &amp; JS' settings tab, for both core
+and <a href="https://moodle.org/plugins/mod_hvp">mod_hvp</a> modules.</li>
+</ol>
+
+<h1>Change log in version 401.0.1 (2022112300)</h1>
+
+<ol>
+<li>Release candidate version for M4.1.</li>
+<li>Favicon setting now describes core 'core_admin | favicon' setting, under 'Site administration' -&gt; 'Appearance' -&gt; 'Logos'.
+Please upload your existing Favicon to this new setting as Adaptable's has been removed.</li>
+</ol>
+
+<h1>Change log in version 400.1.4 (2022051207)</h1>
+
+<ol>
+<li>Change course module name display, related to MDL-74272.</li>
+<li>Less than 992px responsive fix and tidy.</li>
+<li>Fix admin settings page 'Save changes' causing overflow.</li>
+<li>Fix admin settings title SCSS not applied.</li>
+<li>Change the following mod icons to Font Awesome 6.2.1 free ones:
+ Assign - fa-solid fa-file-pen
+ Assignment - fa-solid fa-file-signature
+ Book - fa-solid fa-book-open
+ Chat - fa-regular fa-comments
+ Choice - fa-solid fa-arrows-split-up-and-left
+ Data - fa-solid fa-database
+ Feedback - fa-regular fa-comment-dots
+ File - fa-regular fa-file
+ Folder - fa-regular fa-folder
+ Forum - fa-solid fa-people-group
+ Glossary - fa-solid fa-box-archive
+ IMScp - fa-solid fa-boxes-stacked
+ Label - fa-solid fa-tag
+ Lesson - fa-solid fa-chalkboard-user
+ LTI - fa-solid fa-puzzle-piece
+ Page - fa-solid fa-sheet-plastic
+ Quiz - fa-solid fa-person-circle-question
+ Resource - fa-regular fa-file
+ SCORM - fa-solid fa-box
+ Survey - fa-solid fa-square-poll-horizontal
+ URL - fa-solid fa-link
+ Wiki - fa-solid fa-circle-nodes
+ Workshop - fa-solid fa-people-arrows
+Converted to PNG with Inkscape.</li>
+</ol>
+
+<h1>Change log in version 400.1.3 (2022051206)</h1>
+
+<ol>
+<li>Fix header search icon colour.</li>
+<li>Fix 'Zoomin not operating on main region' - ref: https://moodle.org/mod/forum/discuss.php?d=437305#p1760772.</li>
+<li>Fixed semantic versioning 2.0.0 (https://semver.org/) for the release value, whereby the 'major' number is the Moodle core branch
+number.  The 'version' property still needs to follow the Moodle way in order for the plugin to operate within the core API.</li>
+<li>Tidy social icons.</li>
+<li>Fix page heading button position.</li>
+<li>Fix 'Message badge colour' - ref: https://moodle.org/mod/forum/discuss.php?d=438886.</li>
+<li>Fix 'Header one long title underneath logo'.</li>
+</ol>
+
+<h1>Change log in version 4.0.1.2 (2022051205)</h1>
+
+<ol>
+<li>Fix 'Assignment Description, Instruction &amp; Additional File Not Showing' = ref: https://moodle.org/mod/forum/discuss.php?d=437100.</li>
+</ol>
+
+<h1>Change log in version 4.0.1.1 (2022051204)</h1>
+
+<ol>
+<li>Fix 'Missing "View X responses" in choice module' - ref: https://moodle.org/mod/forum/discuss.php?d=436755.</li>
+<li>Fix 'OAuth 2 in wrong place on login form' - ref: https://moodle.org/mod/forum/discuss.php?d=436838.</li>
+<li>Fix 'No "region-main-box" identifier causing LTI module submission failure' - thanks to Sergey Kovzik for the report.</li>
+</ol>
+
+<h1>Change log in version 4.0.1.0 (2022051203)</h1>
+
+<ol>
+<li>Stable version for M4.0.</li>
+</ol>
+
+<h1>Change log in version 4.0.0.3 (2022051202)</h1>
+
+<ol>
+<li>Removed non-functioning 'user_menu' method and supporting methods.</li>
+<li>Fix 'footer improperly closed div' - #283.</li>
+<li>Option to replace login form in header with login buttons for SSO - #281.</li>
+</ol>
+
+<h1>Change log in version 4.0.0.2 (2022051201)</h1>
+
+<ol>
+<li>Fix 'My courses' page not rendering - ref: https://moodle.org/mod/forum/discuss.php?d=434718.</li>
+<li>Fix undefined property $gradeediting.</li>
+<li>Fix header two colour issues / icon padding - ref: https://moodle.org/mod/forum/discuss.php?d=434655#p1750208.  This means that
+the setting 'headertextcolor2' as been removed, such that 'headertextcolor' will now operate on both styles for the non-navbar
+portion of the header.  The CSS 'above-header' has been changed from an identifier to a class for this to bring even more
+consistency.  A new identifier 'header1' as been created, just as there is an existing 'header2'.</li>
+<li>Fix 'course format plugins not working' - #277.  Note: This only removes code that prevents operation due to core API changes.</li>
+<li>Fix 'Login page' - ref: https://moodle.org/mod/forum/discuss.php?d=435248.</li>
+</ol>
+
+<h1>Change log in version 4.0.0.1 (2022051200)</h1>
+
+<ol>
+<li>Removed 'coursesectionactivityuseadaptableicons' setting as M4.0 course format API prevents it having an effect.</li>
+<li>Course format API changes remove use of 'print_single_section_page' method.</li>
+<li>Fix user picture size.</li>
+<li>The M4.0 course format API prevents themes from overriding section and module output, this is now the full responsibility of the
+course format.  The consequence of this means that the activity information code can no longer be called and used.  The tracker
+issue MDL-73679 is an 'entry point' for understanding all of this and how course formats can override the output, but as
+'get_output_classname()' in '/course/format/classes/base.php' only allows 'overriding' of the rendering classes for course
+formats, then this is the 'why', whereas this sort of thing used to be in the core course renderer which the course format used
+and could be overridden by the theme and the course format use that instance.</li>
+<li>Refactor broken footer logic.</li>
+<li>Fix missing debug information.</li>
+<li>Fix navbar search styling.</li>
+<li>No edit switch.</li>
+<li>Fix button font family - #276.</li>
+<li>Fix no assignment instructions - ref: https://moodle.org/mod/forum/discuss.php?d=434427#p1748150.</li>
+<li>Fix 'icon -&gt; monologo' and menu spacing.</li>
+<li>Fix navbar cog down arrow icon.</li>
+<li>Remove double usage of 'icon' class on the 'This course' menu.</li>
+<li>Add 'unaddableblocks' setting that core code uses.</li>
+<li>State that the theme does not use the 'Course index'.</li>
+<li>Fix 'btn-icon' position - e.g. course 'Edit' on sections / modules.</li>
+<li>Activity styling.</li>
+</ol>
+
+<h1>Change log in version 3.11.1.2 (2021081007)</h1>
+
+<ol>
+<li>Fix 'Adaptable, sticky navbar and usertours' - https://moodle.org/mod/forum/discuss.php?d=434259.</li>
+</ol>
+
+<h1>Change log in version 3.11.1.1 (2021081006)</h1>
+
+<ol>
+<li>Remove event that was not implemented and caused core PHPUnit test failure.</li>
+<li>Fix '{{#pix}} in Mustache HTML email template' - #274.</li>
+<li>Fix 'No jssection setting output on the login page when there is no footer' - https://moodle.org/mod/forum/discuss.php?d=433316#p1743705.</li>
+<li>Add 'No search on header style two', gratefully funded by Mark Morgenstern, Grow2Serve dot com.</li>
+</ol>
+
+<h2>Known issues with this version</h2>
+
+<ol>
+<li>Database activity information does not show.</li>
+<li>Virtual Programming Labs run button will not stop spinning until page refreshed.</li>
+<li>If you have the Calendar block shown on any given page but it actually isn't displayed to the user because the block region it is in
+is not shown, then you may get an 'invalidparameter' error.  The workaround is to either ensure that the block is in a region that
+is shown to all users or to remove the block from the page(s) where this happens.</li>
+<li>Also look at '<a href="https://gitlab.com/jezhops/moodle-theme_adaptable/-/issues">Adaptable issues</a>'.</li>
+</ol>
+
+<h1>Change log in version 3.11.1.0 (2021081005)</h1>
+
+<ol>
+<li>Fix 'Title under logo', please resave the 'Layout responsive' settings 'responsivelogo' and 'responsivecoursetitle' -
+Ref: https://moodle.org/mod/forum/discuss.php?d=431105.</li>
+<li>Fix 'One Topic font color change not getting applied' - #264.</li>
+<li>Add 'OneTopic active tab colour' - #269.</li>
+<li>Disable database activity information as the SQL query does not work, needs fixing.</li>
+<li>This major branch now stable.</li>
+<li>Fix 'Empty settings including '0' ignored in css' - #260.</li>
+<li>Fix activity border settings.</li>
+<li>Add 'googlefonts' setting.  Note: It is essential that you review the implications of this setting.</li>
+</ol>
+
+<h2>Known issues with this version</h2>
+
+<ol>
+<li>Database activity information does not show.</li>
+<li>Virtual Programming Labs run button will not stop spinning until page refreshed.</li>
+<li>If you have the Calendar block shown on any given page but it actually isn't displayed to the user because the block region it is in
+is not shown, then you may get an 'invalidparameter' error.  The workaround is to either ensure that the block is in a region that
+is shown to all users or to remove the block from the page(s) where this happens.</li>
+<li>Also look at '<a href="https://gitlab.com/jezhops/moodle-theme_adaptable/-/issues">Adaptable issues</a>'.</li>
+</ol>
+
+<h1>Change log in version 3.11.0.5(2021081004)</h1>
+
+<ol>
+<li>Add new 'frontpageuserblocksenabled' setting to the 'Block settings' tab, ref: https://moodle.org/mod/forum/discuss.php?d=430124.
+Thus for guests and authenticated users, when 'un-ticked' then the 'side-post' region does not show on the front page, but it
+does for site admins.  When 'ticked' then 'side-post' will show for all and have content when there is some.</li>
+<li>Fix 'No middle region'.</li>
+<li>Tidied 'get_block_regions()' with the creation of the 'adaptable-block-area' style.</li>
+<li>Fix 'Event observer code for activity information missing', pertains to code changes in 3.11.0.4.</li>
+<li>Fix 'Implications of MDL-70721 output: Remove redundant title'.</li>
+</ol>
+
+<h1>Change log in version 3.11.0.4 (2021081003)</h1>
+
+<ol>
+<li>Re-fix 'Title moved to top by search', ref: https://moodle.org/mod/forum/discuss.php?d=425729#p1718073.</li>
+<li>Fix 'block configuration actions menu does not contrast enough', ref: https://moodle.org/mod/forum/discuss.php?d=427627.</li>
+<li>Fix 'My Courses dropdown not showing all enrolled courses' - #258.</li>
+<li>Fix "My courses dropdown can show hidden courses when user does not have capability when 'mysitessortoverride' setting is not
+set to 'Use list from my overview'", related to #258.</li>
+<li>Makes sense to have the logo as a link to the frontpage when there is no navbar.</li>
+<li>Added 'enableadditionalmoddata' setting to turn on / off additional information at a site level.  Default is 'off'!</li>
+<li>Added 'courseadditionalmoddatamaxstudents' setting to restrict, if desired, the display of the activity information on a
+a course of the number of students on that course exceeds it.  When 'enableadditionalmoddata' is enabled, then
+additional information about the status of this is shown at the top of the course when editing.  This is so
+that large courses can be automatically prevented from showing the information as the calculations would take an
+unacceptable amount of time to compute.  It is up to the administrator to set the figure based upon benchmarking / testing
+of the performance characteristics of the server.  The default is '0', which means 'unlimited' number of students.</li>
+<li>Fixed 'ct' to 'ad' class prefixes for activity info in the course renderer.</li>
+</ol>
+
+<h1>Change log in version 3.11.0.3 (2021081002)</h1>
+
+<ol>
+<li>Fix 'setting colours (courses)' - Ref: https://moodle.org/mod/forum/discuss.php?d=426492.</li>
+<li>Fix empty setting value of 'pageheaderheight' causes SCSS compilation issue - Ref: https://moodle.org/mod/forum/discuss.php?d=426553.</li>
+<li>Change SCSS comments from CSS to SCSS ones so that they are not in the 'all' file sent to the browser and hence it will be smaller.</li>
+<li>Fix dialog text colour, i.e. adding a new question to a quiz.</li>
+<li>Fix 'Title moved to top by search', ref: https://moodle.org/mod/forum/discuss.php?d=425729#p1718073.</li>
+</ol>
+
+<h1>Change log in version 3.11.0.2 (2021081001)</h1>
+
+<ol>
+<li>Fix 'Actions' not available when editing, ref: https://moodle.org/mod/forum/discuss.php?d=425729#p1714807.</li>
+<li>Remove redundant CSS selector - #33.</li>
+<li>Fix 'Grader report preferences layout broken', ref: https://moodle.org/mod/forum/discuss.php?d=425016&amp;parent=1715752.</li>
+<li>Remove redundant navbar toggler and tidy the CSS.</li>
+<li>Further CSS tidy and refactor some to SCSS.</li>
+<li>Settings in the CSS can now be pre-processed before passed to the SCSS compiler.  Thus enabling further transition to SCSS of the CSS.
+This will reduce the amount of source 'CSS' and help to spot duplication and mistakes.</li>
+<li>Added extra information in the settings tabs about maturity of the release.</li>
+<li>Fix 'Userdata cache not used' - #247.</li>
+</ol>
+
+<h1>Change log in version 3.11.0.1 (2021081000)</h1>
+
+<ol>
+<li>M3.11 version made possible with thanks from Alexander Dominicus of Hochschule Bochum, https://www.hochschule-bochum.de/.</li>
+</ol>
+
+<h1>Change log in version 3.10.1.3 (2021022303)</h1>
+
+<ol>
+<li>Fix 'Expandable search in header two not working well' - #234.</li>
+<li>Fix 'Assignment Grouping' - #233.</li>
+<li>Fix 'This course section list overflows page' - #236.</li>
+<li>Fix 'Navbar link icon spacing wrong' - #235.</li>
+<li>Fix 'Missing theme cache reset' - Ref: https://moodle.org/mod/forum/discuss.php?d=420530.</li>
+<li>Added upgrade script to change settings with '0px' to '0' for upgrades that don't have "No such thing as '0px'" change.
+Thus, when they do, the setting will be changed correctly instead of getting a default and effectively changing the
+value of the setting.</li>
+<li>README.md to Readme.md - #240.</li>
+<li>Fix 'Mobile view does not show bulleted list' - #238.</li>
+<li>Fix 'Site administration in 'dock' on mobile view' - #237.</li>
+<li>Improve menu accessible titles and vertically centred header title.</li>
+<li>Fix 'Breadcrumb trail' - #242.</li>
+<li>Enhancement 'Implement Global Search capability' - #241.</li>
+<li>Fix 'Inactive tabs are displaced' - #244.</li>
+<li>Fix 'Styling self-registration message card on login page' - #183.</li>
+<li>Fix 'Site title not showing when 'responsiveheader' and 'responsivecoursetitle' settings are set to 'Extra small - Extra large'.'.
+Ref: https://moodle.org/mod/forum/discuss.php?d=424098.</li>
+<li>Fix 'Divider in custom menus' - Ref: https://moodle.org/mod/forum/discuss.php?d=424547.</li>
+<li>Fix 'Notifications menu colour problem' - #248.</li>
+<li>Fix 'Message drawer height' - Header height fluctuates so go with a simple solution as there is a close icon.</li>
+<li>Fix 'Sitename overlays loginbox on mobile devices' - Ref: https://moodle.org/mod/forum/discuss.php?d=424098#p1708632.</li>
+</ol>
+
+<h1>Change log in version 3.10.1.2 (2021022302)</h1>
+
+<ol>
+<li>Fix 'borderradius cannot be set to zero' - Ref: https://moodle.org/mod/forum/discuss.php?d=419461#p1692161.</li>
+<li>Small login page CSS syntax error.</li>
+</ol>
+
+<h1>Change log in version 3.10.1.1 (2021022301)</h1>
+
+<ol>
+<li>Small header fixes.</li>
+<li>Fix 'Issue with Adaptable Theme Header' - #227.</li>
+<li>Fix "No vertical gap with side post blocks when 'blockside' setting is 'Left side'" - Ref: https://moodle.org/mod/forum/discuss.php?d=419201#p1689468.</li>
+<li>Fix 'File picker .nav-item's have header changes' - Ref: https://moodle.org/mod/forum/discuss.php?d=419201#p1689468.</li>
+<li>Fix 'put_properties in Toolbox does not process all of the file settings' - #221.</li>
+<li>Add information page in the settings with readme and settings lang tidy.</li>
+<li>Add 'thirdpartylibs.xml' information.</li>
+<li>Tidy the language strings.</li>
+<li>Organise the settings tabs.</li>
+<li>Tidy and optimise adaptable.css.</li>
+<li>Add Support.md file.</li>
+<li>Fix 'Json error when getting course info in combined list on frontpage' - #229.</li>
+<li>Fix 'menuoverrideprofilefield topmenusettings error' - #228.</li>
+</ol>
+
+<h1>Change log in version 3.10.1.0 (2021022300)</h1>
+
+<ol>
+<li>Fix 'Quiz due date has no background colour'.</li>
+<li>Possible fix for header title underlaps search box - https://moodle.org/mod/forum/discuss.php?d=417124#p1685280.</li>
+<li>Refactor renderers so that don't have to worry about calls to undefined methods when upgrading or in maintenance.</li>
+<li>Fix 'Coventry tiles do not show teachers' - ref: https://moodle.org/mod/forum/discuss.php?d=418430.</li>
+<li>Added 'editcognocourseupdate' setting so that when 'off' the cog / gear icon will not show in courses for users 
+without the 'moodle/course:update' capability.</li>
+<li>Port of fix 'Undefined property: stdClass::$groupmember in moodle/course/format/topcoll/classes/activity.php on line 650' from Collapsed Topics.</li>
+<li>Removed 'editverticalpadding' setting as contradictory to the ability to centre the button text accurately.</li>
+<li>No such thing as '0px'.</li>
+<li>Corrected style spelling of 'edittingbutton' to 'editingbutton'.</li>
+<li>Fix '0 attempted' - ref: https://moodle.org/mod/forum/discuss.php?d=418918.</li>
+<li>Remove FireFox CSS that breaks the activity / resource editing page.</li>
+<li>Initial fixes for M3.10 version.</li>
+</ol>
+
+<h1>Change log in version 3.0.5 (2020073106)</h1>
+
+<ol>
+<li>Fix 'Menu bar height loss' - #222.</li>
+<li>Fix 'Activity meta information not showing when student first accesses page' - https://moodle.org/mod/forum/discuss.php?d=417731.</li>
+<li>Fix 'Footer shown on popup layout' - https://moodle.org/mod/forum/discuss.php?d=417793.</li>
+<li>Fix 'User profile image is cropped' - https://moodle.org/mod/forum/discuss.php?d=417776.</li>
+<li>Fix 'Textured page background image does not extend down when the page height changes' - #223.</li>
+<li>Grid format has changed method name of 'section_header_onsectionpage_topic0notattop' to 'section_header_onsectionpage'.</li>
+<li>Fix 'Redirection loop' - #224.</li>
+</ol>
+
+<h1>Change log in version 3.0.4 (2020073105)</h1>
+
+<ol>
+<li>Fix 'Header issues with logo and background image'.</li>
+<li>Fix 'Custom menu items not shown even when "disablecustommenu" is false'.</li>
+<li>Fix 'Header style two does not show logo when there is no site title'.</li>
+<li>Fix 'Undefined property: stdClass::$tickertext1 when running behat tests' - #159.</li>
+</ol>
+
+<h1>Change log in version 3.0.3 (2020073104)</h1>
+
+<ol>
+<li>Fix 'Cope when there is no first or full name' when showing a user profile.</li>
+<li>Fix 'Frontpage tiles do not show course contacts' - #184.</li>
+<li>Due date label doesn't honor overridden dates for mod_assign - #186,
+thanks to https://github.com/golenkovm for the original patch in Collapsed Topics.</li>
+<li>Fix 'adaptable_setting_confightmleditor does not set setting as empty when there is no content' - #187.</li>
+<li>Fix 'Sub sub menus and below show all at once' - #188.</li>
+<li>Fix the ability for Behat to run without '$CFG-&gt;forced_plugin_settings' being set - dashboard.php issue only - #159.</li>
+<li>Fix 'admin_setting_configselect defaults should use the index and not the value' - #189.</li>
+<li>Fix 'regression - background colour on dashboard' - #190.</li>
+<li>Add 'Book printing to PDF' - #173.</li>
+<li>Fix 'Dashboard dropdown hover makes text unreadable' - #194.</li>
+<li>Add 'Not submitted confusing when student can no longer submit' - #195.</li>
+<li>Fix 'buttondropshadow does not use lang strings' - #152.</li>
+<li>Port of Collapsed Topics accessible colours for the activity meta - https://github.com/gjb2048/moodle-format_topcoll/issues/88.</li>
+<li>Tabbed settings and fixed use of $PAGE which gives invalid variable values when Adaptable is not the set theme.</li>
+<li>Fix 'PHPUnit install fails' - #197.</li>
+<li>Fix 'Install fails on Moodle 3.9' - #198 - thanks to https://gitlab.com/kiklopgs for the patch in https://gitlab.com/jezhops/moodle-theme_adaptable/-/merge_requests/34.</li>
+<li>Fix 'Gradebook: Edit link not working' - #201.</li>
+<li>Fix 'edit_button in renderers.php is not used' - #202.</li>
+<li>Fix 'Redundant CSS' - #96.</li>
+<li>Fix 'theme_adaptable_get_html_for_settings() is not used!' - #27.</li>
+<li>Fix '$hasmiddle is not used!' - #26.</li>
+<li>Fix '$hasfootnote is not used!' - #203.</li>
+<li>Fix '$responsivealerts = $PAGE-&gt;theme-&gt;settings-&gt;responsivealerts; not used!' - #204.</li>
+<li>Fix 'Improve Activity Completion Icons' - #8.</li>
+<li>Fix 'User menu available when using "Full screen pop-up with some Javascript scurity" in Quiz' - #210.</li>
+<li>Fix 'Adding Activity with Safari in Moodle 3.9' - #211.</li>
+<li>Fix 'Second level links do not work when using 3 levels of sub-menu in custom menus' - #117.</li>
+<li>Fix 'Course formatting in Safari and Moodle 3.9' - #212.</li>
+<li>Fix ''About me' tab should be the default for the user profile page' - #206.</li>
+<li>Add version information to settings pages.</li>
+<li>Fix 'Calendar links on the page'.</li>
+<li>Fix 'Navigation tweaks'.</li>
+<li>Fix 'User details not visible on profile page' - #119.</li>
+<li>Tabs update in line with MDL-69301.</li>
+<li>Fix block header icons.</li>
+<li>Fix block hide / show icon size.</li>
+<li>Fix 'Wrong display of date user profile fields' - #214.</li>
+<li>Fix property display can cause markup to be interpreted.</li>
+<li>Allow Import / Export settings to work by separating from tabbed settings.</li>
+<li>Fix 'Impossible to enter a course with Coventry tiles' - #156.</li>
+<li>Remove setting to control activities in chooser - M3.9+ only - #135.</li>
+<li>Fix 'stickynavbar' JS error on login page.</li>
+<li>Fix 'Login page cookies popup not working' - #217.</li>
+<li>Fix 'Onetopic: background color in tabs' - #215.</li>
+<li>Fix 'Theme does not respect the before_footer callback' - #216.</li>
+<li>Fix 'No multilang support in headers and footer' - #132.</li>
+<li>Fix 'Drag&amp;Drop Image question behaviour problem' - #220.</li>
+<li>Fix 'Duplicate code in get_logo_title()' - #208.</li>
+<li>Fix 'responsivealerts used?' - #205.</li>
+<li>Fix 'fonttitlecolorcourse setting not used' - #154.</li>
+<li>Fix 'enablealertcoursepages setting used?' - #151.</li>
+</ol>
+
+<h1>Change log in version 3.0.2 (2020073103)</h1>
+
+<ol>
+<li>Fix 'Error in function quiz_num_submissions_ungraded' - #176.</li>
+<li>Fix 'course_participant_count inaccurate' - #179.</li>
+<li>Fix 'Lesson status inaccurate' - #180.</li>
+</ol>
+
+<h1>Change log in version 3.0.1 (2020073102)</h1>
+
+<ol>
+<li>Fix 'Too few arguments to function theme_adaptable_core_renderer::render_mycourses(),
+0 passed in [dirroot]/lib/outputrenderers.php on line 497 and exactly 1 expected' - #172.</li>
+<li>Fix navbar is not showing on the frontpage.</li>
+<li>Fix 'Book module has two icons' - #174.</li>
+<li>Fix 'Course in category' - https://moodle.org/mod/forum/discuss.php?d=408081#p1656297.</li>
+<li>Fix 'Ungraded assign' - https://moodle.org/mod/forum/discuss.php?d=410681.</li>
+<li>Fix btn-secondary text colour when link.</li>
+<li>Fix 'Filter not applied' - https://moodle.org/mod/forum/discuss.php?d=408081#p1657138.</li>
+<li>Fix 'Support for Embedded Questions filter' - #177.</li>
+</ol>
+
+<h1>Change log in version 3.0.0 (2020073101)</h1>
+
+<p>Release candidate for Moodle 3.9.</p>
+
+<ol>
+<li>Fix licence from GPLv2 to GPLv3 as is incorrect - Moodle plugins must be GPLv3.</li>
+<li>Fix message drawer closure.</li>
+<li>Fix 'Regression - Frontpage marketing blocks don't display on desktop' - #139.</li>
+<li>Moodle 3.9 New Activity Chooser styling needs work - #131.</li>
+<li>Fix 'Blocks - My Home recently accessed course' - #9.</li>
+<li>Fix rubic icons -&gt; https://moodle.org/mod/forum/discuss.php?d=408081#p1646693.</li>
+<li>Fix 'Searchbox conflict with Advanced Forum (hsuforum)' - #133.</li>
+<li>Fix 'Bullet list display in Collapsed Topics course format' - #81.</li>
+<li>Fix 'Block settings are left justified' - #82.</li>
+<li>Improve 'Improve Onetopic course format tab rendering' - #115.</li>
+<li>Fix 'Missing action menu (like editing button / cog button) on content bank page' - #140.</li>
+<li>Fix 'Button/link 'Turn editing on' missing on Moodle 3.9' - #129.</li>
+<li>Fix '.btn declaired after .hidden' - #130.</li>
+<li>Fix message drawer hover.</li>
+<li>Improve position of #82.</li>
+<li>Make 'side-post' have no padding on the right so that the page is symmetrical.</li>
+<li>Fix 'H5P iframe element too small in content bank page' - #146.</li>
+<li>Fix 'Navbar Custom Menu does not fit' - #128.</li>
+<li>Fix 'Editing cog colour not consistent' - #149.</li>
+<li>Fix 'Whitespace Below Header in Course Pages' - #38.</li>
+<li>Fix 'Use of "$setting-&gt;set_updatedcallback('theme_reset_all_caches');" not needed on some settings' - #25.</li>
+<li>Fix 'lib.php preg_match logic flaw' - #150.</li>
+<li>Fix 'wrong rtl css' - #142.</li>
+<li>Fix 'Impossible to enter a course with Coventry tiles' - #156.</li>
+<li>Update to version 3 https://moodlehq.github.io/moodle-plugin-ci/UPGRADE-3.0.html - #158.</li>
+<li>Assignment with restricting grouping shows all users or groups - #161.</li>
+<li>Fix 'Regression? / Inconsistent cog positioning in content bank' - #166.</li>
+<li>Fix 'Quiz attempt: no breadcrumbs' - #123.</li>
+<li>Fix '$fontname can never be 'custom'' - #104.</li>
+<li>Implement 'Update google fonts list ' - #42 - thanks to 'Sal Zaydon' - https://gitlab.com/szaydon for the list.</li>
+<li>Fix no such font-family as 'default' - #42.</li>
+<li>Fix 'Topic header text now black' - #167.</li>
+</ol>
+
+<h1>Change log in version 2.2.2 (2019112601)</h1>
+
+<p>Main fixes &amp; Enhancements done in this release.</p>
+
+<ul>
+<li>Fix mobile responsive settings in "layout responsive" settings page</li>
+<li>Fix ability to set general box color in forums</li>
+<li>Fix issues with login page when no header in use</li>
+<li>Fix issue of footer riding up on short pages with little content</li>
+<li>Fix close icon for activity chooser in Moodle 3.8</li>
+<li>Fix combo list on mobile, now collapses into single column</li>
+</ul>
+
+<p>What's new?</p>
+
+<ul>
+<li>Layout responsive settings page</li>
+<li>Setting to control color of forum "general box" background where forum description is displayed</li>
+</ul>
+
+<h2>HTML/CSS sample code for block areas</h2>
+
+<p>Here you will find some code samples to help you to customize the Info Box and the Marketing Blocks.</p>
+
+<p>You can insert any HTML tag to customize the front page blocks. Use a 'div' tag as a main container and add the height to keep the
+same value in all the blocks.</p>
+
+<p>The Font Awesome icons set is available in
+http://fortawesome.github.io/Font-Awesome/icons/.</p>
+
+<p>You can insert any of them following the examples
+http://fortawesome.github.io/Font-Awesome/examples/</p>
+
+<h2>Front Page Slider Styles</h2>
+
+<p>Add images with at least 1900px x 400px.
+If you want to reduce or increase the height, Adaptable will resize the image automatically.
+There are two possible slider styles each with different markup required:</p>
+
+<p>Original BCU Slider Markup:</p>
+
+<pre><code>&lt;div class="span9"&gt;
+  &lt;h4&gt;Information&lt;/h4&gt;
+    Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do eiusmod tempor incididunt ut labore
+    et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip
+    ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.
+  &lt;/div&gt;
+
+  &lt;div class="span3"&gt;
+  &lt;a href="#" class="submit"&gt;2016/17 Courses &lt;i class="fa-chevron-right fa"&gt;&lt;/i&gt;&lt;/a&gt;
+&lt;/div&gt;
+</code></pre>
+
+<p>Coventry Style Slider Markup</p>
+
+<pre><code>&lt;div class="span6 col-sm-6"&gt;
+&lt;h3&gt;Hand-crafted&lt;/h3&gt; &lt;h4&gt;pixels and code for the Moodle community&lt;/h4&gt;
+&lt;a href="#" class="submit"&gt;Check out our custom theme pricing!&lt;/a&gt;
+&lt;/div&gt;
+</code></pre>
+
+<p>Frontpage Marketing Block HTML structure Coventry</p>
+
+<pre><code>&lt;div&gt;&lt;img src="http://somewebsite.com/2.jpg" class="marketimage"&gt;&lt;/div&gt;
+&lt;h4&gt;&lt;a href="#"&gt;International Courses&lt;/a&gt;&lt;/h4&gt;
+&lt;p&gt;Some text below the link....&lt;/p&gt;
+</code></pre>
+
+<h2>Front page Info Box and Marketing Blocks</h2>
+
+<p>There are two Info blocks in the front page located above and below the Marketing Blocks. These are just for compatibility with the
+old BCU.</p>
+
+<p>It is recommended to use the new marketing blocks builder that allows you to create your own layout and add much more blocks.</p>
+
+<p>There are 8 rows where you can add up to 4 blocks in each with a total of 32 block of different size. See pix/layout.png for
+more information.</p>
+
+<p>You can enter any HTML code to the block, include FA icons, images, videos and apply in-line styles.</p>
+
+<p>Some samples:</p>
+
+<p>Block with solid background, FA icon and some text:</p>
+
+<pre><code>&lt;div style="text-align:center; background: #e6e6e6; height: 350px; padding: 7px;"&gt;
+    &lt;i class="fa fa-paint-brush fa-5x" style="color: #3A454b;"&gt;&lt;/i&gt;
+    &lt;h3&gt;Title &lt;/h3&gt;
+    &lt;div style="text-align:center;"&gt;Add your text here.&lt;/div&gt;
+&lt;/div&gt;
+</code></pre>
+
+<p>Block with border and transparent background:</p>
+
+<pre><code>&lt;div style="text-align:center; height: 350px; padding: 7px; border: 1px solid #3A454b;"&gt;
+    &lt;i class="fa fa-list fa-5x" style="color: #3A454b;"&gt;&lt;/i&gt;
+    &lt;h3&gt;Heading&lt;/h3&gt;
+    &lt;div style="text-align:center; padding: 5px; color: #3A454b;"&gt;Add your text here.&lt;/div&gt;
+&lt;/div&gt;
+</code></pre>
+
+<p>Block with an image:</p>
+
+<pre><code>&lt;div style="height: 350px;"&gt;
+    &lt;img src="http://yoursite/yourimage.jpg" style="vertical-align:text-bottom; margin: 0 .5em;" height="auto" width="100%"&gt;
+    &lt;p style="margin-top: 5px; color: #333333; text-align: center;"&gt;&lt;strong&gt;Add your text here&lt;/strong&gt;&lt;/p&gt;
+&lt;/div&gt;
+</code></pre>
+
+<p>Block with a video:</p>
+
+<pre><code>&lt;div style="background: #606060; height: 350px"&gt;
+    &lt;center&gt;
+    &lt;iframe src="https://www.youtube.com/embed/wop3FMhoLGs" allowfullscreen="" frameborder="0" height="315" width="560"&gt;&lt;/iframe&gt;
+    &lt;/center&gt;
+&lt;/div&gt;
+</code></pre>
+
+<p>Block using multi-lang filter:</p>
+
+<pre><code>&lt;div style="width: 100%; height: 240px; background-color: #cccccc;"&gt;
+&lt;h1 style="text-align: center; line-height: 120px;"&gt;
+      &lt;span class="multilang" lang="en"&gt;text in english&lt;/span&gt;
+      &lt;span class="multilang" lang="es"&gt;texto en espaÃƒÂ±ol&lt;/span&gt;
+      &lt;span class="multilang" lang="fr"&gt;texte en franÃƒÂ§ais&lt;/span&gt;
+      &lt;span class="multilang" lang="ca"&gt;text en catalÃƒ &lt;/span&gt;
+&lt;/div&gt;
+</code></pre>
+
+<h2>Footer Blocks</h2>
+
+<p>You can apply the same HTML/CSS in the footer blocks.</p>
+
+<p>Some samples:</p>
+
+<p>Contact information</p>
+
+<pre><code>&lt;i class="fa fa-building"&gt;&lt;/i&gt;  High St. 100&lt;br&gt;
+&lt;span style="margin-left: 20px;"&gt;123456 City&lt;/span&gt;&lt;br&gt;&lt;br&gt;
+&lt;i class="fa fa-phone"&gt;&lt;/i&gt; +12 (3)456 78 90&lt;br&gt;
+&lt;i class="fa fa-envelope"&gt;&lt;/i&gt; info@mail.com&lt;br&gt;
+&lt;i class="fa fa-globe"&gt;&lt;/i&gt; www.example.com
+</code></pre>
+
+<p>List with Chevron</p>
+
+<pre><code>&lt;ul class="block-list"&gt;
+    &lt;li&gt;&lt;a href="http://moodle.org/"&gt;&lt;span class="fa fa-chevron-right"&gt;&lt;/span&gt;&lt;span&gt;Accessibility&lt;/span&gt;&lt;/a&gt;&lt;/li&gt;
+    &lt;li&gt;&lt;a href="http://moodle.org/"&gt;&lt;span class="fa fa-chevron-right"&gt;&lt;/span&gt;&lt;span&gt;Moodle Help&lt;/span&gt;&lt;/a&gt;&lt;/li&gt;
+    &lt;li&gt;&lt;a href="http://moodle.org/"&gt;&lt;span class="fa fa-chevron-right"&gt;&lt;/span&gt;&lt;span&gt;Moodle Feedback&lt;/span&gt;&lt;/a&gt;&lt;/li&gt;
+    &lt;li&gt;&lt;a href="http://moodle.org/"&gt;&lt;span class="fa fa-chevron-right"&gt;&lt;/span&gt;&lt;span&gt;IT Help&lt;/span&gt;&lt;/a&gt;&lt;/li&gt;
+    &lt;li&gt;&lt;a href="http://moodle.org/"&gt;&lt;span class="fa fa-chevron-right"&gt;&lt;/span&gt;&lt;span&gt;IT Feedback&lt;/span&gt;&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</code></pre>
+
+<h2>Copyright text</h2>
+
+<p>A sample of copyright text using FA icon</p>
+
+<pre><code>Made with &lt;i class="fa fa-heart" style="color: #ff0000;"&gt;&lt;/i&gt; in Europe
+</code></pre>
+
+<h2>News Ticker</h2>
+
+<p>From version 1.3 the news ticker do not need to create an unordered list. Just add paragraphs using 'p' tags:</p>
+
+<pre><code>&lt;p&gt;Configure all the theme colors&lt;/p&gt;
+&lt;p&gt;Use any Google Font for the content, headings and site title&lt;/p&gt;
+&lt;p&gt;Display a logo or a configurable title site&lt;/p&gt;
+&lt;p&gt;Configurable Slideshow&lt;/p&gt;
+&lt;p&gt;Display up to 12 marketing blocks in the front page&lt;/p&gt;
+</code></pre>
+
+<h2>Messages / Notifications</h2>
+
+<p>Moodle 3.2 includes a new system to display messages and notifications in the screen.</p>
+
+<p>The new system displays a hard coded black icons that are difficult to see when using dark background color in the top header.
+In that case, you can use an alternate icons pack using white color.</p>
+
+<p>Login the server by FTP or SFTP and open /theme/adaptable/pix_core/i and
+delete notifications.png and rename notifications-white.png to notifications.png</p>
+
+<p>Then open /theme/adaptable/pix_core/t and delete message.png and
+rename message-white.png to message.png</p>
+
+<p>From moodle 3.6 the messages and notifications has been changed to the called "Messages Drawer".</p>
+
+<h2>Activities icons</h2>
+
+<p>From version 1.4, Adaptable includes its own icons pack that replace the default moodle icons.
+If you don't want to use the icons just remove adaptable/pix_plugins and adaptable/pix_core/f
+You can enable this icons from the administration.</p>
+";

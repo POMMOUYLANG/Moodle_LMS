@@ -1,0 +1,13 @@
+s:1133:"<p>Top menus can be restricted based on custom profile fields (optional).  To add a restriction enter the name of the profile field and expected value.<br /><br />The format of each line is 'text|url|title|langs|fontawesome classes|capability to check'.  Only enter what you require.  If you don't need something but do need another thing further along then leave it blank but still use the '|' delimiter.  For example: 'text|url|||fontawesome classes'.  To find the FontAwesome(Free) classes for the icon you wish to use, go to <a href="https://fontawesome.com/search?o=r&amp;m=free" target="_blank" rel="noreferrer noopener">Font Awesome free</a> and search for the icon.  You can use the name, such as 'graduation-cap' or the complete list of classes 'fa-solid fa-graduation-cap'.  For example:</p>
+
+<pre>
+Courses
+-All courses|/course/
+-Course search|/course/search.php
+-###
+-FAQ|https://example.org/faq
+-Exam Clock|https://mysite.localhost|Exam Clock|en|clock
+-Cloc arholiad|https://mysite.localhost|Cloc arholiad|cy|clock
+Educators|https://mysite.localhost|Educators only|en|graduation-cap|moodle/course:manageactivities
+</pre>
+";

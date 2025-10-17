@@ -1,0 +1,11 @@
+s:893:"<p>The user will be able to create their own favourites menu saved as a user preference.  The format of each line is 'text|url|title|langs|fontawesome classes'.  Only enter what you require.  If you don't need something but do need another thing further along then leave it blank but still use the '|' delimiter.  For example: 'text|url|||fontawesome classes'.  To find the FontAwesome(Free) classes for the icon you wish to use, go to <a href="https://fontawesome.com/search?o=r&amp;m=free" target="_blank" rel="noreferrer noopener">Font Awesome free</a> and search for the icon.  You can use the name, such as 'graduation-cap' or the complete list of classes 'fa-solid fa-graduation-cap'.  For example:</p>
+
+<pre>
+Courses
+-All courses|/course/|||graduation-cap
+-Course search|/course/search.php
+-###
+-FAQ|https://example.org/faq
+-Exam Clock|https://mysite.localhost|Exam Clock||clock
+</pre>
+";
