@@ -1,29 +1,13 @@
 FROM php:8.3-fpm
 
-# Install system dependencies
+# Install required packages
 RUN apt-get update && apt-get install -y \
-    libpng-dev \
-    libjpeg-dev \
-    libfreetype6-dev \
-    libxml2-dev \
-    libzip-dev \
-    zip \
-    unzip \
-    git \
-    libicu-dev \
-    g++ \
-    mariadb-client \
-    && rm -rf /var/lib/apt/lists/*
-
-# Configure and install PHP extensions
-RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install -j$(nproc) gd \
-    && docker-php-ext-install intl \
-    && docker-php-ext-install mysqli \
-    && docker-php-ext-install pdo \
-    && docker-php-ext-install pdo_mysql \
-    && docker-php-ext-install zip \
-    && docker-php-ext-install opcache
+    libpng-dev libjpeg-dev libfreetype6-dev \
+    libxml2-dev libzip-dev zip unzip git \
+    libicu-dev g++ mariadb-client && \
+    docker-php-ext-configure gd --with-freetype --with-jpeg && \
+    docker-php-ext-install gd intl mysqli pdo pdo_mysql zip opcache && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /var/www/html/moodle
