@@ -1,0 +1,63 @@
+version: "3.8"
+
+services:
+  moodle_db:
+    image: mysql:8.4
+    container_name: moodle_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: "Root@123"
+      MYSQL_DATABASE: "moodle_lms"
+    command: --default-authentication-plugin=mysql_native_password
+    volumes:
+      - db_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rtc_net
+
+  moodle_app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: moodle_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./moodle:/var/www/html/moodle
+      - ./moodledata:/var/moodledata
+    environment:
+      TZ: "Asia/Phnom_Penh"
+    networks:
+      - rtc_net
+
+  web:
+    image: nginx:stable
+    container_name: moodle_nginx
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./moodle:/var/www/html:ro
+      - ./moodledata:/var/moodledata:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro # optional SSL directory
+    networks:
+      - rtc_net
+
+volumes:
+  db_data:
+
+networks:
+  rtc_net:
+    driver: true
