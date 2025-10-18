@@ -1,6 +1,6 @@
 FROM php:8.3-fpm
 
-# Install required PHP and system dependencies
+# Install required packages
 RUN apt-get update && apt-get install -y \
     libpng-dev libjpeg-dev libfreetype6-dev \
     libxml2-dev libzip-dev zip unzip git \
@@ -9,15 +9,22 @@ RUN apt-get update && apt-get install -y \
     docker-php-ext-install gd intl mysqli pdo pdo_mysql zip opcache && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Set working directory to Moodle root
-WORKDIR /var/www/html
+# Set working directory
+WORKDIR /var/www/html/moodle
 
-# Copy Moodle source (compose mounts volume, but needed for permissions)
-COPY ./moodle /var/www/html
+# Copy Moodle code
+COPY moodle/ /var/www/html/moodle/
 
-# Set permissions
-RUN chown -R www-data:www-data /var/www/html
+# Copy PHP configuration
+COPY php-config/moodle.ini /usr/local/etc/php/conf.d/moodle.ini
 
+# Create Moodle data directory and fix permissions
+RUN mkdir -p /var/www/moodledata && \
+    chown -R www-data:www-data /var/www/html/moodle /var/www/moodledata && \
+    chmod -R 755 /var/www/html/moodle /var/www/moodledata
+
+# Expose PHP-FPM port
 EXPOSE 9000
 
+# Run PHP-FPM
 CMD ["php-fpm"]
