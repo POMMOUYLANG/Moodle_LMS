@@ -33,7 +33,7 @@ services:
     depends_on:
       - moodle-app
     ports:
-      - "80:80" # Or 8080:80 if you want non-root access
+      - "8800:80" # Or 8080:80 if you want non-root access
     volumes:
       - ./moodle:/var/www/moodle
       - ./moodledata:/var/www/moodledata
