@@ -11,7 +11,7 @@ services:
       - ./moodledata:/var/www/moodledata
     environment:
       - MOODLE_DOCKER_DBHOST=db
-      - MOODLE_DOCKER_DBUSER=moodle
+      - MOODLE_DOCKER_DBUSER=root
       - MOODLE_DOCKER_DBPASS=Root@123
       - MOODLE_DOCKER_DBNAME=moodle_lms
     networks:
@@ -35,7 +35,7 @@ services:
     image: mysql:8.4
     container_name: moodle-db
     restart: always
-    command: --default-authentication-plugin=mysql_native_password
+    command: --default-authentication-plugin=caching_sha2_password
     environment:
       MYSQL_ROOT_PASSWORD: Root@123
       MYSQL_DATABASE: moodle_lms
