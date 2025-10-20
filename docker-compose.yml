@@ -31,7 +31,7 @@ services:
     networks:
       - rtc_net
 
-  db:
+  moodle-db:
     image: mysql:8.4
     container_name: moodle-db
     restart: always
