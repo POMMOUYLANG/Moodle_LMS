@@ -35,12 +35,12 @@ services:
     image: mysql:8.4
     container_name: moodle-db
     restart: always
-    command: --default-authentication-plugin=caching_sha2_password
+    # command: --default-authentication-plugin=caching_sha2_password
     environment:
       MYSQL_ROOT_PASSWORD: Root@123
       MYSQL_DATABASE: moodle_lms
-      MYSQL_USER: root
-      MYSQL_PASSWORD: Root@123
+      # MYSQL_USER: root
+      # MYSQL_PASSWORD: Root@123
     volumes:
       - db_data:/var/lib/mysql
     networks:
