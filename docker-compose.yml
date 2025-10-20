@@ -51,4 +51,4 @@ volumes:
 
 networks:
   rtc_net:
-    driver: true
+    external: true
