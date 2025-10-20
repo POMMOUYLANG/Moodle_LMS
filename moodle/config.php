@@ -6,9 +6,9 @@ $CFG = new stdClass();
 
 $CFG->dbtype    = 'mysqli';
 $CFG->dblibrary = 'native';
-$CFG->dbhost    = 'db'; // name of service in docker-compose
+$CFG->dbhost    = 'db'; // service name in docker-compose
 $CFG->dbname    = 'moodle_lms';
-$CFG->dbuser    = 'root';
+$CFG->dbuser    = 'moodle';
 $CFG->dbpass    = 'Root@123';
 $CFG->prefix    = 'mdl_';
 $CFG->dboptions = array(
@@ -24,5 +24,3 @@ $CFG->admin     = 'admin';
 $CFG->directorypermissions = 0777;
 
 require_once(__DIR__ . '/lib/setup.php');
-
-// No closing PHP tag to avoid whitespace issues
