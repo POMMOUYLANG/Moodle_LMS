@@ -18,7 +18,7 @@ $CFG->dboptions = array(
   'dbcollation' => 'utf8mb4_unicode_ci',
 );
 
-$CFG->wwwroot   = 'https://rtc-bb.camai.kh/moodle';
+$CFG->wwwroot   = 'http://rtc-bb.camai.kh/moodle';
 $CFG->dataroot  = '/var/www/moodledata';
 $CFG->admin     = 'admin';
 $CFG->directorypermissions = 0777;
