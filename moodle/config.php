@@ -6,7 +6,7 @@ $CFG = new stdClass();
 
 $CFG->dbtype    = 'mysqli';
 $CFG->dblibrary = 'native';
-$CFG->dbhost    = 'db'; // service name in docker-compose
+$CFG->dbhost    = 'moodle-db'; // service name in docker-compose
 $CFG->dbname    = 'moodle_lms';
 $CFG->dbuser    = 'root';
 $CFG->dbpass    = 'Root@123';

@@ -5,12 +5,12 @@ services:
       dockerfile: Dockerfile
     container_name: moodle-app
     depends_on:
-      - db
+      - moodle-db
     volumes:
       - ./moodle:/var/www/html/moodle
       - ./moodledata:/var/www/moodledata
     environment:
-      - MOODLE_DOCKER_DBHOST=db
+      - MOODLE_DOCKER_DBHOST=moodle-db
       - MOODLE_DOCKER_DBUSER=root
       - MOODLE_DOCKER_DBPASS=Root@123
       - MOODLE_DOCKER_DBNAME=moodle_lms
