@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   moodle-app:
     image: php:8.3-fpm
@@ -16,7 +14,7 @@ services:
       - rtc_net
 
   moodle-db:
-    image: mysql:8.0
+    image: mysql:8.4
     container_name: moodle-db
     restart: always
     environment:
