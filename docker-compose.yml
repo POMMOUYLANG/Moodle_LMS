@@ -8,8 +8,8 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: Root@123
       MYSQL_DATABASE: moodle_lms
-      MYSQL_USER: moodle
-      MYSQL_PASSWORD: moodle
+      MYSQL_USER: root
+      MYSQL_PASSWORD: Root@123
     volumes:
       - db_data:/var/lib/mysql
     networks:
@@ -37,7 +37,7 @@ services:
     depends_on:
       - moodle-app
     ports:
-      - "8800:80"
+      - "80:80"
     volumes:
       - ./moodle:/var/www/moodle
       - ./moodledata:/var/www/moodledata
