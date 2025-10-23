@@ -1,8 +1,0 @@
-s:898:"<p>The course certificate module provides an opportunity for learners to celebrate achievements by
- obtaining certificates.<br /><br /> It allows you to choose from different certificate templates which will automatically display user data
- such as full name, course, etc. <br /><br /> Users will be able to download a PDF copy of the certificate themselves by accessing this
- activity, and there are options to send a PDF copy to them by email automatically.<br /><br />If the template used on this activity contains
- a QR code, users will be able to scan it to validate their certificates.</p>
-
-<div class="helpdoclink"><a href="https://docs.moodle.org/500/en/mod/coursecertificate/view" target="_blank" rel="noreferrer noopener"><i class="afaicon fa fa-book fa-fw"></i>More help<i class="afaicon fa fa-arrow-up-right-from-square fa-externallink fa-fw" title="Opens in new window"></i></a></div>
-";
