@@ -35,7 +35,7 @@ services:
     depends_on:
       - moodle-app
     ports:
-      - "80:80"
+      - "8080:80"
     volumes:
       - ./moodle:/var/www/moodle
       - ./moodledata:/var/www/moodledata
