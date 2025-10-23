@@ -1,10 +1,27 @@
+version: "3.9"
+
 services:
+  moodle-db:
+    image: mysql:8.4
+    container_name: moodle-db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: Root@123
+      MYSQL_DATABASE: moodle_lms
+      MYSQL_USER: moodle
+      MYSQL_PASSWORD: moodle
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - rtc_net
+
   moodle-app:
-    image: php:8.3-fpm
-    container_name: moodle-app
     build:
       context: .
       dockerfile: Dockerfile
+    image: moodle-php:8.3-fpm
+    container_name: moodle-app
+    restart: always
     depends_on:
       - moodle-db
     volumes:
@@ -13,25 +30,14 @@ services:
     networks:
       - rtc_net
 
-  moodle-db:
-    image: mysql:8.4
-    container_name: moodle-db
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: Root@123
-      MYSQL_DATABASE: moodle_lms
-    volumes:
-      - db_data:/var/lib/mysql
-    networks:
-      - rtc_net
-
   moodle-nginx:
     image: nginx:latest
     container_name: moodle-nginx
-    depends_on: 
+    restart: always
+    depends_on:
       - moodle-app
     ports:
-      - "8800:80" # Or 8080:80 if you want non-root access
+      - "8800:80"
     volumes:
       - ./moodle:/var/www/moodle
       - ./moodledata:/var/www/moodledata
