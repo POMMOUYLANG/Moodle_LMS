@@ -6,8 +6,8 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: Root@123
       MYSQL_DATABASE: moodle_lms
-      # MYSQL_USER: root
-      # MYSQL_PASSWORD: Root@123
+      MYSQL_USER: root
+      MYSQL_PASSWORD: Root@123
     volumes:
       - db_data:/var/lib/mysql
     networks:
@@ -23,7 +23,7 @@ services:
     depends_on:
       - moodle-db
     volumes:
-      - ./moodle:/var/www/moodle/
+      - ./moodle:/var/www/moodle
       - ./moodledata:/var/www/moodledata
     networks:
       - rtc_net
@@ -36,7 +36,7 @@ services:
       - moodle-app
     ports: []
     volumes:
-      - ./moodle:/var/www/moodle/
+      - ./moodle:/var/www/moodle
       - ./moodledata:/var/www/moodledata
       - ./nginx.conf:/etc/nginx/conf.d/default.conf
     networks:
