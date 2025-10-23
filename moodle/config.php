@@ -3,7 +3,7 @@ unset($CFG);
 global $CFG;
 $CFG = new stdClass();
 
-$CFG->wwwroot   = 'http://rtc-bb.camai.kh/moodle';
+$CFG->wwwroot   = 'https://rtc-bb.camai.kh/moodle';
 $CFG->dataroot  = '/var/www/moodledata';
 
 $CFG->dbtype    = 'mysqli';

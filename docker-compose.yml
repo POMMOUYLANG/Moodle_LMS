@@ -6,8 +6,8 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: Root@123
       MYSQL_DATABASE: moodle_lms
-      MYSQL_USER: root
-      MYSQL_PASSWORD: Root@123
+      MYSQL_USER: moodle
+      MYSQL_PASSWORD: Moodle@123
     volumes:
       - db_data:/var/lib/mysql
     networks:
