@@ -34,8 +34,8 @@ services:
     restart: always
     depends_on:
       - moodle-app
-    ports:
-      - "80:80"  # <-- enable port 80 for your domain
+    # ports:
+    #   - "80:80"  # <-- enable port 80 for your domain
     volumes:
       - ./moodle:/var/www/moodle
       - ./moodledata:/var/www/moodledata
