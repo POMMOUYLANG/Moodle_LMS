@@ -23,7 +23,7 @@ services:
     depends_on:
       - moodle-db
     volumes:
-      - ./moodle:/var/www/moodle
+      - ./moodle:/var/www/moodle/
       - ./moodledata:/var/www/moodledata
     networks:
       - rtc_net
@@ -36,7 +36,7 @@ services:
       - moodle-app
     ports: []
     volumes:
-      - ./moodle:/var/www/moodle
+      - ./moodle:/var/www/moodle/
       - ./moodledata:/var/www/moodledata
       - ./nginx.conf:/etc/nginx/conf.d/default.conf
     networks:
