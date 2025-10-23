@@ -28,7 +28,7 @@ services:
   moodle-nginx:
     image: nginx:latest
     container_name: moodle-nginx
-    depends_on:
+    depends_on: 
       - moodle-app
     ports:
       - "8800:80" # Or 8080:80 if you want non-root access
