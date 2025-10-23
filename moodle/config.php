@@ -9,7 +9,7 @@ $CFG->dbhost    = 'moodle-db';      // Docker service name
 $CFG->dbname    = 'moodle_lms';
 $CFG->dbuser    = 'moodle';
 $CFG->dbpass    = 'Moodle@123';     // whatever you set in docker-compose.yml
-$CFG->wwwroot = 'https://moodle.rtc-bb.camai.kh';
+$CFG->wwwroot   = 'http://moodle.rtc-bb.camai.kh/';
 $CFG->dataroot  = '/var/moodledata';
 $CFG->admin     = 'admin';
 
