@@ -5,11 +5,12 @@ $CFG = new stdClass();
 
 $CFG->dbtype    = 'mysqli';
 $CFG->dblibrary = 'native';
-$CFG->dbhost    = 'moodle-db';      // Docker service name
+$CFG->dbhost    = 'moodle-db';     
 $CFG->dbname    = 'moodle_lms';
 $CFG->dbuser    = 'moodle';
-$CFG->dbpass    = 'Moodle@123';     // whatever you set in docker-compose.yml
-$CFG->wwwroot   = 'http://rtc-bb.camai.kh/moodle';
+$CFG->dbpass    = 'Moodle@123';      
+// $CFG->wwwroot   = 'http://rtc-bb.camai.kh/moodle';
+$CFG->wwwroot   = 'http://moodle.rtc-bb.camai.kh';
 $CFG->dataroot  = '/var/moodledata';
 $CFG->admin     = 'admin';
 
