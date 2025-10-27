@@ -8,6 +8,8 @@ services:
       MYSQL_DATABASE: moodle_lms
       MYSQL_USER: moodle
       MYSQL_PASSWORD: Moodle@123
+    ports:
+      - "3311:3306"
     volumes:
       - db_data:/var/lib/mysql
     networks:
