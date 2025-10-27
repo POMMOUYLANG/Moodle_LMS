@@ -20,6 +20,7 @@ $CFG->dboptions = array (
 
 $CFG->wwwroot   = 'https://moodle.rtc-bb.camai.kh';
 $CFG->dataroot  = '/var/www/moodledata';
+$CFG->dirroot   = '/var/www/moodle';
 $CFG->admin     = 'admin';
 
 $CFG->directorypermissions = 0777;
