@@ -27,5 +27,10 @@ $CFG->directorypermissions = 0777;
 
 require_once(__DIR__ . '/lib/setup.php');
 
+
+if (isloggedin() && !isguestuser()) {
+    redirect($CFG->wwwroot . '/my/');
+}
+
 // There is no php closing tag in this file,
 // it is intentional because it prevents trailing whitespace problems!
