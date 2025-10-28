@@ -25,7 +25,7 @@ services:
     depends_on:
       - moodle-db
     volumes:
-      - ./moodle:/var/www/html
+      - ./moodle:/var/www/html/moodle
       - ./moodledata:/var/www/moodledata
     networks:
       - rtc_net
