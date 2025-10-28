@@ -19,7 +19,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: moodle-php:8.3-fpm
+    image: moodle-php:8.3
     container_name: moodle-app
     restart: always
     depends_on:
