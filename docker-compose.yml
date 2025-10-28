@@ -25,10 +25,11 @@ services:
     depends_on:
       - moodle-db
     volumes:
-      - ./moodle:/var/www/html/moodle
+      - ./moodle:/var/www/html         # ✅ change this line
       - ./moodledata:/var/www/moodledata
     networks:
       - rtc_net
+
 
 volumes:
   db_data:
