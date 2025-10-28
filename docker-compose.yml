@@ -24,8 +24,6 @@ services:
     restart: always
     depends_on:
       - moodle-db
-    ports:
-      - "8080:80"
     volumes:
       - ./moodle:/var/www/html
       - ./moodledata:/var/www/moodledata
