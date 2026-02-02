@@ -19,6 +19,8 @@ $CFG->dboptions = array (
 );
 
 $CFG->wwwroot   = 'https://moodle.rtc-bb.camai.kh';
+$CFG->sslproxy  = true;
+$CFG->reverseproxy = false;    
 $CFG->dataroot  = '/var/www/moodledata';
 $CFG->dirroot   = '/var/www/html';
 $CFG->admin     = 'admin';
