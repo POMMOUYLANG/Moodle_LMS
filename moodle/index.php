@@ -170,6 +170,41 @@ function rtc_autologin_to_moodle($token)
     $SESSION->rtc_email = $email;
     $SESSION->rtc_idcard = $idcard;
 
+    // 3.5) Role mapping and assignment
+    $rtcrole = $rtcuser['role'] ?? ($detail['role'] ?? 'student');
+    rtc_log_debug("RTC role detected: {$rtcrole}");
+
+    $roleid = 5; // Default to Student
+    $rtcrole_lower = core_text::strtolower(trim($rtcrole));
+    switch ($rtcrole_lower) {
+        case 'admin':
+        case 'administrator':
+            $roleid = 1; // Manager
+            break;
+        case 'teacher':
+        case 'instructor':
+        case 'staff':
+            $roleid = 3; // Editing teacher
+            break;
+        case 'student':
+        case 'learner':
+        case 'user':
+        default:
+            $roleid = 5; // Student
+            break;
+    }
+
+    $systemcontext = context_system::instance();
+    // Assign role at system context if not already assigned
+    if (!is_siteadmin($muser->id)) {
+        // Check if role is already assigned to avoid duplicates (though role_assign handles basic cases)
+        $existing_ra = $DB->get_record('role_assignments', ['roleid' => $roleid, 'userid' => $muser->id, 'contextid' => $systemcontext->id]);
+        if (!$existing_ra) {
+            role_assign($roleid, $muser->id, $systemcontext->id);
+            rtc_log_debug("Assigned Moodle role ID {$roleid} (from RTC role: {$rtcrole}) to user {$muser->id} at system context.");
+        }
+    }
+
     rtc_log_debug("✅ Moodle auto-login success: {$email}");
     return true;
 }
@@ -182,7 +217,7 @@ if (isloggedin() && !isguestuser() && $sessionToken) {
     if (!$cookieToken) {
         rtc_log_debug("Cookie removed but Moodle session exists => logging out.");
         require_logout();
-        redirect(new moodle_url('/login/index.php'));
+        redirect(new moodle_url('/'));
     } else if ($cookieToken !== $sessionToken) {
         rtc_log_debug("Token mismatch => relogin with new token.");
         require_logout();
@@ -195,7 +230,7 @@ if (isloggedin() && !isguestuser() && $sessionToken) {
 if (!isloggedin() || isguestuser()) {
     if (!empty($rtctoken)) {
         if (rtc_autologin_to_moodle($rtctoken)) {
-            redirect(new moodle_url('/my/'));
+            redirect(new moodle_url('/my/   '));
         } else {
             rtc_log_debug("Auto-login failed; continue Moodle normal flow.");
         }
