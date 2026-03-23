@@ -1,14 +1,13 @@
 services:
-  db:
-    image: mysql:8.0
-    container_name: moodledb
+  moodle-db:
+    image: mysql:8.4
+    container_name: moodle-db
     restart: always
-    environment:           # ✅ environment must be here, under the service
-      MYSQL_ROOT_PASSWORD: 123456
-      MYSQL_DATABASE: moodle
-      MYSQL_USER: moodleuser
-      MYSQL_PASSWORD: moodlepass
-    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: Root@123
+      MYSQL_DATABASE: moodle_lms
+      MYSQL_USER: moodle
+      MYSQL_PASSWORD: Moodle@123
     ports:
       - "3311:3306"
     volumes:
@@ -16,32 +15,25 @@ services:
     networks:
       - rtc_net
 
-  php:
-    build: ./php
-    container_name: moodle_php
-    volumes:
-      - ./moodle:/var/www/html
-      - ./moodledata:/var/moodledata
-    networks:
-      - rtc_net
-
-  nginx:
-    image: nginx:latest
-    container_name: moodle_nginx
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./moodle:/var/www/html
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
-      - ./moodledata:/var/moodledata
+  moodle-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: moodle-php:8.3
+    container_name: moodle-app
+    restart: always
     depends_on:
-      - php
+      - moodle-db
+    volumes:
+      - ./moodle:/var/www/html         # ✅ change this line
+      - ./moodledata:/var/www/moodledata
     networks:
       - rtc_net
 
-networks:
-  rtc_net:
-    driver: bridge
 
 volumes:
   db_data:
+
+networks:
+  rtc_net:
+    external: true
