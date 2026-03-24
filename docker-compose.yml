@@ -14,7 +14,7 @@ services:
     volumes:
       - db_data:/var/lib/mysql
     networks:
-      - rtc_nets
+      - rtc_net
 
   php:
     build: ./php
@@ -24,6 +24,7 @@ services:
       MYSQL_DATABASE: moodle
       MYSQL_USER: moodleuser
       MYSQL_PASSWORD: moodlepass
+      GATEWAY_API_DOMAIN: ${GATEWAY_API_DOMAIN:-api.kp-rtc-edu.com}
       GATEWAY_MOODLE_DOMAIN: lms.kc-rtc-edu.com
     volumes:
       - ./moodle:/var/www/html

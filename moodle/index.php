@@ -63,10 +63,42 @@ if (!empty($rtctoken)) {
     rtc_log_debug("Token detected: " . substr($rtctoken, 0, 25) . "...");
 }
 
+function rtc_env(string $name, string $default = ''): string
+{
+    $value = getenv($name);
+    return $value !== false && $value !== '' ? $value : $default;
+}
+
+function rtc_api_base_url(): string
+{
+    static $url = null;
+
+    if ($url !== null) {
+        return $url;
+    }
+
+    $configuredUrl = rtrim(rtc_env('RTC_API_BASE_URL', ''), '/');
+    if ($configuredUrl !== '') {
+        $url = $configuredUrl;
+        return $url;
+    }
+
+    $gatewayApiDomain = rtc_env('GATEWAY_API_DOMAIN', '');
+    if ($gatewayApiDomain !== '') {
+        $url = strpos($gatewayApiDomain, 'http') === 0
+            ? rtrim($gatewayApiDomain, '/')
+            : 'https://' . $gatewayApiDomain;
+        return $url;
+    }
+
+    $url = 'http://backend-webserver';
+    return $url;
+}
+
 // 2) Call RTC API to get user detail
 function rtc_fetch_user_detail($token)
 {
-    $url = "https://api.rtc-bb.camai.kh/api/auth/get_detail_user";
+    $url = rtc_api_base_url() . "/api/auth/get_detail_user";
 
     $ch = curl_init($url);
     curl_setopt_array($ch, [
