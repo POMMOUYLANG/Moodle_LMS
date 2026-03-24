@@ -3,7 +3,7 @@ services:
     image: mysql:8.0
     container_name: moodledb
     restart: always
-    environment:           # ✅ environment must be here, under the service
+    environment: # ✅ environment must be here, under the service
       MYSQL_ROOT_PASSWORD: 123456
       MYSQL_DATABASE: moodle
       MYSQL_USER: moodleuser
@@ -14,11 +14,17 @@ services:
     volumes:
       - db_data:/var/lib/mysql
     networks:
-      - rtc_net
+      - rtc_nets
 
   php:
     build: ./php
     container_name: moodle_php
+    environment:
+      DB_HOST: db
+      MYSQL_DATABASE: moodle
+      MYSQL_USER: moodleuser
+      MYSQL_PASSWORD: moodlepass
+      GATEWAY_MOODLE_DOMAIN: lms.kc-rtc-edu.com
     volumes:
       - ./moodle:/var/www/html
       - ./moodledata:/var/moodledata

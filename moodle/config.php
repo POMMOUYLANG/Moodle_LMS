@@ -6,10 +6,10 @@ $CFG = new stdClass();
 
 $CFG->dbtype    = 'mysqli';
 $CFG->dblibrary = 'native';
-$CFG->dbhost    = 'db';
-$CFG->dbname    = 'moodle';
-$CFG->dbuser    = 'moodleuser';
-$CFG->dbpass    = 'moodlepass';
+$CFG->dbhost    = getenv('DB_HOST') ?: 'db';
+$CFG->dbname    = getenv('MYSQL_DATABASE') ?: 'moodle';
+$CFG->dbuser    = getenv('MYSQL_USER') ?: 'moodleuser';
+$CFG->dbpass    = getenv('MYSQL_PASSWORD') ?: 'moodlepass';
 $CFG->prefix    = 'mdl_';
 $CFG->dboptions = array(
   'dbpersist' => 0,
@@ -18,7 +18,8 @@ $CFG->dboptions = array(
   'dbcollation' => 'utf8mb4_unicode_ci',
 );
 
-$CFG->wwwroot   = 'https://lms.kc-rtc-edu.com';
+$domain = getenv('GATEWAY_MOODLE_DOMAIN') ?: 'lms.kc-rtc-edu.com';
+$CFG->wwwroot = (strpos($domain, 'http') === 0) ? $domain : 'https://' . $domain;
 $CFG->sslproxy  = true;
 $CFG->reverseproxy = false;
 $CFG->dataroot  = '/var/moodledata';
