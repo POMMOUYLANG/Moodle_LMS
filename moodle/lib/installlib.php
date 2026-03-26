@@ -80,6 +80,31 @@ function install_guess_wwwroot() {
 }
 
 /**
+ * Returns the preferred dataroot for this environment.
+ *
+ * Docker deployments in this repo mount Moodle data at /var/moodledata,
+ * which differs from Moodle's default relative guess of ../moodledata.
+ *
+ * @param string $fallback
+ * @return string
+ */
+function install_default_dataroot($fallback) {
+    $configured = getenv('MOODLE_DATA_ROOT');
+    if ($configured !== false) {
+        $configured = trim($configured);
+        if ($configured !== '') {
+            return rtrim($configured, "/\\");
+        }
+    }
+
+    if (DIRECTORY_SEPARATOR === '/' && is_dir('/var')) {
+        return '/var/moodledata';
+    }
+
+    return $fallback;
+}
+
+/**
  * Copy of @see{ini_get_bool()}
  * @param string $ini_get_arg
  * @return bool

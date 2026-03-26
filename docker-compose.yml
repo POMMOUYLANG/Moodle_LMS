@@ -24,6 +24,7 @@ services:
       MYSQL_DATABASE: moodle
       MYSQL_USER: moodleuser
       MYSQL_PASSWORD: moodlepass
+      MOODLE_DATA_ROOT: /var/moodledata
       GATEWAY_API_DOMAIN: ${GATEWAY_API_DOMAIN:-api.kp-rtc-edu.com}
       GATEWAY_MOODLE_DOMAIN: lms.kc-rtc-edu.com
     volumes:

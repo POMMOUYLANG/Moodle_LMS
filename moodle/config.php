@@ -22,7 +22,7 @@ $domain = getenv('GATEWAY_MOODLE_DOMAIN') ?: 'lms.kc-rtc-edu.com';
 $CFG->wwwroot = (strpos($domain, 'http') === 0) ? $domain : 'https://' . $domain;
 $CFG->sslproxy  = true;
 $CFG->reverseproxy = true;
-$CFG->dataroot  = '/var/moodledata';
+$CFG->dataroot  = getenv('MOODLE_DATA_ROOT') ?: '/var/moodledata';
 $CFG->dirroot   = '/var/www/html';
 $CFG->admin     = 'admin';
 

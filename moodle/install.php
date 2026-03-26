@@ -242,7 +242,7 @@ $hint_database = '';
 
 //first time here? find out suitable dataroot
 if (is_null($CFG->dataroot)) {
-    $CFG->dataroot = __DIR__.'/../moodledata';
+    $CFG->dataroot = install_default_dataroot(__DIR__.'/../moodledata');
 
     $i = 0; //safety check - dirname might return some unexpected results
     while(is_dataroot_insecure()) {
