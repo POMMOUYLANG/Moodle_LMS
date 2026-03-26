@@ -35,6 +35,7 @@ Then finish the application installation from the browser:
 
 Use these values in the Moodle installer:
 
+- Data directory: `/var/moodledata`
 - Database type: `mysqli`
 - Database host: `moodle-db`
 - Database name: `moodle_lms`
@@ -46,12 +47,11 @@ Use these values in the Moodle installer:
 To remove the current Moodle DB volume and start again:
 
 ```bash
-docker compose --env-file ../.env down
-docker volume rm "${CONTAINER_PREFIX}-moodle_db_data"
+docker compose --env-file ../.env down -v
 docker compose --env-file ../.env up -d
 ```
 
-If you also want to reset uploaded files and generated Moodle state, review the contents of `moodledata/` before deleting anything manually.
+Moodle data is stored in the Docker volume mounted at `/var/moodledata`, not in the repo checkout.
 
 ## Useful Commands
 

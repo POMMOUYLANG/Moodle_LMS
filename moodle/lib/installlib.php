@@ -47,7 +47,22 @@ define('INSTALL_SAVE',          6);
  */
 function install_guess_wwwroot() {
     $wwwroot = '';
-    if (empty($_SERVER['HTTPS']) or $_SERVER['HTTPS'] == 'off') {
+
+    $forwardedproto = $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '';
+    if (strpos($forwardedproto, ',') !== false) {
+        $forwardedproto = trim(explode(',', $forwardedproto)[0]);
+    }
+
+    $ishttps = false;
+    if (!empty($forwardedproto)) {
+        $ishttps = (strtolower($forwardedproto) === 'https');
+    } else if (!empty($_SERVER['HTTP_X_FORWARDED_SSL'])) {
+        $ishttps = (strtolower($_SERVER['HTTP_X_FORWARDED_SSL']) === 'on');
+    } else if (!empty($_SERVER['HTTPS']) and $_SERVER['HTTPS'] != 'off') {
+        $ishttps = true;
+    }
+
+    if (!$ishttps) {
         $wwwroot .= 'http://';
     } else {
         $wwwroot .= 'https://';
