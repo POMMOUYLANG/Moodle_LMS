@@ -570,13 +570,22 @@ trait core_renderer_layout {
         $secondarynavigation = '';
         $overflow = '';
         if ($this->page->has_secondary_navigation()) {
+            $secondaryview = $this->page->secondarynav;
             $tablistnav = $this->page->has_tablist_secondary_navigation();
-            $moremenu = new \core\navigation\output\more_menu($this->page->secondarynav, 'nav-tabs', true, $tablistnav);
+            $moremenu = new \core\navigation\output\more_menu($secondaryview, 'nav-tabs', true, $tablistnav);
             $secondarynavigation = $moremenu->export_for_template($this);
             if (!empty($secondarynavigation)) {
                 $secondarynavigation = $this->render_from_template('theme_adaptable/secondarynav', $secondarynavigation);
 
-                $overflowdata = $this->page->secondarynav->get_overflow_menu_data();
+                try {
+                    $overflowdata = $secondaryview->get_overflow_menu_data();
+                } catch (\Throwable $exception) {
+                    debugging(
+                        'Skipping Adaptable secondary navigation overflow: ' . $exception->getMessage(),
+                        DEBUG_DEVELOPER
+                    );
+                    $overflowdata = null;
+                }
                 if (!is_null($overflowdata)) {
                     $overflow = $overflowdata->export_for_template($this);
                     $overflow = $this->render_from_template('theme_adaptable/overflow', $overflow);
