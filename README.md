@@ -44,6 +44,7 @@ Then finish the application installation from the browser:
 - Local/internal route: `http://moodle.rtc-kp.localhost`
 
 `./setup_moodle.sh` now generates `Moodle_LMS/moodle/config.php` automatically when it is missing, so the browser installer does not need write access to create that file inside the bind-mounted repo checkout.
+For the shared Caddy deployment, Moodle should keep `sslproxy=true` but `reverseproxy=false` by default, because Caddy forwards the public host header directly.
 
 Use these values in the Moodle installer for the shared root deployment:
 

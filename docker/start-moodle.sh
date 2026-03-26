@@ -8,9 +8,8 @@ DATA_ROOT="${MOODLE_DATA_ROOT:-/var/moodledata}"
 mkdir -p "${DATA_ROOT}"
 chown -R www-data:www-data "${DATA_ROOT}"
 
-if [[ ! -f "${CONFIG_FILE}" ]]; then
-  echo "Generating Moodle config.php from container environment..."
-  cat > "${CONFIG_FILE}" <<'PHP'
+echo "Writing Moodle config.php from container environment..."
+cat > "${CONFIG_FILE}" <<'PHP'
 <?php  // Moodle configuration file
 
 unset($CFG);
@@ -33,8 +32,8 @@ $CFG->dboptions = array(
 
 $domain = getenv('GATEWAY_MOODLE_DOMAIN') ?: 'lms.kp-rtc-edu.com';
 $CFG->wwwroot = (strpos($domain, 'http') === 0) ? $domain : 'https://' . $domain;
-$CFG->sslproxy = true;
-$CFG->reverseproxy = true;
+$CFG->sslproxy = filter_var(getenv('MOODLE_SSL_PROXY') ?: 'true', FILTER_VALIDATE_BOOLEAN);
+$CFG->reverseproxy = filter_var(getenv('MOODLE_REVERSE_PROXY') ?: 'false', FILTER_VALIDATE_BOOLEAN);
 $CFG->dataroot = getenv('MOODLE_DATA_ROOT') ?: '/var/moodledata';
 $CFG->dirroot = '/var/www/html';
 $CFG->admin = 'admin';
@@ -43,7 +42,6 @@ $CFG->directorypermissions = 0777;
 
 require_once(__DIR__ . '/lib/setup.php');
 PHP
-fi
 
 chown www-data:www-data "${CONFIG_FILE}"
 chmod 664 "${CONFIG_FILE}"
