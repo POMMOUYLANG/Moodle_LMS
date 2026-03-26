@@ -66,6 +66,16 @@ docker compose --env-file ../.env up -d
 
 Moodle data is stored in the Docker volume mounted at `/var/moodledata`, not in the repo checkout.
 
+For the shared root deployment and GitHub Actions flow, use:
+
+```bash
+./setup_moodle.sh --reset-moodle-db
+./setup_moodle.sh --reset-moodle-data
+./setup_moodle.sh --reset-moodle-db --reset-moodle-data
+```
+
+There is also a dedicated GitHub Actions workflow named `Moodle Setup` for CI/CD-driven re-setup and resets.
+
 ## Useful Commands
 
 Show logs:
