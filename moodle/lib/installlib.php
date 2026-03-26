@@ -105,6 +105,79 @@ function install_default_dataroot($fallback) {
 }
 
 /**
+ * Returns a trimmed environment value or the provided fallback when empty.
+ *
+ * @param array $names
+ * @param string $fallback
+ * @return string
+ */
+function install_env_default(array $names, $fallback) {
+    foreach ($names as $name) {
+        $value = getenv($name);
+        if ($value === false) {
+            continue;
+        }
+
+        $value = trim((string) $value);
+        if ($value !== '') {
+            return $value;
+        }
+    }
+
+    return $fallback;
+}
+
+/**
+ * Returns the preferred database host for this environment.
+ *
+ * @param string $fallback
+ * @return string
+ */
+function install_default_dbhost($fallback) {
+    return install_env_default(['MOODLE_DB_HOST', 'DB_HOST'], $fallback);
+}
+
+/**
+ * Returns the preferred database name for this environment.
+ *
+ * @param string $fallback
+ * @return string
+ */
+function install_default_dbname($fallback) {
+    return install_env_default(['MOODLE_DB_NAME', 'MYSQL_DATABASE'], $fallback);
+}
+
+/**
+ * Returns the preferred database user for this environment.
+ *
+ * @param string $fallback
+ * @return string
+ */
+function install_default_dbuser($fallback) {
+    return install_env_default(['MOODLE_DB_USER', 'MYSQL_USER'], $fallback);
+}
+
+/**
+ * Returns the preferred database password for this environment.
+ *
+ * @param string $fallback
+ * @return string
+ */
+function install_default_dbpass($fallback) {
+    return install_env_default(['MOODLE_DB_PASSWORD', 'MYSQL_PASSWORD'], $fallback);
+}
+
+/**
+ * Returns the preferred database port for this environment.
+ *
+ * @param string $fallback
+ * @return string
+ */
+function install_default_dbport($fallback) {
+    return install_env_default(['MOODLE_DB_PORT', 'DB_PORT'], $fallback);
+}
+
+/**
  * Copy of @see{ini_get_bool()}
  * @param string $ini_get_arg
  * @return bool

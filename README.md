@@ -19,10 +19,20 @@ This compose file joins the shared Docker network `rtc_net`, so that network mus
 
 ## Database Settings
 
+For the shared root deployment used by `./deploy.sh` and GitHub Actions:
+
+- database host: run `./sync-compose.sh --service moodle-db`
 - database name: `moodle_lms`
 - database user: `moodle`
 - database password: `Moodle@123`
 - MySQL root password: `Root@123`
+
+For the standalone `Moodle_LMS/docker-compose.yml` only:
+
+- database host: `db`
+- database name: `moodle`
+- database user: `moodleuser`
+- database password: `moodlepass`
 
 ## First-Time Setup
 
@@ -33,11 +43,13 @@ Then finish the application installation from the browser:
 - Production: `https://moodle.rtc-kp.camai.kh`
 - Local/internal route: `http://moodle.rtc-kp.localhost`
 
-Use these values in the Moodle installer:
+`./setup_moodle.sh` now generates `Moodle_LMS/moodle/config.php` automatically when it is missing, so the browser installer does not need write access to create that file inside the bind-mounted repo checkout.
+
+Use these values in the Moodle installer for the shared root deployment:
 
 - Data directory: `/var/moodledata`
 - Database type: `mysqli`
-- Database host: `moodle-db`
+- Database host: the value from `./sync-compose.sh --service moodle-db`
 - Database name: `moodle_lms`
 - Database user: `moodle`
 - Database password: `Moodle@123`

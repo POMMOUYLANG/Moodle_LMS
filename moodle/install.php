@@ -145,12 +145,12 @@ if (!empty($_POST)) {
     $config->stage    = INSTALL_WELCOME;
 
     $config->dbtype   = empty($distro->dbtype) ? '' : $distro->dbtype; // let distro skip dbtype selection
-    $config->dbhost   = empty($distro->dbhost) ? 'localhost' : $distro->dbhost; // let distros set dbhost
-    $config->dbuser   = empty($distro->dbuser) ? '' : $distro->dbuser; // let distros set dbuser
-    $config->dbpass   = '';
-    $config->dbname   = 'moodle';
+    $config->dbhost   = install_default_dbhost(empty($distro->dbhost) ? 'localhost' : $distro->dbhost); // let distros set dbhost
+    $config->dbuser   = install_default_dbuser(empty($distro->dbuser) ? '' : $distro->dbuser); // let distros set dbuser
+    $config->dbpass   = install_default_dbpass('');
+    $config->dbname   = install_default_dbname('moodle');
     $config->prefix   = 'mdl_';
-    $config->dbport   = empty($distro->dbport) ? '' : $distro->dbport;
+    $config->dbport   = install_default_dbport(empty($distro->dbport) ? '' : $distro->dbport);
     $config->dbsocket = empty($distro->dbsocket) ? '' : $distro->dbsocket;
 
     $config->admin    = 'admin';

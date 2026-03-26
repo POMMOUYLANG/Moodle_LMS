@@ -21,6 +21,8 @@ RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf
 
 # Copy PHP configuration (optional)
 COPY php-config/moodle.ini /usr/local/etc/php/conf.d/moodle.ini
+COPY docker/start-moodle.sh /usr/local/bin/start-moodle.sh
+RUN chmod +x /usr/local/bin/start-moodle.sh
 
 # Fix permissions for Moodle.
 RUN mkdir -p /var/moodledata && \
@@ -28,4 +30,4 @@ RUN mkdir -p /var/moodledata && \
     chmod -R 755 /var/www/html /var/moodledata
 
 EXPOSE 80
-CMD ["apache2-foreground"]
+CMD ["/usr/local/bin/start-moodle.sh"]
