@@ -30,7 +30,7 @@ $CFG->dboptions = array(
   'dbcollation' => 'utf8mb4_unicode_ci',
 );
 
-$domain = getenv('GATEWAY_MOODLE_DOMAIN') ?: 'lms.kp-rtc-edu.com';
+$domain = getenv('GATEWAY_MOODLE_DOMAIN') ?: 'lms.kampot-rtc-edu.com';
 $CFG->wwwroot = (strpos($domain, 'http') === 0) ? $domain : 'https://' . $domain;
 $CFG->sslproxy = filter_var(getenv('MOODLE_SSL_PROXY') ?: 'true', FILTER_VALIDATE_BOOLEAN);
 $CFG->reverseproxy = filter_var(getenv('MOODLE_REVERSE_PROXY') ?: 'false', FILTER_VALIDATE_BOOLEAN);

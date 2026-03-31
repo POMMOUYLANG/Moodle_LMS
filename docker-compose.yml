@@ -27,7 +27,7 @@ services:
       MOODLE_DATA_ROOT: /var/moodledata
       MOODLE_SSL_PROXY: "true"
       MOODLE_REVERSE_PROXY: "false"
-      GATEWAY_API_DOMAIN: ${GATEWAY_API_DOMAIN:-api.kp-rtc-edu.com}
+      GATEWAY_API_DOMAIN: ${GATEWAY_API_DOMAIN:-api.kampot-rtc-edu.com}
       GATEWAY_MOODLE_DOMAIN: lms.kc-rtc-edu.com
     volumes:
       - ./moodle:/var/www/html
