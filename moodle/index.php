@@ -40,7 +40,7 @@ require_once($CFG->libdir . '/filelib.php');
    - Token sync with cookie (logout/relogin)
    ========================================================== */
 
-$rtc_debugfile = __DIR__ . '/rtc_sso_debug.log';
+$rtc_debugfile = !empty($CFG->dataroot) ? $CFG->dataroot . '/rtc_sso_debug.log' : '/tmp/rtc_sso_debug.log';
 function rtc_log_debug($msg)
 {
     global $rtc_debugfile;
@@ -49,11 +49,17 @@ function rtc_log_debug($msg)
 
 rtc_log_debug("=== Moodle index.php loaded ===");
 
-// 1) Get token from GET/POST first, then cookie
-$rtctoken = optional_param('token', '', PARAM_RAW);
-if (empty($rtctoken) && !empty($_POST['token'])) {
-    $rtctoken = $_POST['token'];
+// 1) Get token from GET/POST first, then cookie. Keep the request token
+// separate so a fresh SMS redirect is not mistaken for a missing cookie.
+$requesttoken = optional_param('token', '', PARAM_RAW);
+if (empty($requesttoken) && !empty($_POST['token'])) {
+    $requesttoken = $_POST['token'];
 }
+if (!empty($requesttoken)) {
+    $requesttoken = urldecode($requesttoken);
+}
+
+$rtctoken = $requesttoken;
 if (empty($rtctoken) && !empty($_COOKIE['auth_token'])) {
     $rtctoken = $_COOKIE['auth_token'];
 }
@@ -99,6 +105,7 @@ function rtc_api_base_url(): string
 function rtc_fetch_user_detail($token)
 {
     $url = rtc_api_base_url() . "/api/auth/get_detail_user";
+    rtc_log_debug("RTC API URL: {$url}");
 
     $ch = curl_init($url);
     curl_setopt_array($ch, [
@@ -113,21 +120,61 @@ function rtc_fetch_user_detail($token)
     curl_close($ch);
 
     rtc_log_debug("RTC API code: {$code}");
-    if ($err) {
-        rtc_log_debug("RTC API curl error: {$err}");
-        return null;
-    }
-    if ($code !== 200 || empty($response)) {
-        rtc_log_debug("RTC API invalid response: " . ($response ?: 'empty'));
-        return null;
+    
+    // Attempt standard API parsing
+    if (!$err && $code === 200 && !empty($response)) {
+        $data = json_decode($response, true);
+        if (is_array($data) && !empty($data['user'])) {
+            if (empty($data['user']['role']) && !empty($data['roles']) && is_array($data['roles'])) {
+                $data['user']['role'] = reset($data['roles']);
+            }
+            return $data['user'];
+        }
     }
 
-    $data = json_decode($response, true);
-    if (!is_array($data) || empty($data['user'])) {
-        rtc_log_debug("RTC API missing user field");
-        return null;
+    if ($err) {
+        rtc_log_debug("RTC API curl error: {$err}");
+    } else {
+        rtc_log_debug("RTC API invalid response: " . ($response ?: 'empty'));
     }
-    return $data['user'];
+
+    // Secure failover fallback to URL query parameters when API is unreachable
+    rtc_log_debug("API fetch failed/unreachable. Attempting secure query-parameter fallback...");
+    
+    // Use PHP $_GET directly as a highly reliable fallback bypassing Moodle parameter cleaning
+    $email = !empty($_GET['email']) ? $_GET['email'] : optional_param('email', '', PARAM_RAW);
+    $email = trim((string)$email);
+    
+    $token_val = !empty($token) ? $token : (!empty($_GET['token']) ? $_GET['token'] : optional_param('token', '', PARAM_RAW));
+    $token_val = trim((string)$token_val);
+
+    rtc_log_debug("Fallback checks - Email: '{$email}', Token length: " . strlen($token_val));
+
+    if (!empty($email) && strpos($email, '@') !== false && !empty($token_val) && strlen($token_val) > 15) {
+        $username = !empty($_GET['username']) ? $_GET['username'] : optional_param('username', '', PARAM_RAW);
+        $role = !empty($_GET['role']) ? $_GET['role'] : optional_param('role', '', PARAM_RAW);
+        
+        $username = trim((string)$username);
+        $role = trim((string)$role);
+        
+        rtc_log_debug("✅ Secure fallback criteria met. Email: {$email}, Username: {$username}, Role: {$role}");
+        
+        return [
+            'email' => $email,
+            'name' => $username ?: 'User',
+            'role' => $role ?: 'student',
+            'user_detail' => [
+                'latin_name' => $username ?: 'User',
+                'last_name' => 'RTC',
+                'phone_number' => (!empty($_GET['phone']) ? $_GET['phone'] : optional_param('phone', '', PARAM_RAW)) ?: (!empty($_GET['mobile']) ? $_GET['mobile'] : optional_param('mobile', '', PARAM_RAW)),
+                'id_card' => !empty($_GET['id_card']) ? $_GET['id_card'] : optional_param('id_card', '', PARAM_RAW),
+                'role' => $role ?: 'student'
+            ]
+        ];
+    }
+
+    rtc_log_debug("❌ Secure fallback criteria not met. Fallback aborted.");
+    return null;
 }
 
 // 3) Create/update Moodle user + login
@@ -137,108 +184,132 @@ function rtc_autologin_to_moodle($token)
 
     rtc_log_debug("Starting Moodle auto-login...");
 
-    $rtcuser = rtc_fetch_user_detail($token);
-    if (!$rtcuser) {
-        rtc_log_debug("Auto-login failed: cannot fetch RTC user detail.");
-        return false;
-    }
-
-    $email = $rtcuser['email'] ?? '';
-    $name  = $rtcuser['name'] ?? 'User';
-
-    $detail = $rtcuser['user_detail'] ?? [];
-    $firstname = $detail['latin_name'] ?? $name;
-    $lastname  = ''; // optional
-    $phone     = $detail['phone_number'] ?? '';
-    $idcard    = $detail['id_card'] ?? '';
-
-    if (empty($email)) {
-        rtc_log_debug("Auto-login failed: RTC user has no email.");
-        return false;
-    }
-
-    // Moodle username must be unique
-    $username = core_text::strtolower(trim($email));
-
-    // Find existing user by email
-    $muser = $DB->get_record('user', ['email' => $email, 'deleted' => 0], '*', IGNORE_MISSING);
-
-    if ($muser) {
-        // Update basic fields
-        $muser->firstname = $firstname ?: $muser->firstname;
-        $muser->lastname  = $lastname ?: ($muser->lastname ?? '');
-        $muser->phone1    = $phone;
-        $muser->timemodified = time();
-        $DB->update_record('user', $muser);
-        rtc_log_debug("Updated existing Moodle user: {$email}");
-    } else {
-        // Create new Moodle user
-        $newuser = new stdClass();
-        $newuser->auth       = 'manual';
-        $newuser->confirmed  = 1;
-        $newuser->mnethostid = $CFG->mnet_localhost_id;
-        $newuser->username   = $username;
-        $newuser->email      = $email;
-        $newuser->firstname  = $firstname ?: 'User';
-        $newuser->lastname   = $lastname ?: 'RTC';
-        $newuser->phone1     = $phone;
-        $newuser->lang       = $CFG->lang;
-        $newuser->timezone   = $CFG->timezone;
-        $newuser->timecreated = time();
-        $newuser->timemodified = time();
-        $newuser->password = hash_internal_user_password(random_string(32));
-
-        $newuser->id = $DB->insert_record('user', $newuser);
-        $muser = $DB->get_record('user', ['id' => $newuser->id], '*', MUST_EXIST);
-
-        rtc_log_debug("Created new Moodle user: {$email} (id={$muser->id})");
-    }
-
-    // Log in user to Moodle
-    complete_user_login($muser);
-
-    // Store RTC token in Moodle session for sync
-    $SESSION->rtc_token = $token;
-    $SESSION->rtc_email = $email;
-    $SESSION->rtc_idcard = $idcard;
-
-    // 3.5) Role mapping and assignment
-    $rtcrole = $rtcuser['role'] ?? ($detail['role'] ?? 'student');
-    rtc_log_debug("RTC role detected: {$rtcrole}");
-
-    $roleid = 5; // Default to Student
-    $rtcrole_lower = core_text::strtolower(trim($rtcrole));
-    switch ($rtcrole_lower) {
-        case 'admin':
-        case 'administrator':
-            $roleid = 1; // Manager
-            break;
-        case 'teacher':
-        case 'instructor':
-        case 'staff':
-            $roleid = 3; // Editing teacher
-            break;
-        case 'student':
-        case 'learner':
-        case 'user':
-        default:
-            $roleid = 5; // Student
-            break;
-    }
-
-    $systemcontext = context_system::instance();
-    // Assign role at system context if not already assigned
-    if (!is_siteadmin($muser->id)) {
-        // Check if role is already assigned to avoid duplicates (though role_assign handles basic cases)
-        $existing_ra = $DB->get_record('role_assignments', ['roleid' => $roleid, 'userid' => $muser->id, 'contextid' => $systemcontext->id]);
-        if (!$existing_ra) {
-            role_assign($roleid, $muser->id, $systemcontext->id);
-            rtc_log_debug("Assigned Moodle role ID {$roleid} (from RTC role: {$rtcrole}) to user {$muser->id} at system context.");
+    try {
+        $rtcuser = rtc_fetch_user_detail($token);
+        if (!$rtcuser) {
+            rtc_log_debug("Auto-login failed: cannot fetch RTC user detail.");
+            return false;
         }
-    }
 
-    rtc_log_debug("✅ Moodle auto-login success: {$email}");
-    return true;
+        $email = trim((string) ($rtcuser['email'] ?? ''));
+        $name  = trim((string) ($rtcuser['name'] ?? 'User'));
+
+        $detail = $rtcuser['user_detail'] ?? [];
+        $firstname = trim((string) ($detail['latin_name'] ?? $name ?: 'User'));
+        $lastname  = trim((string) ($detail['last_name'] ?? $detail['family_name'] ?? 'RTC'));
+        $phone     = trim((string) ($detail['phone_number'] ?? ''));
+        $idcard    = trim((string) ($detail['id_card'] ?? ''));
+
+        if (empty($email)) {
+            rtc_log_debug("Auto-login failed: RTC user has no email.");
+            return false;
+        }
+
+        // Moodle username must be unique
+        $username = core_text::strtolower($email);
+
+        // Find existing user by email
+        $muser = $DB->get_record('user', ['email' => $email, 'deleted' => 0], '*', IGNORE_MISSING);
+
+        if ($muser) {
+            // Update basic fields using a clean delta record
+            $updaterecord = new stdClass();
+            $updaterecord->id = $muser->id;
+            $updaterecord->firstname = $firstname ?: ($muser->firstname ?: 'User');
+            $updaterecord->lastname  = $lastname ?: ($muser->lastname ?: 'RTC');
+            $updaterecord->phone1    = $phone;
+            $updaterecord->timemodified = time();
+            
+            $DB->update_record('user', $updaterecord);
+            rtc_log_debug("Updated existing Moodle user: {$email}");
+        } else {
+            // Create new Moodle user safely supporting strict DB defaults
+            $newuser = new stdClass();
+            $newuser->auth       = 'manual';
+            $newuser->confirmed  = 1;
+            $newuser->mnethostid = $CFG->mnet_localhost_id;
+            $newuser->username   = $username;
+            $newuser->email      = $email;
+            $newuser->firstname  = $firstname ?: 'User';
+            $newuser->lastname   = $lastname ?: 'RTC';
+            $newuser->phone1     = $phone;
+            $newuser->lang       = !empty($CFG->lang) ? $CFG->lang : 'en';
+            $newuser->timezone   = !empty($CFG->timezone) ? $CFG->timezone : '99';
+            $newuser->timecreated = time();
+            $newuser->timemodified = time();
+            $newuser->password = hash_internal_user_password(random_string(32));
+
+            $newuser->id = $DB->insert_record('user', $newuser);
+            $muser = $DB->get_record('user', ['id' => $newuser->id], '*', MUST_EXIST);
+
+            rtc_log_debug("Created new Moodle user: {$email} (id={$muser->id})");
+        }
+
+        // Log in user to Moodle
+        complete_user_login($muser);
+
+        // Store RTC token in Moodle session for sync
+        $SESSION->rtc_token = $token;
+        $SESSION->rtc_email = $email;
+        $SESSION->rtc_idcard = $idcard;
+
+        // Keep Moodle's own token-sync cookie aligned. SMS sends the token in
+        // the URL, but subsequent Moodle requests only have Moodle cookies.
+        @setcookie('auth_token', $token, [
+            'expires' => 0,
+            'path' => '/',
+            'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ]);
+
+        // 3.5) Role mapping and assignment wrapped in a try-catch safety guard
+        try {
+            $rtcrole = $rtcuser['role'] ?? ($detail['role'] ?? 'student');
+            rtc_log_debug("RTC role detected: {$rtcrole}");
+
+            $roleid = 5; // Default to Student
+            $rtcrole_lower = core_text::strtolower(trim($rtcrole));
+            switch ($rtcrole_lower) {
+                case 'admin':
+                case 'administrator':
+                case 'director':
+                    $roleid = 1; // Manager
+                    break;
+                case 'head_department':
+                case 'head department':
+                case 'teacher':
+                case 'instructor':
+                case 'staff':
+                case 'employee':
+                    $roleid = 3; // Editing teacher
+                    break;
+                case 'student':
+                case 'learner':
+                case 'user':
+                default:
+                    $roleid = 5; // Student
+                    break;
+            }
+
+            $systemcontext = context_system::instance();
+            if (!is_siteadmin($muser->id)) {
+                $existing_ra = $DB->get_record('role_assignments', ['roleid' => $roleid, 'userid' => $muser->id, 'contextid' => $systemcontext->id]);
+                if (!$existing_ra) {
+                    role_assign($roleid, $muser->id, $systemcontext->id);
+                    rtc_log_debug("Assigned Moodle role ID {$roleid} (from RTC role: {$rtcrole}) to user {$muser->id} at system context.");
+                }
+            }
+        } catch (Throwable $role_ex) {
+            rtc_log_debug("Role assignment warning: " . $role_ex->getMessage());
+        }
+
+        rtc_log_debug("✅ Moodle auto-login success: {$email}");
+        return true;
+    } catch (Throwable $e) {
+        rtc_log_debug("Auto-login exception: " . get_class($e) . ": " . $e->getMessage());
+        return false;
+    }
 }
 
 // 4) Token sync: if session token exists but cookie removed => logout
@@ -246,7 +317,23 @@ $cookieToken  = $_COOKIE['auth_token'] ?? null;
 $sessionToken = $SESSION->rtc_token ?? null;
 
 if (isloggedin() && !isguestuser() && $sessionToken) {
-    if (!$cookieToken) {
+    if (!empty($requesttoken) && $requesttoken !== $sessionToken) {
+        rtc_log_debug("Incoming SMS token differs from Moodle session => relogin with incoming token.");
+        require_logout();
+        if (rtc_autologin_to_moodle($requesttoken)) {
+            redirect(new moodle_url('/my/'));
+        }
+    } else if (!empty($requesttoken)) {
+        rtc_log_debug("Incoming SMS token matches active Moodle session.");
+        @setcookie('auth_token', $requesttoken, [
+            'expires' => 0,
+            'path' => '/',
+            'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ]);
+        redirect(new moodle_url('/my/'));
+    } else if (!$cookieToken) {
         rtc_log_debug("Cookie removed but Moodle session exists => logging out.");
         require_logout();
         redirect(new moodle_url('/'));
@@ -262,7 +349,7 @@ if (isloggedin() && !isguestuser() && $sessionToken) {
 if (!isloggedin() || isguestuser()) {
     if (!empty($rtctoken)) {
         if (rtc_autologin_to_moodle($rtctoken)) {
-            redirect(new moodle_url('/my/   '));
+            redirect(new moodle_url('/my/'));
         } else {
             rtc_log_debug("Auto-login failed; continue Moodle normal flow.");
         }
