@@ -115,39 +115,43 @@ function rtc_api_base_urls(): array
 // 2) Call RTC API to get user detail
 function rtc_fetch_user_detail($token)
 {
-    foreach (rtc_api_base_urls() as $baseurl) {
-        $url = rtrim($baseurl, '/') . "/api/auth/get_detail_user";
-        rtc_log_debug("RTC API URL: {$url}");
+    if (!function_exists('curl_init')) {
+        rtc_log_debug("PHP curl extension is unavailable; skipping RTC API fetch.");
+    } else {
+        foreach (rtc_api_base_urls() as $baseurl) {
+            $url = rtrim($baseurl, '/') . "/api/auth/get_detail_user";
+            rtc_log_debug("RTC API URL: {$url}");
 
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER => ["Authorization: Bearer {$token}"],
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_CONNECTTIMEOUT => 5,
-            CURLOPT_TIMEOUT => 10,
-        ]);
-        $response = curl_exec($ch);
-        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $err = curl_error($ch);
-        curl_close($ch);
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HTTPHEADER => ["Authorization: Bearer {$token}"],
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT => 10,
+            ]);
+            $response = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $err = curl_error($ch);
+            curl_close($ch);
 
-        rtc_log_debug("RTC API code: {$code}");
+            rtc_log_debug("RTC API code: {$code}");
 
-        if (!$err && $code === 200 && !empty($response)) {
-            $data = json_decode($response, true);
-            if (is_array($data) && !empty($data['user'])) {
-                if (empty($data['user']['role']) && !empty($data['roles']) && is_array($data['roles'])) {
-                    $data['user']['role'] = reset($data['roles']);
+            if (!$err && $code === 200 && !empty($response)) {
+                $data = json_decode($response, true);
+                if (is_array($data) && !empty($data['user'])) {
+                    if (empty($data['user']['role']) && !empty($data['roles']) && is_array($data['roles'])) {
+                        $data['user']['role'] = reset($data['roles']);
+                    }
+                    return $data['user'];
                 }
-                return $data['user'];
             }
-        }
 
-        if ($err) {
-            rtc_log_debug("RTC API curl error: {$err}");
-        } else {
-            rtc_log_debug("RTC API invalid response: " . ($response ?: 'empty'));
+            if ($err) {
+                rtc_log_debug("RTC API curl error: {$err}");
+            } else {
+                rtc_log_debug("RTC API invalid response: " . ($response ?: 'empty'));
+            }
         }
     }
 

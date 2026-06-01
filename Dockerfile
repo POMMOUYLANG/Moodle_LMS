@@ -4,9 +4,9 @@ FROM php:8.3-apache
 RUN apt-get update && apt-get install -y \
     libpng-dev libjpeg-dev libfreetype6-dev \
     libxml2-dev libzip-dev zip unzip git \
-    libicu-dev g++ mariadb-client curl && \
+    libicu-dev g++ mariadb-client curl libcurl4-openssl-dev && \
     docker-php-ext-configure gd --with-freetype --with-jpeg && \
-    docker-php-ext-install gd intl mysqli pdo pdo_mysql zip opcache && \
+    docker-php-ext-install gd intl mysqli pdo pdo_mysql zip opcache curl && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Enable Apache modules
