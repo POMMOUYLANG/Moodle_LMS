@@ -90,6 +90,29 @@ function rtc_sso_api_base_urls(): array
     return array_values(array_unique($urls));
 }
 
+function rtc_sso_primary_api_base_urls(): array
+{
+    $urls = [];
+    rtc_sso_add_api_base_url($urls, rtc_sso_env('RTC_API_BASE_URL', ''));
+
+    $prefix = rtc_sso_env('CONTAINER_PREFIX', '');
+    if ($prefix !== '') {
+        rtc_sso_add_api_base_url($urls, 'http://' . $prefix . '-backend-webserver');
+    }
+
+    $gatewayapidomain = rtc_sso_env('GATEWAY_API_DOMAIN', '');
+    if ($gatewayapidomain !== '') {
+        $url = strpos($gatewayapidomain, 'http') === 0
+            ? rtrim($gatewayapidomain, '/')
+            : 'https://' . $gatewayapidomain;
+        rtc_sso_add_api_base_url($urls, $url);
+    }
+
+    rtc_sso_add_api_base_url($urls, 'http://backend-webserver');
+
+    return array_values(array_unique($urls));
+}
+
 function rtc_sso_fetch_user_detail(string $token): ?array
 {
     if (!function_exists('curl_init')) {
@@ -121,6 +144,9 @@ function rtc_sso_fetch_user_detail(string $token): ?array
                     if (empty($data['user']['role']) && !empty($data['roles']) && is_array($data['roles'])) {
                         $data['user']['role'] = reset($data['roles']);
                     }
+                    $data['user']['rtc_roles'] = !empty($data['roles']) && is_array($data['roles'])
+                        ? $data['roles']
+                        : [];
                     return $data['user'];
                 }
             }
@@ -137,6 +163,61 @@ function rtc_sso_fetch_user_detail(string $token): ?array
     return null;
 }
 
+function rtc_sso_fetch_login_token(string $email, string $password): ?string
+{
+    if (!function_exists('curl_init')) {
+        rtc_sso_log_debug('PHP curl extension is unavailable; skipping RTC credential login.');
+        return null;
+    }
+
+    foreach (rtc_sso_primary_api_base_urls() as $baseurl) {
+        $url = rtrim($baseurl, '/') . '/api/auth/login';
+        rtc_sso_log_debug("RTC credential login URL: {$url}");
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode([
+                'email' => $email,
+                'password' => $password,
+            ]),
+            CURLOPT_HTTPHEADER => [
+                'Accept: application/json',
+                'Content-Type: application/json',
+            ],
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => 10,
+        ]);
+
+        $response = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        rtc_sso_log_debug("RTC credential login API code: {$code}");
+
+        if (!$error && $code === 200 && !empty($response)) {
+            $data = json_decode($response, true);
+            if (is_array($data) && !empty($data['token']) && is_string($data['token'])) {
+                return $data['token'];
+            }
+        }
+
+        if ($error) {
+            rtc_sso_log_debug("RTC credential login curl error: {$error}");
+        } else {
+            rtc_sso_log_debug('RTC credential login was not accepted by this API endpoint.');
+            if ($code >= 400 && $code < 500) {
+                return null;
+            }
+        }
+    }
+
+    return null;
+}
+
 function rtc_sso_set_token_cookie(string $token): void
 {
     @setcookie('auth_token', $token, [
@@ -146,6 +227,95 @@ function rtc_sso_set_token_cookie(string $token): void
         'httponly' => true,
         'samesite' => 'Lax',
     ]);
+}
+
+function rtc_sso_token_cookie_domains(): array
+{
+    $domains = [''];
+    $shareddomain = core_text::strtolower(trim(rtc_sso_env('RTC_SITE_EMAIL_DOMAIN', '')));
+
+    if ($shareddomain !== '' && validate_email('user@' . $shareddomain)) {
+        $domains[] = '.' . $shareddomain;
+    }
+
+    return array_unique($domains);
+}
+
+function rtc_sso_clear_login_state(): void
+{
+    global $SESSION;
+
+    foreach (rtc_sso_token_cookie_domains() as $domain) {
+        @setcookie('auth_token', '', time() - 3600, '/', $domain, true, true);
+        @setcookie('auth_token', '', time() - 3600, '/', $domain, false, true);
+    }
+
+    unset($_COOKIE['auth_token']);
+    unset($SESSION->rtc_token, $SESSION->rtc_email, $SESSION->rtc_idcard, $SESSION->rtc_roles);
+}
+
+function rtc_sso_revoke_token(string $token): bool
+{
+    if ($token === '') {
+        return true;
+    }
+
+    if (!function_exists('curl_init')) {
+        rtc_sso_log_debug('PHP curl extension is unavailable; skipping RTC token revocation.');
+        return false;
+    }
+
+    foreach (rtc_sso_primary_api_base_urls() as $baseurl) {
+        $url = rtrim($baseurl, '/') . '/api/auth/logout';
+        rtc_sso_log_debug("RTC logout API URL: {$url}");
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => [
+                'Accept: application/json',
+                "Authorization: Bearer {$token}",
+            ],
+            CURLOPT_CONNECTTIMEOUT => 2,
+            CURLOPT_TIMEOUT => 4,
+        ]);
+
+        curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        rtc_sso_log_debug("RTC logout API code: {$code}");
+
+        if (!$error && (($code >= 200 && $code < 300) || $code === 401)) {
+            rtc_sso_log_debug('RTC token revoked or already inactive.');
+            return true;
+        }
+
+        if ($error) {
+            rtc_sso_log_debug("RTC logout API curl error: {$error}");
+        }
+    }
+
+    rtc_sso_log_debug('RTC token revocation could not be confirmed; continuing Moodle local logout.');
+    return false;
+}
+
+function rtc_sso_logout(): void
+{
+    global $SESSION;
+
+    $token = trim((string) ($SESSION->rtc_token ?? ''));
+    if ($token === '' && !empty($_COOKIE['auth_token'])) {
+        $token = trim(urldecode((string) $_COOKIE['auth_token']));
+    }
+
+    if ($token !== '') {
+        rtc_sso_revoke_token($token);
+    }
+
+    rtc_sso_clear_login_state();
 }
 
 /**
@@ -198,6 +368,110 @@ function rtc_sso_normalize_verified_email(string $email): string
     return $normalized;
 }
 
+function rtc_sso_verified_roles(array $rtcuser, array $detail): array
+{
+    $roles = $rtcuser['rtc_roles'] ?? [];
+    if (!is_array($roles)) {
+        $roles = [$roles];
+    }
+
+    foreach ([$rtcuser['role'] ?? null, $detail['role'] ?? null] as $role) {
+        if ($role !== null && $role !== '') {
+            $roles[] = $role;
+        }
+    }
+
+    $normalizedroles = [];
+    foreach ($roles as $role) {
+        if (is_array($role)) {
+            $role = $role['role_key'] ?? $role['name'] ?? '';
+        } else if (is_object($role)) {
+            $role = $role->role_key ?? $role->name ?? '';
+        }
+
+        $role = core_text::strtolower(trim((string) $role));
+        $role = str_replace(['-', '_'], ' ', $role);
+        $role = preg_replace('/\s+/', ' ', $role);
+        if ($role !== '') {
+            $normalizedroles[] = $role;
+        }
+    }
+
+    return array_values(array_unique($normalizedroles ?: ['student']));
+}
+
+function rtc_sso_moodle_role_shortname(array $rtcroles): string
+{
+    if (array_intersect($rtcroles, ['admin', 'administrator', 'director'])) {
+        return 'manager';
+    }
+
+    if (array_intersect($rtcroles, ['head department', 'hod', 'teacher', 'instructor', 'staff', 'employee'])) {
+        return 'editingteacher';
+    }
+
+    return 'student';
+}
+
+function rtc_sso_sync_role_access(stdClass $muser, array $rtcroles): void
+{
+    global $CFG, $DB;
+
+    $component = 'local_rtc_sso';
+    $systemcontext = context_system::instance();
+    $shortname = rtc_sso_moodle_role_shortname($rtcroles);
+    $moodlerole = $DB->get_record('role', ['shortname' => $shortname], '*', MUST_EXIST);
+    $managedroles = $DB->get_records_list('role', 'shortname', ['manager', 'editingteacher', 'student']);
+    $managedroleids = array_map('intval', array_keys($managedroles));
+
+    $hasdesiredrole = false;
+    foreach ($DB->get_records('role_assignments', [
+        'userid' => $muser->id,
+        'contextid' => $systemcontext->id,
+        'component' => $component,
+    ]) as $assignment) {
+        if ((int) $assignment->roleid === (int) $moodlerole->id) {
+            $hasdesiredrole = true;
+            continue;
+        }
+
+        role_unassign((int) $assignment->roleid, $muser->id, $systemcontext->id, $component);
+    }
+
+    // Earlier RTC SSO versions used manual system assignments. Remove only those
+    // broad system roles when the same user returns through verified RTC SSO.
+    foreach ($DB->get_records('role_assignments', [
+        'userid' => $muser->id,
+        'contextid' => $systemcontext->id,
+        'component' => '',
+    ]) as $assignment) {
+        if (in_array((int) $assignment->roleid, $managedroleids, true)) {
+            role_unassign((int) $assignment->roleid, $muser->id, $systemcontext->id);
+        }
+    }
+
+    if (!$hasdesiredrole) {
+        role_assign($moodlerole->id, $muser->id, $systemcontext->id, $component);
+    }
+    rtc_sso_log_debug("Synchronized verified RTC roles to Moodle {$shortname} for user {$muser->id}.");
+
+    $siteadmins = array_values(array_filter(array_map('trim', explode(',', (string) ($CFG->siteadmins ?? '')))));
+    $userid = (string) $muser->id;
+    $hasrtcadminrole = (bool) array_intersect($rtcroles, ['admin', 'administrator']);
+
+    if ($hasrtcadminrole && !in_array($userid, $siteadmins, true)) {
+        $siteadmins[] = $userid;
+        set_config('siteadmins', implode(',', array_unique($siteadmins)));
+        $CFG->siteadmins = implode(',', array_unique($siteadmins));
+        rtc_sso_log_debug("Added Moodle site admin access for verified RTC admin user {$muser->id}.");
+    } else if (!$hasrtcadminrole && count($siteadmins) > 1 && in_array($userid, array_slice($siteadmins, 1), true)) {
+        $siteadmins = array_values(array_filter($siteadmins, static fn($siteadminid) => $siteadminid !== $userid));
+        set_config('siteadmins', implode(',', $siteadmins));
+        $CFG->siteadmins = implode(',', $siteadmins);
+        rtc_sso_log_debug("Removed Moodle site admin access for non-admin RTC user {$muser->id}.");
+    }
+}
+
 function rtc_sso_autologin_to_moodle(string $token): bool
 {
     global $DB, $CFG, $SESSION;
@@ -219,6 +493,7 @@ function rtc_sso_autologin_to_moodle(string $token): bool
         $email = rtc_sso_normalize_verified_email((string) ($rtcuser['email'] ?? ''));
         $name = trim((string) ($rtcuser['name'] ?? 'User'));
         $detail = $rtcuser['user_detail'] ?? [];
+        $rtcroles = rtc_sso_verified_roles($rtcuser, $detail);
 
         $firstname = core_text::substr(trim((string) ($detail['latin_name'] ?? $name ?: 'User')), 0, 100);
         $lastname = core_text::substr(trim((string) ($detail['last_name'] ?? $detail['family_name'] ?? 'RTC')), 0, 100);
@@ -289,61 +564,17 @@ function rtc_sso_autologin_to_moodle(string $token): bool
             rtc_sso_log_debug("Created new Moodle user: {$email} (id={$muser->id})");
         }
 
+        $stage = 'synchronize verified RTC roles';
+        rtc_sso_sync_role_access($muser, $rtcroles);
+
         $stage = 'complete Moodle login';
         complete_user_login($muser);
 
         $SESSION->rtc_token = $token;
         $SESSION->rtc_email = $email;
         $SESSION->rtc_idcard = $idcard;
+        $SESSION->rtc_roles = $rtcroles;
         rtc_sso_set_token_cookie($token);
-
-        try {
-            $rtcrole = $rtcuser['role'] ?? ($detail['role'] ?? 'student');
-            $rtcrolelower = core_text::strtolower(trim($rtcrole));
-            rtc_sso_log_debug("RTC role detected: {$rtcrole}");
-
-            $roleid = 5;
-            switch ($rtcrolelower) {
-                case 'admin':
-                case 'administrator':
-                case 'director':
-                    $roleid = 1;
-                    break;
-                case 'head_department':
-                case 'head department':
-                case 'teacher':
-                case 'instructor':
-                case 'staff':
-                case 'employee':
-                    $roleid = 3;
-                    break;
-            }
-
-            $systemcontext = context_system::instance();
-            if (in_array($rtcrolelower, ['admin', 'administrator'], true)) {
-                $siteadmins = array_filter(array_map('trim', explode(',', (string) ($CFG->siteadmins ?? ''))));
-                if (!in_array((string) $muser->id, $siteadmins, true)) {
-                    $siteadmins[] = (string) $muser->id;
-                    set_config('siteadmins', implode(',', array_unique($siteadmins)));
-                    $CFG->siteadmins = implode(',', array_unique($siteadmins));
-                    rtc_sso_log_debug("Added Moodle site admin access for RTC admin user {$muser->id}.");
-                }
-            }
-
-            if (!is_siteadmin($muser->id)) {
-                $existingra = $DB->get_record('role_assignments', [
-                    'roleid' => $roleid,
-                    'userid' => $muser->id,
-                    'contextid' => $systemcontext->id,
-                ]);
-                if (!$existingra) {
-                    role_assign($roleid, $muser->id, $systemcontext->id);
-                    rtc_sso_log_debug("Assigned Moodle role ID {$roleid} to user {$muser->id}.");
-                }
-            }
-        } catch (Throwable $roleexception) {
-            rtc_sso_log_debug('Role assignment warning: ' . $roleexception->getMessage());
-        }
 
         rtc_sso_log_debug("Moodle auto-login success: {$email}");
         return true;
@@ -357,11 +588,38 @@ function rtc_sso_autologin_to_moodle(string $token): bool
     }
 }
 
+function rtc_sso_try_credentials_login(): void
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        return;
+    }
+
+    $email = trim((string) ($_POST['username'] ?? ''));
+    $password = (string) ($_POST['password'] ?? '');
+    if ($email === '' || $password === '' || !validate_email($email)) {
+        return;
+    }
+
+    rtc_sso_log_debug('Trying RTC credential login before Moodle native authentication.');
+    $token = rtc_sso_fetch_login_token($email, $password);
+    if ($token === null) {
+        rtc_sso_log_debug('RTC credential login did not succeed; continuing Moodle native authentication.');
+        return;
+    }
+
+    if (rtc_sso_autologin_to_moodle($token)) {
+        redirect(new moodle_url('/my/'));
+    }
+
+    rtc_sso_revoke_token($token);
+    rtc_sso_log_debug('RTC credential login succeeded but Moodle provisioning failed; continuing Moodle native authentication.');
+}
+
 function rtc_sso_bootstrap(): void
 {
     global $SESSION;
 
-    rtc_sso_log_debug('Moodle frontpage SSO bootstrap loaded.');
+    rtc_sso_log_debug('Moodle RTC SSO bootstrap loaded.');
 
     $requesttoken = optional_param('token', '', PARAM_RAW);
     if ($requesttoken === '' && !empty($_POST['token'])) {
@@ -392,6 +650,7 @@ function rtc_sso_bootstrap(): void
             redirect(new moodle_url('/my/'));
         } else if (!$cookietoken) {
             rtc_sso_log_debug('Cookie removed but Moodle session exists; logout.');
+            rtc_sso_logout();
             require_logout();
             redirect(new moodle_url('/'));
         } else if ($cookietoken !== $sessiontoken) {
@@ -403,7 +662,7 @@ function rtc_sso_bootstrap(): void
     }
 
     if ((!isloggedin() || isguestuser()) && $rtctoken !== '') {
-        rtc_sso_log_debug('Token detected: ' . substr($rtctoken, 0, 25) . '...');
+        rtc_sso_log_debug('RTC token detected.');
         if (rtc_sso_autologin_to_moodle($rtctoken)) {
             redirect(new moodle_url('/my/'));
         }
