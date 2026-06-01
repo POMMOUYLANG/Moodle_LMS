@@ -75,18 +75,28 @@ function rtc_env(string $name, string $default = ''): string
     return $value !== false && $value !== '' ? $value : $default;
 }
 
-function rtc_api_base_url(): string
+function rtc_add_api_base_url(array &$urls, string $url): void
 {
-    static $url = null;
-
-    if ($url !== null) {
-        return $url;
+    $url = rtrim(trim($url), '/');
+    if ($url !== '') {
+        $urls[] = $url;
     }
+}
 
-    $configuredUrl = rtrim(rtc_env('RTC_API_BASE_URL', ''), '/');
-    if ($configuredUrl !== '') {
-        $url = $configuredUrl;
-        return $url;
+function rtc_api_base_urls(): array
+{
+    $urls = [];
+    rtc_add_api_base_url($urls, rtc_env('RTC_API_BASE_URL', ''));
+
+    $prefixes = array_unique(array_filter([
+        rtc_env('CONTAINER_PREFIX', ''),
+        'rtc-kp',
+        'rtc-kc',
+        'rtc-bb',
+    ]));
+
+    foreach ($prefixes as $prefix) {
+        rtc_add_api_base_url($urls, 'http://' . $prefix . '-backend-webserver');
     }
 
     $gatewayApiDomain = rtc_env('GATEWAY_API_DOMAIN', '');
@@ -94,48 +104,51 @@ function rtc_api_base_url(): string
         $url = strpos($gatewayApiDomain, 'http') === 0
             ? rtrim($gatewayApiDomain, '/')
             : 'https://' . $gatewayApiDomain;
-        return $url;
+        rtc_add_api_base_url($urls, $url);
     }
 
-    $url = 'http://backend-webserver';
-    return $url;
+    rtc_add_api_base_url($urls, 'http://backend-webserver');
+
+    return array_values(array_unique($urls));
 }
 
 // 2) Call RTC API to get user detail
 function rtc_fetch_user_detail($token)
 {
-    $url = rtc_api_base_url() . "/api/auth/get_detail_user";
-    rtc_log_debug("RTC API URL: {$url}");
+    foreach (rtc_api_base_urls() as $baseurl) {
+        $url = rtrim($baseurl, '/') . "/api/auth/get_detail_user";
+        rtc_log_debug("RTC API URL: {$url}");
 
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER => ["Authorization: Bearer {$token}"],
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_TIMEOUT => 15,
-    ]);
-    $response = curl_exec($ch);
-    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => ["Authorization: Bearer {$token}"],
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => 10,
+        ]);
+        $response = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
 
-    rtc_log_debug("RTC API code: {$code}");
-    
-    // Attempt standard API parsing
-    if (!$err && $code === 200 && !empty($response)) {
-        $data = json_decode($response, true);
-        if (is_array($data) && !empty($data['user'])) {
-            if (empty($data['user']['role']) && !empty($data['roles']) && is_array($data['roles'])) {
-                $data['user']['role'] = reset($data['roles']);
+        rtc_log_debug("RTC API code: {$code}");
+
+        if (!$err && $code === 200 && !empty($response)) {
+            $data = json_decode($response, true);
+            if (is_array($data) && !empty($data['user'])) {
+                if (empty($data['user']['role']) && !empty($data['roles']) && is_array($data['roles'])) {
+                    $data['user']['role'] = reset($data['roles']);
+                }
+                return $data['user'];
             }
-            return $data['user'];
         }
-    }
 
-    if ($err) {
-        rtc_log_debug("RTC API curl error: {$err}");
-    } else {
-        rtc_log_debug("RTC API invalid response: " . ($response ?: 'empty'));
+        if ($err) {
+            rtc_log_debug("RTC API curl error: {$err}");
+        } else {
+            rtc_log_debug("RTC API invalid response: " . ($response ?: 'empty'));
+        }
     }
 
     // Secure failover fallback to URL query parameters when API is unreachable
@@ -293,6 +306,16 @@ function rtc_autologin_to_moodle($token)
             }
 
             $systemcontext = context_system::instance();
+            if (in_array($rtcrole_lower, ['admin', 'administrator'], true)) {
+                $siteadmins = array_filter(array_map('trim', explode(',', (string) ($CFG->siteadmins ?? ''))));
+                if (!in_array((string) $muser->id, $siteadmins, true)) {
+                    $siteadmins[] = (string) $muser->id;
+                    set_config('siteadmins', implode(',', array_unique($siteadmins)));
+                    $CFG->siteadmins = implode(',', array_unique($siteadmins));
+                    rtc_log_debug("Added Moodle site admin access for RTC admin user {$muser->id}.");
+                }
+            }
+
             if (!is_siteadmin($muser->id)) {
                 $existing_ra = $DB->get_record('role_assignments', ['roleid' => $roleid, 'userid' => $muser->id, 'contextid' => $systemcontext->id]);
                 if (!$existing_ra) {
