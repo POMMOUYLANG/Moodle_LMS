@@ -97,33 +97,7 @@ function rtc_sso_fetch_user_detail(string $token): ?array
         }
     }
 
-    rtc_sso_log_debug('API fetch failed/unreachable. Attempting query-parameter fallback...');
-
-    $email = trim((string) ($_GET['email'] ?? optional_param('email', '', PARAM_RAW)));
-    $tokenvalue = trim((string) ($token ?: ($_GET['token'] ?? optional_param('token', '', PARAM_RAW))));
-
-    if ($email !== '' && strpos($email, '@') !== false && $tokenvalue !== '' && strlen($tokenvalue) > 15) {
-        $username = trim((string) ($_GET['username'] ?? optional_param('username', '', PARAM_RAW)));
-        $role = trim((string) ($_GET['role'] ?? optional_param('role', '', PARAM_RAW)));
-
-        rtc_sso_log_debug("Fallback user accepted. Email: {$email}, Role: {$role}");
-
-        return [
-            'email' => $email,
-            'name' => $username ?: 'User',
-            'role' => $role ?: 'student',
-            'user_detail' => [
-                'latin_name' => $username ?: 'User',
-                'last_name' => 'RTC',
-                'phone_number' => ($_GET['phone'] ?? optional_param('phone', '', PARAM_RAW))
-                    ?: ($_GET['mobile'] ?? optional_param('mobile', '', PARAM_RAW)),
-                'id_card' => $_GET['id_card'] ?? optional_param('id_card', '', PARAM_RAW),
-                'role' => $role ?: 'student',
-            ],
-        ];
-    }
-
-    rtc_sso_log_debug('Fallback criteria not met.');
+    rtc_sso_log_debug('RTC token verification failed; refusing query-parameter fallback.');
     return null;
 }
 
@@ -145,6 +119,8 @@ function rtc_sso_autologin_to_moodle(string $token): bool
     rtc_sso_log_debug('Starting Moodle auto-login...');
 
     try {
+        require_once($CFG->dirroot . '/user/lib.php');
+
         $rtcuser = rtc_sso_fetch_user_detail($token);
         if (!$rtcuser) {
             rtc_sso_log_debug('Auto-login failed: cannot fetch RTC user detail.');
@@ -176,7 +152,7 @@ function rtc_sso_autologin_to_moodle(string $token): bool
             $updaterecord->phone1 = $phone;
             $updaterecord->timemodified = time();
 
-            $DB->update_record('user', $updaterecord);
+            user_update_user($updaterecord, false);
             rtc_sso_log_debug("Updated existing Moodle user: {$email}");
         } else {
             $newuser = new stdClass();
@@ -190,11 +166,9 @@ function rtc_sso_autologin_to_moodle(string $token): bool
             $newuser->phone1 = $phone;
             $newuser->lang = !empty($CFG->lang) ? $CFG->lang : 'en';
             $newuser->timezone = !empty($CFG->timezone) ? $CFG->timezone : '99';
-            $newuser->timecreated = time();
-            $newuser->timemodified = time();
             $newuser->password = hash_internal_user_password(random_string(32));
 
-            $newuser->id = $DB->insert_record('user', $newuser);
+            $newuser->id = user_create_user($newuser, false);
             $muser = $DB->get_record('user', ['id' => $newuser->id], '*', MUST_EXIST);
 
             rtc_sso_log_debug("Created new Moodle user: {$email} (id={$muser->id})");
