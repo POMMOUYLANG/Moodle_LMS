@@ -25,20 +25,56 @@ function rtc_sso_add_api_base_url(array &$urls, string $url): void
     }
 }
 
+function rtc_sso_site_registry(): array
+{
+    $sites = [];
+    $entries = preg_split('/\s*,\s*/', rtc_sso_env('RTC_SSO_SITE_REGISTRY', ''), -1, PREG_SPLIT_NO_EMPTY);
+
+    foreach ($entries as $entry) {
+        [$prefix, $api, $emaildomain] = array_pad(explode('|', $entry, 3), 3, '');
+        $prefix = trim($prefix);
+        $api = trim($api);
+        $emaildomain = core_text::strtolower(trim($emaildomain));
+
+        if (
+            !preg_match('/^[a-z0-9][a-z0-9-]*$/', $prefix) ||
+            $api === '' ||
+            !validate_email('user@' . $emaildomain)
+        ) {
+            rtc_sso_log_debug("Skipping invalid RTC SSO registry entry: {$entry}");
+            continue;
+        }
+
+        $sites[] = [
+            'prefix' => $prefix,
+            'api' => $api,
+            'emaildomain' => $emaildomain,
+        ];
+    }
+
+    return $sites;
+}
+
 function rtc_sso_api_base_urls(): array
 {
     $urls = [];
     rtc_sso_add_api_base_url($urls, rtc_sso_env('RTC_API_BASE_URL', ''));
 
-    $prefixes = array_unique(array_filter([
-        rtc_sso_env('CONTAINER_PREFIX', ''),
-        'rtc-kp',
-        'rtc-kc',
-        'rtc-bb',
-    ]));
+    $sites = rtc_sso_site_registry();
+    $prefixes = [rtc_sso_env('CONTAINER_PREFIX', '')];
+    foreach ($sites as $site) {
+        $prefixes[] = $site['prefix'];
+    }
 
-    foreach ($prefixes as $prefix) {
+    foreach (array_unique(array_filter($prefixes)) as $prefix) {
         rtc_sso_add_api_base_url($urls, 'http://' . $prefix . '-backend-webserver');
+    }
+
+    foreach ($sites as $site) {
+        $url = strpos($site['api'], 'http') === 0
+            ? $site['api']
+            : 'https://' . $site['api'];
+        rtc_sso_add_api_base_url($urls, $url);
     }
 
     $gatewayapidomain = rtc_sso_env('GATEWAY_API_DOMAIN', '');
@@ -129,6 +165,39 @@ function rtc_sso_exception_context(Throwable $exception): string
     return $details ? ' | ' . implode(' | ', $details) : '';
 }
 
+/**
+ * Repair legacy backend responses that used an internal Docker hostname as the email domain.
+ */
+function rtc_sso_normalize_verified_email(string $email): string
+{
+    $email = trim($email);
+    if (substr_count($email, '@') !== 1) {
+        return $email;
+    }
+
+    [$localpart, $domain] = explode('@', $email, 2);
+    $internaldomains = [
+        'backend-webserver' => rtc_sso_env('RTC_SITE_EMAIL_DOMAIN', ''),
+    ];
+    foreach (rtc_sso_site_registry() as $site) {
+        $internaldomains[$site['prefix'] . '-backend-webserver'] = $site['emaildomain'];
+    }
+
+    $sitedomain = $internaldomains[core_text::strtolower($domain)] ?? null;
+    if ($sitedomain === null) {
+        return $email;
+    }
+
+    $sitedomain = core_text::strtolower(trim($sitedomain));
+    $normalized = trim($localpart) . '@' . $sitedomain;
+    if ($sitedomain === '' || !validate_email($normalized)) {
+        return $email;
+    }
+
+    rtc_sso_log_debug('Normalized verified RTC email from internal service domain to configured site domain.');
+    return $normalized;
+}
+
 function rtc_sso_autologin_to_moodle(string $token): bool
 {
     global $DB, $CFG, $SESSION;
@@ -147,7 +216,7 @@ function rtc_sso_autologin_to_moodle(string $token): bool
             return false;
         }
 
-        $email = trim((string) ($rtcuser['email'] ?? ''));
+        $email = rtc_sso_normalize_verified_email((string) ($rtcuser['email'] ?? ''));
         $name = trim((string) ($rtcuser['name'] ?? 'User'));
         $detail = $rtcuser['user_detail'] ?? [];
 
