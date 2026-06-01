@@ -112,15 +112,35 @@ function rtc_sso_set_token_cookie(string $token): void
     ]);
 }
 
+/**
+ * Return useful database diagnostics without logging parameters or credentials.
+ */
+function rtc_sso_exception_context(Throwable $exception): string
+{
+    $details = [];
+
+    foreach (['errorcode', 'error', 'sql'] as $property) {
+        if (!empty($exception->{$property})) {
+            $value = preg_replace('/\s+/', ' ', trim((string) $exception->{$property}));
+            $details[] = $property . '=' . $value;
+        }
+    }
+
+    return $details ? ' | ' . implode(' | ', $details) : '';
+}
+
 function rtc_sso_autologin_to_moodle(string $token): bool
 {
     global $DB, $CFG, $SESSION;
 
     rtc_sso_log_debug('Starting Moodle auto-login...');
+    $stage = 'initialization';
 
     try {
+        $stage = 'load Moodle user API';
         require_once($CFG->dirroot . '/user/lib.php');
 
+        $stage = 'fetch verified RTC user';
         $rtcuser = rtc_sso_fetch_user_detail($token);
         if (!$rtcuser) {
             rtc_sso_log_debug('Auto-login failed: cannot fetch RTC user detail.');
@@ -131,20 +151,34 @@ function rtc_sso_autologin_to_moodle(string $token): bool
         $name = trim((string) ($rtcuser['name'] ?? 'User'));
         $detail = $rtcuser['user_detail'] ?? [];
 
-        $firstname = trim((string) ($detail['latin_name'] ?? $name ?: 'User'));
-        $lastname = trim((string) ($detail['last_name'] ?? $detail['family_name'] ?? 'RTC'));
-        $phone = trim((string) ($detail['phone_number'] ?? ''));
-        $idcard = trim((string) ($detail['id_card'] ?? ''));
+        $firstname = core_text::substr(trim((string) ($detail['latin_name'] ?? $name ?: 'User')), 0, 100);
+        $lastname = core_text::substr(trim((string) ($detail['last_name'] ?? $detail['family_name'] ?? 'RTC')), 0, 100);
+        $phone = core_text::substr(trim((string) ($detail['phone_number'] ?? '')), 0, 20);
+        $idcard = core_text::substr(trim((string) ($detail['id_card'] ?? '')), 0, 255);
 
-        if ($email === '') {
-            rtc_sso_log_debug('Auto-login failed: RTC user has no email.');
+        if ($email === '' || !validate_email($email) || core_text::strlen($email) > 100) {
+            rtc_sso_log_debug('Auto-login failed: RTC user has no valid email.');
             return false;
         }
 
+        $stage = 'resolve Moodle user';
         $username = core_text::strtolower($email);
-        $muser = $DB->get_record('user', ['email' => $email, 'deleted' => 0], '*', IGNORE_MISSING);
+        $muser = core_user::get_user_by_username($username, '*', null, IGNORE_MISSING);
+        if ($muser && !empty($muser->deleted)) {
+            $muser = false;
+        }
+
+        if (!$muser) {
+            $muser = $DB->get_record(
+                'user',
+                ['email' => $email, 'mnethostid' => $CFG->mnet_localhost_id, 'deleted' => 0],
+                '*',
+                IGNORE_MISSING
+            );
+        }
 
         if ($muser) {
+            $stage = 'update Moodle user';
             $updaterecord = new stdClass();
             $updaterecord->id = $muser->id;
             $updaterecord->firstname = $firstname ?: ($muser->firstname ?: 'User');
@@ -155,6 +189,7 @@ function rtc_sso_autologin_to_moodle(string $token): bool
             user_update_user($updaterecord, false);
             rtc_sso_log_debug("Updated existing Moodle user: {$email}");
         } else {
+            $stage = 'create Moodle user';
             $newuser = new stdClass();
             $newuser->auth = 'manual';
             $newuser->confirmed = 1;
@@ -163,17 +198,29 @@ function rtc_sso_autologin_to_moodle(string $token): bool
             $newuser->email = $email;
             $newuser->firstname = $firstname ?: 'User';
             $newuser->lastname = $lastname ?: 'RTC';
+            $newuser->idnumber = $idcard;
             $newuser->phone1 = $phone;
+            $newuser->phone2 = '';
+            $newuser->institution = '';
+            $newuser->department = '';
+            $newuser->address = '';
+            $newuser->city = '';
+            $newuser->country = '';
+            $newuser->theme = '';
+            $newuser->lastip = getremoteaddr();
+            $newuser->secret = '';
             $newuser->lang = !empty($CFG->lang) ? $CFG->lang : 'en';
             $newuser->timezone = !empty($CFG->timezone) ? $CFG->timezone : '99';
             $newuser->password = hash_internal_user_password(random_string(32));
 
             $newuser->id = user_create_user($newuser, false);
+            $stage = 'reload created Moodle user';
             $muser = $DB->get_record('user', ['id' => $newuser->id], '*', MUST_EXIST);
 
             rtc_sso_log_debug("Created new Moodle user: {$email} (id={$muser->id})");
         }
 
+        $stage = 'complete Moodle login';
         complete_user_login($muser);
 
         $SESSION->rtc_token = $token;
@@ -232,7 +279,11 @@ function rtc_sso_autologin_to_moodle(string $token): bool
         rtc_sso_log_debug("Moodle auto-login success: {$email}");
         return true;
     } catch (Throwable $exception) {
-        rtc_sso_log_debug('Auto-login exception: ' . get_class($exception) . ': ' . $exception->getMessage());
+        rtc_sso_log_debug(
+            'Auto-login exception during ' . $stage . ': '
+            . get_class($exception) . ': ' . $exception->getMessage()
+            . rtc_sso_exception_context($exception)
+        );
         return false;
     }
 }
