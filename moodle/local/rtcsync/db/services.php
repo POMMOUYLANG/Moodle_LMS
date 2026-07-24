@@ -43,6 +43,14 @@ $functions = [
         'type' => 'write',
         'capabilities' => 'moodle/grade:manage,moodle/grade:edit',
     ],
+    'local_rtcsync_get_managed_state' => [
+        'classname' => 'local_rtcsync_external',
+        'methodname' => 'get_managed_state',
+        'classpath' => 'local/rtcsync/externallib.php',
+        'description' => 'Read bounded state for explicitly identified RTC-managed records.',
+        'type' => 'read',
+        'capabilities' => 'local/rtcsync:readmanagedstate',
+    ],
 ];
 
 $services = [

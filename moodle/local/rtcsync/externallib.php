@@ -382,6 +382,273 @@ class local_rtcsync_external extends external_api
         ]);
     }
 
+    public static function get_managed_state_parameters(): external_function_parameters
+    {
+        return new external_function_parameters([
+            'scope' => new external_value(
+                PARAM_ALPHA,
+                'State scope: users, courses, enrolments, or grades.'
+            ),
+            'idnumbers' => new external_multiple_structure(
+                new external_value(PARAM_RAW, 'Explicit RTC-managed user or course idnumber.'),
+                'Identifiers to read. User scope expects user idnumbers; all other scopes expect course idnumbers.'
+            ),
+            'offset' => new external_value(PARAM_INT, 'Page offset.', VALUE_DEFAULT, 0),
+            'limit' => new external_value(PARAM_INT, 'Page size, capped at 100.', VALUE_DEFAULT, 100),
+        ]);
+    }
+
+    public static function get_managed_state(
+        string $scope,
+        array $idnumbers,
+        int $offset = 0,
+        int $limit = 100
+    ): array {
+        global $CFG, $DB;
+
+        $params = self::validate_parameters(self::get_managed_state_parameters(), [
+            'scope' => $scope,
+            'idnumbers' => $idnumbers,
+            'offset' => $offset,
+            'limit' => $limit,
+        ]);
+
+        $scope = strtolower(trim($params['scope']));
+        if (!in_array($scope, ['users', 'courses', 'enrolments', 'grades'], true)) {
+            throw new invalid_parameter_exception('Unsupported RTC managed-state scope.');
+        }
+
+        $idnumbers = array_values(array_unique(array_filter(array_map(
+            static fn($idnumber): string => trim((string) $idnumber),
+            $params['idnumbers']
+        ), static fn(string $idnumber): bool => $idnumber !== '')));
+        if (count($idnumbers) > 100) {
+            throw new invalid_parameter_exception('Managed-state reads accept at most 100 identifiers.');
+        }
+
+        $offset = max(0, (int) $params['offset']);
+        $limit = min(100, max(1, (int) $params['limit']));
+        $systemcontext = context_system::instance();
+        self::validate_context($systemcontext);
+        require_capability('local/rtcsync:readmanagedstate', $systemcontext);
+
+        if (!$idnumbers) {
+            return [
+                'scope' => $scope,
+                'offset' => $offset,
+                'limit' => $limit,
+                'total' => 0,
+                'records' => [],
+            ];
+        }
+
+        [$insql, $inparams] = $DB->get_in_or_equal($idnumbers, SQL_PARAMS_NAMED, 'rtcid');
+        $records = [];
+        $total = 0;
+
+        if ($scope === 'users') {
+            $where = "u.idnumber {$insql}
+                      AND u.deleted = 0
+                      AND u.mnethostid = :mnethostid";
+            $queryparams = $inparams + ['mnethostid' => $CFG->mnet_localhost_id];
+            $total = $DB->count_records_sql(
+                "SELECT COUNT(1) FROM {user} u WHERE {$where}",
+                $queryparams
+            );
+            $records = $DB->get_records_sql(
+                "SELECT u.id AS record_id,
+                        u.id AS moodle_id,
+                        u.idnumber,
+                        u.username,
+                        u.email,
+                        u.firstname,
+                        u.lastname,
+                        u.suspended
+                   FROM {user} u
+                  WHERE {$where}
+               ORDER BY u.id",
+                $queryparams,
+                $offset,
+                $limit
+            );
+        } else if ($scope === 'courses') {
+            $where = "c.idnumber {$insql}";
+            $total = $DB->count_records_sql(
+                "SELECT COUNT(1) FROM {course} c WHERE {$where}",
+                $inparams
+            );
+            $records = $DB->get_records_sql(
+                "SELECT c.id AS record_id,
+                        c.id AS moodle_id,
+                        c.idnumber,
+                        c.shortname,
+                        c.fullname,
+                        c.visible
+                   FROM {course} c
+                  WHERE {$where}
+               ORDER BY c.id",
+                $inparams,
+                $offset,
+                $limit
+            );
+        } else if ($scope === 'enrolments') {
+            $where = "c.idnumber {$insql}
+                      AND e.enrol = :enrolmethod
+                      AND u.deleted = 0";
+            $queryparams = $inparams + ['enrolmethod' => 'manual'];
+            $from = "FROM {course} c
+                     JOIN {context} ctx
+                       ON ctx.contextlevel = :contextlevel
+                      AND ctx.instanceid = c.id
+                     JOIN {enrol} e
+                       ON e.courseid = c.id
+                     JOIN {user_enrolments} ue
+                       ON ue.enrolid = e.id
+                     JOIN {user} u
+                       ON u.id = ue.userid
+                     JOIN {role_assignments} ra
+                       ON ra.contextid = ctx.id
+                      AND ra.userid = u.id
+                     JOIN {role} r
+                       ON r.id = ra.roleid";
+            $queryparams += ['contextlevel' => CONTEXT_COURSE];
+            $total = $DB->count_records_sql(
+                "SELECT COUNT(1) {$from} WHERE {$where}",
+                $queryparams
+            );
+            $records = $DB->get_records_sql(
+                "SELECT ra.id AS record_id,
+                        c.id AS course_id,
+                        c.idnumber AS course_idnumber,
+                        u.id AS user_id,
+                        u.idnumber AS user_idnumber,
+                        r.shortname AS role_shortname,
+                        ue.status AS enrolment_status
+                   {$from}
+                  WHERE {$where}
+               ORDER BY c.id, u.id, r.id",
+                $queryparams,
+                $offset,
+                $limit
+            );
+        } else {
+            $where = "c.idnumber {$insql}
+                      AND gi.idnumber LIKE :gradeprefix
+                      AND u.deleted = 0";
+            $queryparams = $inparams + ['gradeprefix' => 'rtc-subject-score:%'];
+            $from = "FROM {course} c
+                     JOIN {grade_items} gi
+                       ON gi.courseid = c.id
+                     JOIN {grade_grades} gg
+                       ON gg.itemid = gi.id
+                     JOIN {user} u
+                       ON u.id = gg.userid";
+            $total = $DB->count_records_sql(
+                "SELECT COUNT(1) {$from} WHERE {$where}",
+                $queryparams
+            );
+            $records = $DB->get_records_sql(
+                "SELECT gg.id AS record_id,
+                        c.id AS course_id,
+                        c.idnumber AS course_idnumber,
+                        u.id AS user_id,
+                        u.idnumber AS user_idnumber,
+                        gi.id AS grade_item_id,
+                        gi.idnumber AS grade_item_idnumber,
+                        gg.finalgrade AS grade,
+                        gi.grademax AS grade_max,
+                        gi.hidden
+                   {$from}
+                  WHERE {$where}
+               ORDER BY c.id, gi.id, u.id",
+                $queryparams,
+                $offset,
+                $limit
+            );
+        }
+
+        return [
+            'scope' => $scope,
+            'offset' => $offset,
+            'limit' => $limit,
+            'total' => (int) $total,
+            'records' => array_values(array_map(
+                [self::class, 'normalise_managed_state_record'],
+                $records
+            )),
+        ];
+    }
+
+    public static function get_managed_state_returns(): external_single_structure
+    {
+        return new external_single_structure([
+            'scope' => new external_value(PARAM_ALPHA, 'Returned state scope.'),
+            'offset' => new external_value(PARAM_INT, 'Page offset.'),
+            'limit' => new external_value(PARAM_INT, 'Page size.'),
+            'total' => new external_value(PARAM_INT, 'Total matching records.'),
+            'records' => new external_multiple_structure(
+                new external_single_structure([
+                    'record_id' => new external_value(PARAM_INT, 'Stable row id.'),
+                    'moodle_id' => new external_value(PARAM_INT, 'Moodle entity id.'),
+                    'idnumber' => new external_value(PARAM_RAW, 'Entity idnumber.'),
+                    'username' => new external_value(PARAM_USERNAME, 'Moodle username.'),
+                    'email' => new external_value(PARAM_EMAIL, 'Moodle email.', VALUE_DEFAULT, ''),
+                    'firstname' => new external_value(PARAM_TEXT, 'First name.'),
+                    'lastname' => new external_value(PARAM_TEXT, 'Last name.'),
+                    'suspended' => new external_value(PARAM_INT, 'User suspension status.'),
+                    'shortname' => new external_value(PARAM_TEXT, 'Course shortname.'),
+                    'fullname' => new external_value(PARAM_TEXT, 'Course fullname.'),
+                    'visible' => new external_value(PARAM_INT, 'Course visibility.'),
+                    'course_id' => new external_value(PARAM_INT, 'Moodle course id.'),
+                    'course_idnumber' => new external_value(PARAM_RAW, 'Course idnumber.'),
+                    'user_id' => new external_value(PARAM_INT, 'Moodle user id.'),
+                    'user_idnumber' => new external_value(PARAM_RAW, 'User idnumber.'),
+                    'role_shortname' => new external_value(PARAM_ALPHANUMEXT, 'Role shortname.'),
+                    'enrolment_status' => new external_value(PARAM_INT, 'Moodle enrolment status.'),
+                    'grade_item_id' => new external_value(PARAM_INT, 'Moodle grade item id.'),
+                    'grade_item_idnumber' => new external_value(PARAM_RAW, 'RTC grade item idnumber.'),
+                    'grade' => new external_value(
+                        PARAM_FLOAT,
+                        'Final grade.',
+                        VALUE_DEFAULT,
+                        null,
+                        NULL_ALLOWED
+                    ),
+                    'grade_max' => new external_value(PARAM_FLOAT, 'Maximum grade.'),
+                    'hidden' => new external_value(PARAM_INT, 'Grade item hidden flag.'),
+                ])
+            ),
+        ]);
+    }
+
+    private static function normalise_managed_state_record(stdClass $record): array
+    {
+        return [
+            'record_id' => (int) ($record->record_id ?? 0),
+            'moodle_id' => (int) ($record->moodle_id ?? 0),
+            'idnumber' => (string) ($record->idnumber ?? ''),
+            'username' => (string) ($record->username ?? ''),
+            'email' => (string) ($record->email ?? ''),
+            'firstname' => (string) ($record->firstname ?? ''),
+            'lastname' => (string) ($record->lastname ?? ''),
+            'suspended' => (int) ($record->suspended ?? 0),
+            'shortname' => (string) ($record->shortname ?? ''),
+            'fullname' => (string) ($record->fullname ?? ''),
+            'visible' => (int) ($record->visible ?? 0),
+            'course_id' => (int) ($record->course_id ?? 0),
+            'course_idnumber' => (string) ($record->course_idnumber ?? ''),
+            'user_id' => (int) ($record->user_id ?? 0),
+            'user_idnumber' => (string) ($record->user_idnumber ?? ''),
+            'role_shortname' => (string) ($record->role_shortname ?? ''),
+            'enrolment_status' => (int) ($record->enrolment_status ?? 0),
+            'grade_item_id' => (int) ($record->grade_item_id ?? 0),
+            'grade_item_idnumber' => (string) ($record->grade_item_idnumber ?? ''),
+            'grade' => isset($record->grade) ? (float) $record->grade : null,
+            'grade_max' => (float) ($record->grade_max ?? 0),
+            'hidden' => (int) ($record->hidden ?? 0),
+        ];
+    }
+
     private static function ensure_category(string $idnumber, string $name): int
     {
         global $DB;
