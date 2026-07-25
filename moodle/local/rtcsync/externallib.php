@@ -657,6 +657,18 @@ class local_rtcsync_external extends external_api
         $name = trim($name) ?: 'RTC Academic Courses';
 
         $category = $DB->get_record('course_categories', ['idnumber' => $idnumber], '*', IGNORE_MISSING);
+        if (!$category && str_starts_with($idnumber, 'rtc-program-')) {
+            // Adopt an existing manually-created program category instead of
+            // creating a duplicate when its stable idnumber was not set yet.
+            $category = $DB->get_record('course_categories', [
+                'name' => $name,
+                'parent' => 0,
+            ], '*', IGNORE_MISSING);
+            if ($category && (string) $category->idnumber !== $idnumber) {
+                $category->idnumber = $idnumber;
+                $DB->update_record('course_categories', $category);
+            }
+        }
         if ($category) {
             return (int) $category->id;
         }
