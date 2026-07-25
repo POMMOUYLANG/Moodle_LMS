@@ -534,7 +534,8 @@ class local_rtcsync_external extends external_api
         } else {
             $where = "c.idnumber {$insql}
                       AND gi.idnumber LIKE :gradeprefix
-                      AND u.deleted = 0";
+                      AND u.deleted = 0
+                      AND gg.finalgrade IS NOT NULL";
             $queryparams = $inparams + ['gradeprefix' => 'rtc-subject-score:%'];
             $from = "FROM {course} c
                      JOIN {grade_items} gi
