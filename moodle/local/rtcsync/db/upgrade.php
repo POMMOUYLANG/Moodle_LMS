@@ -57,5 +57,9 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         upgrade_plugin_savepoint(true, 2026072602, 'local', 'rtcsync');
     }
 
+    if ($oldversion < 2026072701) {
+        upgrade_plugin_savepoint(true, 2026072701, 'local', 'rtcsync');
+    }
+
     return true;
 }

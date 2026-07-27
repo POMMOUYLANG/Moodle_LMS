@@ -239,7 +239,6 @@ class local_rtcsync_external extends external_api
         $systemcontext = context_system::instance();
         self::validate_context($systemcontext);
         require_capability('moodle/role:assign', $systemcontext);
-        require_capability('moodle/role:unassign', $systemcontext);
 
         $userid = (int) $access['userid'];
         $DB->get_record('user', ['id' => $userid, 'deleted' => 0], 'id', MUST_EXIST);

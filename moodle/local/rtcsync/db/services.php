@@ -25,7 +25,7 @@ $functions = [
         'classpath' => 'local/rtcsync/externallib.php',
         'description' => 'Reconcile approved RTC-managed Moodle system roles.',
         'type' => 'write',
-        'capabilities' => 'moodle/role:assign,moodle/role:unassign',
+        'capabilities' => 'moodle/role:assign',
     ],
     'local_rtcsync_enrol_user' => [
         'classname' => 'local_rtcsync_external',
