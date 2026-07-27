@@ -287,4 +287,70 @@ final class externallib_test extends \advanced_testcase
             'contextid' => $context->id,
         ]));
     }
+
+    public function test_managed_state_returns_system_roles_scope(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $user = $this->getDataGenerator()->create_user([
+            'idnumber' => 'rtc-user:sysrole',
+        ]);
+
+        \local_rtcsync_external::sync_system_roles([
+            'userid' => (int) $user->id,
+            'role_shortnames' => ['manager'],
+        ]);
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'systemroles',
+            ['rtc-user:sysrole'],
+            0,
+            100
+        );
+
+        $this->assertSame('systemroles', $result['scope']);
+        $this->assertSame(1, $result['total']);
+        $this->assertCount(1, $result['records']);
+        $this->assertSame((int) $user->id, $result['records'][0]['moodle_id']);
+        $this->assertSame('manager', $result['records'][0]['role_shortname']);
+    }
+
+    public function test_sso_elevation_check_prevents_broad_system_roles(): void
+    {
+        global $CFG, $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        require_once($CFG->dirroot . '/local/rtc_sso.php');
+
+        $this->assertNull(rtc_sso_moodle_role_shortname(['teacher']));
+        $this->assertNull(rtc_sso_moodle_role_shortname(['student']));
+        $this->assertNull(rtc_sso_moodle_role_shortname(['staff', 'teacher']));
+        $this->assertNull(rtc_sso_moodle_role_shortname(['director', 'head department']));
+        $this->assertSame('manager', rtc_sso_moodle_role_shortname(['super admin']));
+        $this->assertSame('manager', rtc_sso_moodle_role_shortname(['admin']));
+
+        $user = $this->getDataGenerator()->create_user();
+        $systemcontext = \context_system::instance();
+        $manager = $DB->get_record('role', ['shortname' => 'manager'], '*', MUST_EXIST);
+
+        role_assign((int) $manager->id, (int) $user->id, $systemcontext->id, 'local_rtc_sso');
+
+        $this->assertTrue($DB->record_exists('role_assignments', [
+            'roleid' => (int) $manager->id,
+            'userid' => (int) $user->id,
+            'contextid' => $systemcontext->id,
+            'component' => 'local_rtc_sso',
+        ]));
+
+        rtc_sso_sync_role_access($user, ['teacher', 'staff']);
+
+        $this->assertFalse($DB->record_exists('role_assignments', [
+            'userid' => (int) $user->id,
+            'contextid' => $systemcontext->id,
+            'component' => 'local_rtc_sso',
+        ]));
+    }
 }
