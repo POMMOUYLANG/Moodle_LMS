@@ -19,6 +19,14 @@ $functions = [
         'type' => 'write',
         'capabilities' => 'moodle/user:create,moodle/user:update',
     ],
+    'local_rtcsync_sync_system_roles' => [
+        'classname' => 'local_rtcsync_external',
+        'methodname' => 'sync_system_roles',
+        'classpath' => 'local/rtcsync/externallib.php',
+        'description' => 'Reconcile approved RTC-managed Moodle system roles.',
+        'type' => 'write',
+        'capabilities' => 'moodle/role:assign,moodle/role:unassign',
+    ],
     'local_rtcsync_enrol_user' => [
         'classname' => 'local_rtcsync_external',
         'methodname' => 'enrol_user',

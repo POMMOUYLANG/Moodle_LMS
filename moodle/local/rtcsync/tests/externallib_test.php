@@ -2,13 +2,28 @@
 
 namespace local_rtcsync;
 
+use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
+
 defined('MOODLE_INTERNAL') || die();
 
-global $CFG;
-require_once($CFG->dirroot . '/local/rtcsync/externallib.php');
-
+/**
+ * Tests for the RTC synchronization external service.
+ */
+#[CoversClass(\local_rtcsync_external::class)]
+#[PreserveGlobalState(false)]
+#[RunTestsInSeparateProcesses]
 final class externallib_test extends \advanced_testcase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        global $CFG;
+        require_once($CFG->dirroot . '/local/rtcsync/externallib.php');
+    }
+
     public function test_user_read_returns_only_explicit_idnumbers(): void
     {
         $this->resetAfterTest();
