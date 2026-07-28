@@ -19,6 +19,14 @@ $functions = [
         'type' => 'write',
         'capabilities' => 'moodle/user:create,moodle/user:update',
     ],
+    'local_rtcsync_sync_system_roles' => [
+        'classname' => 'local_rtcsync_external',
+        'methodname' => 'sync_system_roles',
+        'classpath' => 'local/rtcsync/externallib.php',
+        'description' => 'Reconcile approved RTC-managed Moodle system roles.',
+        'type' => 'write',
+        'capabilities' => 'moodle/role:assign',
+    ],
     'local_rtcsync_enrol_user' => [
         'classname' => 'local_rtcsync_external',
         'methodname' => 'enrol_user',
@@ -42,6 +50,14 @@ $functions = [
         'description' => 'Create/update an RTC grade item and student grade.',
         'type' => 'write',
         'capabilities' => 'moodle/grade:manage,moodle/grade:edit',
+    ],
+    'local_rtcsync_get_managed_state' => [
+        'classname' => 'local_rtcsync_external',
+        'methodname' => 'get_managed_state',
+        'classpath' => 'local/rtcsync/externallib.php',
+        'description' => 'Read bounded state for explicitly identified RTC-managed records.',
+        'type' => 'read',
+        'capabilities' => 'local/rtcsync:readmanagedstate',
     ],
 ];
 

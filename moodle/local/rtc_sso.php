@@ -400,29 +400,27 @@ function rtc_sso_verified_roles(array $rtcuser, array $detail): array
     return array_values(array_unique($normalizedroles ?: ['student']));
 }
 
-function rtc_sso_moodle_role_shortname(array $rtcroles): string
+function rtc_sso_moodle_role_shortname(array $rtcroles): ?string
 {
-    if (array_intersect($rtcroles, ['admin', 'administrator', 'director'])) {
+    if (array_intersect($rtcroles, ['super admin', 'admin', 'administrator'])) {
         return 'manager';
     }
 
-    if (array_intersect($rtcroles, ['head department', 'hod', 'teacher', 'instructor', 'staff', 'employee'])) {
-        return 'editingteacher';
-    }
-
-    return 'student';
+    // Teacher and student access is course-scoped and must come from RTC
+    // subject assignments and enrolments, never from broad system roles.
+    return null;
 }
 
 function rtc_sso_sync_role_access(stdClass $muser, array $rtcroles): void
 {
-    global $CFG, $DB;
+    global $DB;
 
     $component = 'local_rtc_sso';
     $systemcontext = context_system::instance();
     $shortname = rtc_sso_moodle_role_shortname($rtcroles);
-    $moodlerole = $DB->get_record('role', ['shortname' => $shortname], '*', MUST_EXIST);
-    $managedroles = $DB->get_records_list('role', 'shortname', ['manager', 'editingteacher', 'student']);
-    $managedroleids = array_map('intval', array_keys($managedroles));
+    $moodlerole = $shortname === null
+        ? null
+        : $DB->get_record('role', ['shortname' => $shortname], '*', MUST_EXIST);
 
     $hasdesiredrole = false;
     foreach ($DB->get_records('role_assignments', [
@@ -430,7 +428,7 @@ function rtc_sso_sync_role_access(stdClass $muser, array $rtcroles): void
         'contextid' => $systemcontext->id,
         'component' => $component,
     ]) as $assignment) {
-        if ((int) $assignment->roleid === (int) $moodlerole->id) {
+        if ($moodlerole !== null && (int) $assignment->roleid === (int) $moodlerole->id) {
             $hasdesiredrole = true;
             continue;
         }
@@ -438,38 +436,11 @@ function rtc_sso_sync_role_access(stdClass $muser, array $rtcroles): void
         role_unassign((int) $assignment->roleid, $muser->id, $systemcontext->id, $component);
     }
 
-    // Earlier RTC SSO versions used manual system assignments. Remove only those
-    // broad system roles when the same user returns through verified RTC SSO.
-    foreach ($DB->get_records('role_assignments', [
-        'userid' => $muser->id,
-        'contextid' => $systemcontext->id,
-        'component' => '',
-    ]) as $assignment) {
-        if (in_array((int) $assignment->roleid, $managedroleids, true)) {
-            role_unassign((int) $assignment->roleid, $muser->id, $systemcontext->id);
-        }
-    }
-
-    if (!$hasdesiredrole) {
+    if ($moodlerole !== null && !$hasdesiredrole) {
         role_assign($moodlerole->id, $muser->id, $systemcontext->id, $component);
     }
-    rtc_sso_log_debug("Synchronized verified RTC roles to Moodle {$shortname} for user {$muser->id}.");
-
-    $siteadmins = array_values(array_filter(array_map('trim', explode(',', (string) ($CFG->siteadmins ?? '')))));
-    $userid = (string) $muser->id;
-    $hasrtcadminrole = (bool) array_intersect($rtcroles, ['admin', 'administrator']);
-
-    if ($hasrtcadminrole && !in_array($userid, $siteadmins, true)) {
-        $siteadmins[] = $userid;
-        set_config('siteadmins', implode(',', array_unique($siteadmins)));
-        $CFG->siteadmins = implode(',', array_unique($siteadmins));
-        rtc_sso_log_debug("Added Moodle site admin access for verified RTC admin user {$muser->id}.");
-    } else if (!$hasrtcadminrole && count($siteadmins) > 1 && in_array($userid, array_slice($siteadmins, 1), true)) {
-        $siteadmins = array_values(array_filter($siteadmins, static fn($siteadminid) => $siteadminid !== $userid));
-        set_config('siteadmins', implode(',', $siteadmins));
-        $CFG->siteadmins = implode(',', $siteadmins);
-        rtc_sso_log_debug("Removed Moodle site admin access for non-admin RTC user {$muser->id}.");
-    }
+    $result = $shortname ?? 'no system role';
+    rtc_sso_log_debug("Synchronized verified RTC access policy to {$result} for user {$muser->id}.");
 }
 
 function rtc_sso_autologin_to_moodle(string $token): bool
