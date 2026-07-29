@@ -16,7 +16,7 @@ final class rebuild_audit
 
         $managedcondition = self::managed_course_condition('c');
         $managedparams = self::managed_course_params();
-        $baseparams = ['siteid' => (int) $CFG->siteid];
+        $baseparams = ['siteid' => SITEID];
         $basecondition = 'c.id <> :siteid';
 
         $managed = self::content_counts(
@@ -35,7 +35,7 @@ final class rebuild_audit
         return [
             'generated_at' => gmdate('c'),
             'site' => [
-                'shortname' => (string) $DB->get_field('course', 'shortname', ['id' => $CFG->siteid]),
+                'shortname' => (string) $DB->get_field('course', 'shortname', ['id' => SITEID]),
                 'wwwroot' => (string) $CFG->wwwroot,
                 'plugin_version' => (string) get_config('local_rtcsync', 'version'),
             ],
@@ -121,18 +121,42 @@ final class rebuild_audit
      */
     private static function content_counts(string $coursecondition, array $params): array
     {
+        $activities = self::count_sql(
+            "SELECT COUNT(1)
+               FROM {course_modules} cm
+               JOIN {course} c ON c.id = cm.course
+              WHERE cm.deletioninprogress = 0 AND $coursecondition",
+            $params
+        );
+        $emptyannouncements = self::count_sql(
+            "SELECT COUNT(1)
+               FROM {course_modules} cm
+               JOIN {modules} module ON module.id = cm.module
+               JOIN {forum} forum ON forum.id = cm.instance
+               JOIN {course} c ON c.id = cm.course
+              WHERE cm.deletioninprogress = 0
+                AND module.name = :forummodule
+                AND forum.type = :newstype
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM {forum_discussions} discussion
+                     WHERE discussion.forum = forum.id
+                )
+                AND $coursecondition",
+            $params + [
+                'forummodule' => 'forum',
+                'newstype' => 'news',
+            ]
+        );
+
         return [
             'courses' => self::count_sql(
                 "SELECT COUNT(1) FROM {course} c WHERE $coursecondition",
                 $params
             ),
-            'activities' => self::count_sql(
-                "SELECT COUNT(1)
-                   FROM {course_modules} cm
-                   JOIN {course} c ON c.id = cm.course
-                  WHERE cm.deletioninprogress = 0 AND $coursecondition",
-                $params
-            ),
+            'activities_total' => $activities,
+            'empty_announcement_forums' => $emptyannouncements,
+            'meaningful_activities' => $activities - $emptyannouncements,
             'assignment_submissions' => self::count_sql(
                 "SELECT COUNT(1)
                    FROM {assign_submission} submission
@@ -194,7 +218,7 @@ final class rebuild_audit
     private static function append_content_blockers(array &$blockers, string $scope, array $counts): void
     {
         foreach ([
-            'activities',
+            'meaningful_activities',
             'assignment_submissions',
             'quiz_attempts',
             'final_grades',
@@ -212,7 +236,7 @@ final class rebuild_audit
         global $CFG, $DB;
 
         $managedcondition = self::managed_course_condition('c');
-        $params = self::managed_course_params() + ['siteid' => (int) $CFG->siteid];
+        $params = self::managed_course_params() + ['siteid' => SITEID];
         $records = $DB->get_records_sql(
             "SELECT c.id, c.fullname, c.shortname, c.idnumber, COUNT(cm.id) AS activities
                FROM {course} c

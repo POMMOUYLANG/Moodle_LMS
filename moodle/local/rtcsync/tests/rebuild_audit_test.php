@@ -28,9 +28,9 @@ final class rebuild_audit_test extends \advanced_testcase
         $inventory = rebuild_audit::inventory();
 
         $this->assertSame(1, $inventory['managed']['courses']);
-        $this->assertSame(1, $inventory['managed']['activities']);
+        $this->assertSame(1, $inventory['managed']['meaningful_activities']);
         $this->assertSame(1, $inventory['unmanaged']['courses']);
-        $this->assertContains('managed.activities', $inventory['blockers']);
+        $this->assertContains('managed.meaningful_activities', $inventory['blockers']);
         $this->assertFalse($inventory['safe_to_discard_without_content_migration']);
     }
 
