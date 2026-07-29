@@ -18,6 +18,15 @@ trait local_rtcsync_credit_class_external
                 'shortname' => new external_value(PARAM_TEXT, 'Unique isolated credit-course shortname.'),
                 'name' => new external_value(PARAM_TEXT, 'Isolated credit-course display name.'),
                 'description' => new external_value(PARAM_RAW, 'Credit-course summary.', VALUE_DEFAULT, ''),
+                'category_path' => new external_multiple_structure(
+                    new external_single_structure([
+                        'idnumber' => new external_value(PARAM_RAW, 'Expected category idnumber.'),
+                        'name' => new external_value(PARAM_RAW, 'Expected multilingual category name.'),
+                    ]),
+                    'Expected inherited Program, study-year, and semester path.',
+                    VALUE_DEFAULT,
+                    []
+                ),
                 'teacher_role_shortname' => new external_value(PARAM_ALPHANUMEXT, 'Teacher role.', VALUE_DEFAULT, 'editingteacher'),
                 'student_role_shortname' => new external_value(PARAM_ALPHANUMEXT, 'Student role.', VALUE_DEFAULT, 'student'),
                 'teacher_userids' => new external_multiple_structure(

@@ -25,7 +25,16 @@ class local_rtcsync_external extends external_api
                 'idnumber' => new external_value(PARAM_RAW, 'Stable RTC course idnumber.'),
                 'summary' => new external_value(PARAM_RAW, 'Course summary.', VALUE_DEFAULT, ''),
                 'category_idnumber' => new external_value(PARAM_RAW, 'RTC category idnumber.', VALUE_DEFAULT, 'rtc-academic'),
-                'category_name' => new external_value(PARAM_TEXT, 'RTC category name.', VALUE_DEFAULT, 'RTC Academic Courses'),
+                'category_name' => new external_value(PARAM_RAW, 'RTC category name.', VALUE_DEFAULT, 'RTC Academic Courses'),
+                'category_path' => new external_multiple_structure(
+                    new external_single_structure([
+                        'idnumber' => new external_value(PARAM_RAW, 'Stable category idnumber.'),
+                        'name' => new external_value(PARAM_RAW, 'Multilingual category name.'),
+                    ]),
+                    'Program, study-year, and semester category path.',
+                    VALUE_DEFAULT,
+                    []
+                ),
                 'visible' => new external_value(PARAM_INT, 'Course visibility.', VALUE_DEFAULT, 1),
                 'startdate' => new external_value(PARAM_INT, 'Course start timestamp.', VALUE_DEFAULT, 0),
                 'enddate' => new external_value(PARAM_INT, 'Course end timestamp.', VALUE_DEFAULT, 0),
@@ -44,7 +53,11 @@ class local_rtcsync_external extends external_api
         self::validate_context($systemcontext);
         require_capability('moodle/category:manage', $systemcontext);
 
-        $categoryid = self::ensure_category($course['category_idnumber'], $course['category_name']);
+        $categoryid = self::ensure_category_path(
+            $course['category_path'] ?? [],
+            $course['category_idnumber'],
+            $course['category_name']
+        );
         $categorycontext = context_coursecat::instance($categoryid);
         require_capability('moodle/course:create', $categorycontext);
 
@@ -607,8 +620,11 @@ class local_rtcsync_external extends external_api
                         c.idnumber,
                         c.shortname,
                         c.fullname,
-                        c.visible
+                        c.visible,
+                        cc.id AS category_id,
+                        cc.idnumber AS category_idnumber
                    FROM {course} c
+                   JOIN {course_categories} cc ON cc.id = c.category
                   WHERE {$where}
                ORDER BY c.id",
                 $inparams,
@@ -628,8 +644,11 @@ class local_rtcsync_external extends external_api
                         c.shortname,
                         c.fullname,
                         c.visible,
+                        cc.id AS category_id,
+                        cc.idnumber AS category_idnumber,
                         c.id AS course_id
                    FROM {course} c
+                   JOIN {course_categories} cc ON cc.id = c.category
                   WHERE {$where}
                ORDER BY c.id",
                 $inparams,
@@ -796,6 +815,8 @@ class local_rtcsync_external extends external_api
                     'shortname' => new external_value(PARAM_TEXT, 'Course shortname.'),
                     'fullname' => new external_value(PARAM_TEXT, 'Course fullname.'),
                     'visible' => new external_value(PARAM_INT, 'Course visibility.'),
+                    'category_idnumber' => new external_value(PARAM_RAW, 'Leaf course category idnumber.'),
+                    'category_path' => new external_value(PARAM_RAW, 'JSON category idnumber path.'),
                     'course_id' => new external_value(PARAM_INT, 'Moodle course id.'),
                     'course_idnumber' => new external_value(PARAM_RAW, 'Course idnumber.'),
                     'user_id' => new external_value(PARAM_INT, 'Moodle user id.'),
@@ -835,6 +856,10 @@ class local_rtcsync_external extends external_api
             'shortname' => (string) ($record->shortname ?? ''),
             'fullname' => (string) ($record->fullname ?? ''),
             'visible' => (int) ($record->visible ?? 0),
+            'category_idnumber' => (string) ($record->category_idnumber ?? ''),
+            'category_path' => isset($record->category_id)
+                ? self::category_path_idnumbers((int) $record->category_id)
+                : '[]',
             'course_id' => (int) ($record->course_id ?? 0),
             'course_idnumber' => (string) ($record->course_idnumber ?? ''),
             'user_id' => (int) ($record->user_id ?? 0),
@@ -852,7 +877,31 @@ class local_rtcsync_external extends external_api
         ];
     }
 
-    private static function ensure_category(string $idnumber, string $name): int
+    private static function ensure_category_path(
+        array $path,
+        string $fallbackidnumber,
+        string $fallbackname
+    ): int {
+        if (!$path) {
+            $path = [[
+                'idnumber' => $fallbackidnumber,
+                'name' => $fallbackname,
+            ]];
+        }
+
+        $parentid = 0;
+        foreach ($path as $node) {
+            $parentid = self::ensure_category(
+                (string) ($node['idnumber'] ?? ''),
+                (string) ($node['name'] ?? ''),
+                $parentid
+            );
+        }
+
+        return $parentid;
+    }
+
+    private static function ensure_category(string $idnumber, string $name, int $parentid = 0): int
     {
         global $DB;
 
@@ -860,12 +909,12 @@ class local_rtcsync_external extends external_api
         $name = trim($name) ?: 'RTC Academic Courses';
 
         $category = $DB->get_record('course_categories', ['idnumber' => $idnumber], '*', IGNORE_MISSING);
-        if (!$category && str_starts_with($idnumber, 'rtc-program-')) {
-            // Adopt an existing manually-created program category instead of
-            // creating a duplicate when its stable idnumber was not set yet.
+        if (!$category) {
+            // Adopt an existing manually-created node instead of duplicating
+            // the legacy Program -> Year -> Semester tree.
             $category = $DB->get_record('course_categories', [
                 'name' => $name,
-                'parent' => 0,
+                'parent' => $parentid,
             ], '*', IGNORE_MISSING);
             if ($category && (string) $category->idnumber !== $idnumber) {
                 $category->idnumber = $idnumber;
@@ -873,19 +922,50 @@ class local_rtcsync_external extends external_api
             }
         }
         if ($category) {
+            if ((int) $category->parent !== $parentid) {
+                core_course_category::get((int) $category->id)->change_parent($parentid);
+            }
+
             return (int) $category->id;
         }
 
         $created = core_course_category::create([
             'name' => $name,
             'idnumber' => $idnumber,
-            'parent' => 0,
+            'parent' => $parentid,
             'visible' => 1,
         ]);
 
         return (int) $created->id;
     }
 
+    private static function category_path_idnumbers(int $categoryid): string
+    {
+        global $DB;
+
+        $category = $DB->get_record('course_categories', ['id' => $categoryid], 'id,path', IGNORE_MISSING);
+        if (!$category) {
+            return '[]';
+        }
+
+        $ids = array_values(array_filter(array_map(
+            'intval',
+            explode('/', trim((string) $category->path, '/'))
+        )));
+        if (!$ids) {
+            return '[]';
+        }
+
+        $categories = $DB->get_records_list('course_categories', 'id', $ids, '', 'id,idnumber');
+        $path = [];
+        foreach ($ids as $id) {
+            if (isset($categories[$id])) {
+                $path[] = (string) $categories[$id]->idnumber;
+            }
+        }
+
+        return json_encode($path);
+    }
     private static function role_by_shortname(string $shortname): stdClass
     {
         global $DB;
