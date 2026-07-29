@@ -74,6 +74,93 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame((int) $included->id, $result['records'][0]['moodle_id']);
     }
 
+    public function test_course_upsert_reuses_nested_legacy_categories_and_moves_existing_course(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
+
+        $program = \core_course_category::create([
+            'name' => 'Associate Degree in Nursing',
+            'idnumber' => 'ADN',
+            'parent' => 0,
+        ]);
+        $year = \core_course_category::create([
+            'name' => 'YEAR 1',
+            'idnumber' => 'ADN_Y001',
+            'parent' => (int) $program->id,
+        ]);
+        $semester = \core_course_category::create([
+            'name' => 'Semester 1',
+            'idnumber' => 'ADNY1S1',
+            'parent' => (int) $year->id,
+        ]);
+        $flat = \core_course_category::create([
+            'name' => 'Duplicate flat category',
+            'idnumber' => 'rtc-program-4',
+            'parent' => 0,
+        ]);
+        $existing = $this->getDataGenerator()->create_course([
+            'fullname' => 'Human Ethic',
+            'shortname' => 'RTC-BB-SUBJ-255',
+            'idnumber' => 'rtc-subject:255',
+            'category' => (int) $flat->id,
+        ]);
+        $path = [
+            ['idnumber' => 'ADN', 'name' => 'Associate Degree in Nursing'],
+            ['idnumber' => 'ADN_Y001', 'name' => 'YEAR 1'],
+            ['idnumber' => 'ADNY1S1', 'name' => 'Semester 1'],
+        ];
+
+        $saved = \local_rtcsync_external::upsert_course([
+            'fullname' => 'N-15-HE - Human Ethic',
+            'shortname' => 'RTC-BB-SUBJ-255',
+            'idnumber' => 'rtc-subject:255',
+            'category_idnumber' => 'ADNY1S1',
+            'category_name' => 'Semester 1',
+            'category_path' => $path,
+            'visible' => 1,
+        ]);
+
+        $this->assertSame((int) $existing->id, $saved['id']);
+        $this->assertSame((int) $semester->id, $saved['categoryid']);
+        foreach (['ADN', 'ADN_Y001', 'ADNY1S1'] as $idnumber) {
+            $this->assertSame(1, $DB->count_records('course_categories', ['idnumber' => $idnumber]));
+        }
+
+        $state = \local_rtcsync_external::get_managed_state(
+            'courses',
+            ['rtc-subject:255'],
+            0,
+            100
+        );
+        $this->assertSame('ADNY1S1', $state['records'][0]['category_idnumber']);
+        $this->assertSame(
+            ['ADN', 'ADN_Y001', 'ADNY1S1'],
+            json_decode($state['records'][0]['category_path'], true, 512, JSON_THROW_ON_ERROR),
+        );
+
+        $teacher = $this->getDataGenerator()->create_user();
+        $student = $this->getDataGenerator()->create_user();
+        $credit = \local_rtcsync_external::upsert_credit([
+            'courseid' => $saved['id'],
+            'subject_id' => 255,
+            'idnumber' => 'rtc-credit-course:17',
+            'shortname' => 'RTC-BB-CREDIT-17',
+            'name' => 'Human Ethic - Test Teacher',
+            'category_path' => $path,
+            'teacher_role_shortname' => 'editingteacher',
+            'student_role_shortname' => 'student',
+            'teacher_userids' => [(int) $teacher->id],
+            'student_userids' => [(int) $student->id],
+        ]);
+        $this->assertSame(
+            (int) $semester->id,
+            (int) $DB->get_field('course', 'category', ['id' => $credit['courseid']], MUST_EXIST),
+        );
+    }
     public function test_read_rejects_more_than_one_hundred_identifiers(): void
     {
         $this->resetAfterTest();
@@ -353,4 +440,110 @@ final class externallib_test extends \advanced_testcase
             'component' => 'local_rtc_sso',
         ]));
     }
-}
+
+    public function test_credit_courses_strictly_isolate_teacher_access_and_share_students(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
+
+        $parent = $this->getDataGenerator()->create_course([
+            'idnumber' => 'rtc-subject:strict',
+            'shortname' => 'RTC-STRICT-PARENT',
+        ]);
+        $teacherone = $this->getDataGenerator()->create_user();
+        $teachertwo = $this->getDataGenerator()->create_user();
+        $student = $this->getDataGenerator()->create_user();
+
+        $base = [
+            'courseid' => (int) $parent->id,
+            'subject_id' => 44,
+            'description' => 'Strictly isolated teaching credit.',
+            'teacher_role_shortname' => 'editingteacher',
+            'student_role_shortname' => 'student',
+            'student_userids' => [(int) $student->id],
+        ];
+        $first = \local_rtcsync_external::upsert_credit($base + [
+            'idnumber' => 'rtc-credit-course:101',
+            'shortname' => 'RTC-CREDIT-101',
+            'name' => 'Credit 1 - Teacher One',
+            'teacher_userids' => [(int) $teacherone->id],
+        ]);
+        $second = \local_rtcsync_external::upsert_credit($base + [
+            'idnumber' => 'rtc-credit-course:102',
+            'shortname' => 'RTC-CREDIT-102',
+            'name' => 'Credit 2 - Teacher Two',
+            'teacher_userids' => [(int) $teachertwo->id],
+        ]);
+
+        $this->assertNotSame($first['courseid'], $second['courseid']);
+        $teacherrole = $DB->get_record('role', ['shortname' => 'editingteacher'], '*', MUST_EXIST);
+        $studentrole = $DB->get_record('role', ['shortname' => 'student'], '*', MUST_EXIST);
+        $firstcontext = \context_course::instance((int) $first['courseid']);
+        $secondcontext = \context_course::instance((int) $second['courseid']);
+
+        $this->assertTrue($DB->record_exists('role_assignments', [
+            'contextid' => $firstcontext->id,
+            'roleid' => (int) $teacherrole->id,
+            'userid' => (int) $teacherone->id,
+        ]));
+        $this->assertFalse($DB->record_exists('role_assignments', [
+            'contextid' => $secondcontext->id,
+            'roleid' => (int) $teacherrole->id,
+            'userid' => (int) $teacherone->id,
+        ]));
+        $this->assertTrue($DB->record_exists('role_assignments', [
+            'contextid' => $secondcontext->id,
+            'roleid' => (int) $teacherrole->id,
+            'userid' => (int) $teachertwo->id,
+        ]));
+        $this->assertFalse($DB->record_exists('role_assignments', [
+            'contextid' => $firstcontext->id,
+            'roleid' => (int) $teacherrole->id,
+            'userid' => (int) $teachertwo->id,
+        ]));
+        $this->assertTrue(has_capability('moodle/course:update', $firstcontext, $teacherone));
+        $this->assertFalse(has_capability('moodle/course:update', $secondcontext, $teacherone));
+        $this->assertTrue(has_capability('moodle/course:update', $secondcontext, $teachertwo));
+        $this->assertFalse(has_capability('moodle/course:update', $firstcontext, $teachertwo));
+        foreach ([$firstcontext, $secondcontext] as $context) {
+            $this->assertTrue($DB->record_exists('role_assignments', [
+                'contextid' => $context->id,
+                'roleid' => (int) $studentrole->id,
+                'userid' => (int) $student->id,
+            ]));
+        }
+
+        $state = \local_rtcsync_external::get_managed_state(
+            'credits',
+            ['rtc-credit-course:101', 'rtc-credit-course:102'],
+            0,
+            100
+        );
+        $this->assertSame(2, $state['total']);
+        $this->assertCount(2, $state['records']);
+        $this->assertStringContainsString(
+            $teacherone->id . ':editingteacher',
+            $state['records'][0]['member_roles']
+        );
+
+        \local_rtcsync_external::delete_credit([
+            'courseid' => (int) $parent->id,
+            'idnumber' => 'rtc-credit-course:101',
+            'teacher_role_shortname' => 'editingteacher',
+            'student_role_shortname' => 'student',
+        ]);
+        $this->assertSame(0, (int) $DB->get_field('course', 'visible', [
+            'id' => (int) $first['courseid'],
+        ]));
+        $this->assertFalse($DB->record_exists('role_assignments', [
+            'contextid' => $firstcontext->id,
+            'userid' => (int) $teacherone->id,
+        ]));
+        $this->assertFalse($DB->record_exists('role_assignments', [
+            'contextid' => $firstcontext->id,
+            'userid' => (int) $student->id,
+        ]));
+    }}

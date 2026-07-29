@@ -7,12 +7,15 @@ require_once($CFG->libdir . '/externallib.php');
 require_once($CFG->dirroot . '/course/lib.php');
 require_once($CFG->dirroot . '/user/lib.php');
 require_once($CFG->dirroot . '/local/rtcsync/locallib.php');
+require_once($CFG->dirroot . '/local/rtcsync/creditclasslib.php');
 require_once($CFG->libdir . '/enrollib.php');
 require_once($CFG->libdir . '/gradelib.php');
 require_once($CFG->libdir . '/grade/grade_item.php');
 
 class local_rtcsync_external extends external_api
 {
+    use local_rtcsync_credit_class_external;
+
     public static function upsert_course_parameters(): external_function_parameters
     {
         return new external_function_parameters([
@@ -22,7 +25,16 @@ class local_rtcsync_external extends external_api
                 'idnumber' => new external_value(PARAM_RAW, 'Stable RTC course idnumber.'),
                 'summary' => new external_value(PARAM_RAW, 'Course summary.', VALUE_DEFAULT, ''),
                 'category_idnumber' => new external_value(PARAM_RAW, 'RTC category idnumber.', VALUE_DEFAULT, 'rtc-academic'),
-                'category_name' => new external_value(PARAM_TEXT, 'RTC category name.', VALUE_DEFAULT, 'RTC Academic Courses'),
+                'category_name' => new external_value(PARAM_RAW, 'RTC category name.', VALUE_DEFAULT, 'RTC Academic Courses'),
+                'category_path' => new external_multiple_structure(
+                    new external_single_structure([
+                        'idnumber' => new external_value(PARAM_RAW, 'Stable category idnumber.'),
+                        'name' => new external_value(PARAM_RAW, 'Multilingual category name.'),
+                    ]),
+                    'Program, study-year, and semester category path.',
+                    VALUE_DEFAULT,
+                    []
+                ),
                 'visible' => new external_value(PARAM_INT, 'Course visibility.', VALUE_DEFAULT, 1),
                 'startdate' => new external_value(PARAM_INT, 'Course start timestamp.', VALUE_DEFAULT, 0),
                 'enddate' => new external_value(PARAM_INT, 'Course end timestamp.', VALUE_DEFAULT, 0),
@@ -41,7 +53,11 @@ class local_rtcsync_external extends external_api
         self::validate_context($systemcontext);
         require_capability('moodle/category:manage', $systemcontext);
 
-        $categoryid = self::ensure_category($course['category_idnumber'], $course['category_name']);
+        $categoryid = self::ensure_category_path(
+            $course['category_path'] ?? [],
+            $course['category_idnumber'],
+            $course['category_name']
+        );
         $categorycontext = context_coursecat::instance($categoryid);
         require_capability('moodle/course:create', $categorycontext);
 
@@ -475,11 +491,11 @@ class local_rtcsync_external extends external_api
         return new external_function_parameters([
             'scope' => new external_value(
                 PARAM_ALPHA,
-                'State scope: users, systemroles, courses, enrolments, or grades.'
+                'State scope: users, systemroles, courses, credits, classes, enrolments, or grades.'
             ),
             'idnumbers' => new external_multiple_structure(
                 new external_value(PARAM_RAW, 'Explicit RTC-managed user or course idnumber.'),
-                'Identifiers to read. User scope expects user idnumbers; all other scopes expect course idnumbers.'
+                'Identifiers to read. Identifiers use the stable idnumber for the selected managed scope.'
             ),
             'offset' => new external_value(PARAM_INT, 'Page offset.', VALUE_DEFAULT, 0),
             'limit' => new external_value(PARAM_INT, 'Page size, capped at 100.', VALUE_DEFAULT, 100),
@@ -502,7 +518,7 @@ class local_rtcsync_external extends external_api
         ]);
 
         $scope = strtolower(trim($params['scope']));
-        if (!in_array($scope, ['users', 'systemroles', 'courses', 'enrolments', 'grades'], true)) {
+        if (!in_array($scope, ['users', 'systemroles', 'courses', 'credits', 'classes', 'enrolments', 'grades'], true)) {
             throw new invalid_parameter_exception('Unsupported RTC managed-state scope.');
         }
 
@@ -604,14 +620,92 @@ class local_rtcsync_external extends external_api
                         c.idnumber,
                         c.shortname,
                         c.fullname,
-                        c.visible
+                        c.visible,
+                        cc.id AS category_id,
+                        cc.idnumber AS category_idnumber
                    FROM {course} c
+                   JOIN {course_categories} cc ON cc.id = c.category
                   WHERE {$where}
                ORDER BY c.id",
                 $inparams,
                 $offset,
                 $limit
             );
+        } else if ($scope === 'credits') {
+            $where = "c.idnumber {$insql}";
+            $total = $DB->count_records_sql(
+                "SELECT COUNT(1) FROM {course} c WHERE {$where}",
+                $inparams
+            );
+            $records = $DB->get_records_sql(
+                "SELECT c.id AS record_id,
+                        c.id AS moodle_id,
+                        c.idnumber,
+                        c.shortname,
+                        c.fullname,
+                        c.visible,
+                        cc.id AS category_id,
+                        cc.idnumber AS category_idnumber,
+                        c.id AS course_id
+                   FROM {course} c
+                   JOIN {course_categories} cc ON cc.id = c.category
+                  WHERE {$where}
+               ORDER BY c.id",
+                $inparams,
+                $offset,
+                $limit
+            );
+            foreach ($records as $record) {
+                $context = context_course::instance((int) $record->record_id);
+                $assignments = $DB->get_records_sql(
+                    "SELECT ra.id, ra.userid, r.shortname
+                       FROM {role_assignments} ra
+                       JOIN {role} r ON r.id = ra.roleid
+                       JOIN {user} u ON u.id = ra.userid
+                      WHERE ra.contextid = :contextid
+                        AND u.deleted = 0
+                   ORDER BY ra.userid, r.shortname",
+                    ['contextid' => $context->id]
+                );
+                $members = [];
+                $memberroles = [];
+                foreach ($assignments as $assignment) {
+                    $members[] = (int) $assignment->userid;
+                    $memberroles[] = (int) $assignment->userid . ':' . $assignment->shortname;
+                }
+                $members = array_values(array_unique($members));
+                sort($members, SORT_NUMERIC);
+                sort($memberroles, SORT_STRING);
+                $record->member_count = count($members);
+                $record->member_userids = json_encode($members);
+                $record->member_roles = json_encode($memberroles);
+            }        } else if ($scope === 'classes') {
+            $where = "ch.idnumber {$insql}";
+            $total = $DB->count_records_sql(
+                "SELECT COUNT(1) FROM {cohort} ch WHERE {$where}",
+                $inparams
+            );
+            $records = $DB->get_records_sql(
+                "SELECT ch.id AS record_id,
+                        ch.id AS moodle_id,
+                        ch.idnumber,
+                        ch.name AS fullname,
+                        ch.visible
+                   FROM {cohort} ch
+                  WHERE {$where}
+               ORDER BY ch.id",
+                $inparams,
+                $offset,
+                $limit
+            );
+            foreach ($records as $record) {
+                $members = array_map('intval', array_keys($DB->get_records(
+                    'cohort_members', ['cohortid' => $record->record_id], '', 'userid'
+                )));
+                sort($members, SORT_NUMERIC);
+                $record->member_count = count($members);
+                $record->member_userids = json_encode($members);
+            }
         } else if ($scope === 'enrolments') {
             $where = "c.idnumber {$insql}
                       AND e.enrol = :enrolmethod
@@ -721,6 +815,8 @@ class local_rtcsync_external extends external_api
                     'shortname' => new external_value(PARAM_TEXT, 'Course shortname.'),
                     'fullname' => new external_value(PARAM_TEXT, 'Course fullname.'),
                     'visible' => new external_value(PARAM_INT, 'Course visibility.'),
+                    'category_idnumber' => new external_value(PARAM_RAW, 'Leaf course category idnumber.'),
+                    'category_path' => new external_value(PARAM_RAW, 'JSON category idnumber path.'),
                     'course_id' => new external_value(PARAM_INT, 'Moodle course id.'),
                     'course_idnumber' => new external_value(PARAM_RAW, 'Course idnumber.'),
                     'user_id' => new external_value(PARAM_INT, 'Moodle user id.'),
@@ -738,6 +834,9 @@ class local_rtcsync_external extends external_api
                     ),
                     'grade_max' => new external_value(PARAM_FLOAT, 'Maximum grade.'),
                     'hidden' => new external_value(PARAM_INT, 'Grade item hidden flag.'),
+                    'member_count' => new external_value(PARAM_INT, 'Managed member count.'),
+                    'member_userids' => new external_value(PARAM_RAW, 'JSON array of managed Moodle user ids.'),
+                    'member_roles' => new external_value(PARAM_RAW, 'JSON array of Moodle userid:role assignments.'),
                 ])
             ),
         ]);
@@ -757,6 +856,10 @@ class local_rtcsync_external extends external_api
             'shortname' => (string) ($record->shortname ?? ''),
             'fullname' => (string) ($record->fullname ?? ''),
             'visible' => (int) ($record->visible ?? 0),
+            'category_idnumber' => (string) ($record->category_idnumber ?? ''),
+            'category_path' => isset($record->category_id)
+                ? self::category_path_idnumbers((int) $record->category_id)
+                : '[]',
             'course_id' => (int) ($record->course_id ?? 0),
             'course_idnumber' => (string) ($record->course_idnumber ?? ''),
             'user_id' => (int) ($record->user_id ?? 0),
@@ -768,10 +871,37 @@ class local_rtcsync_external extends external_api
             'grade' => isset($record->grade) ? (float) $record->grade : null,
             'grade_max' => (float) ($record->grade_max ?? 0),
             'hidden' => (int) ($record->hidden ?? 0),
+            'member_count' => (int) ($record->member_count ?? 0),
+            'member_userids' => (string) ($record->member_userids ?? '[]'),
+            'member_roles' => (string) ($record->member_roles ?? '[]'),
         ];
     }
 
-    private static function ensure_category(string $idnumber, string $name): int
+    private static function ensure_category_path(
+        array $path,
+        string $fallbackidnumber,
+        string $fallbackname
+    ): int {
+        if (!$path) {
+            $path = [[
+                'idnumber' => $fallbackidnumber,
+                'name' => $fallbackname,
+            ]];
+        }
+
+        $parentid = 0;
+        foreach ($path as $node) {
+            $parentid = self::ensure_category(
+                (string) ($node['idnumber'] ?? ''),
+                (string) ($node['name'] ?? ''),
+                $parentid
+            );
+        }
+
+        return $parentid;
+    }
+
+    private static function ensure_category(string $idnumber, string $name, int $parentid = 0): int
     {
         global $DB;
 
@@ -779,12 +909,12 @@ class local_rtcsync_external extends external_api
         $name = trim($name) ?: 'RTC Academic Courses';
 
         $category = $DB->get_record('course_categories', ['idnumber' => $idnumber], '*', IGNORE_MISSING);
-        if (!$category && str_starts_with($idnumber, 'rtc-program-')) {
-            // Adopt an existing manually-created program category instead of
-            // creating a duplicate when its stable idnumber was not set yet.
+        if (!$category) {
+            // Adopt an existing manually-created node instead of duplicating
+            // the legacy Program -> Year -> Semester tree.
             $category = $DB->get_record('course_categories', [
                 'name' => $name,
-                'parent' => 0,
+                'parent' => $parentid,
             ], '*', IGNORE_MISSING);
             if ($category && (string) $category->idnumber !== $idnumber) {
                 $category->idnumber = $idnumber;
@@ -792,19 +922,50 @@ class local_rtcsync_external extends external_api
             }
         }
         if ($category) {
+            if ((int) $category->parent !== $parentid) {
+                core_course_category::get((int) $category->id)->change_parent($parentid);
+            }
+
             return (int) $category->id;
         }
 
         $created = core_course_category::create([
             'name' => $name,
             'idnumber' => $idnumber,
-            'parent' => 0,
+            'parent' => $parentid,
             'visible' => 1,
         ]);
 
         return (int) $created->id;
     }
 
+    private static function category_path_idnumbers(int $categoryid): string
+    {
+        global $DB;
+
+        $category = $DB->get_record('course_categories', ['id' => $categoryid], 'id,path', IGNORE_MISSING);
+        if (!$category) {
+            return '[]';
+        }
+
+        $ids = array_values(array_filter(array_map(
+            'intval',
+            explode('/', trim((string) $category->path, '/'))
+        )));
+        if (!$ids) {
+            return '[]';
+        }
+
+        $categories = $DB->get_records_list('course_categories', 'id', $ids, '', 'id,idnumber');
+        $path = [];
+        foreach ($ids as $id) {
+            if (isset($categories[$id])) {
+                $path[] = (string) $categories[$id]->idnumber;
+            }
+        }
+
+        return json_encode($path);
+    }
     private static function role_by_shortname(string $shortname): stdClass
     {
         global $DB;
