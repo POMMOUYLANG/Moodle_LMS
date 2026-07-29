@@ -353,4 +353,110 @@ final class externallib_test extends \advanced_testcase
             'component' => 'local_rtc_sso',
         ]));
     }
-}
+
+    public function test_credit_courses_strictly_isolate_teacher_access_and_share_students(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
+
+        $parent = $this->getDataGenerator()->create_course([
+            'idnumber' => 'rtc-subject:strict',
+            'shortname' => 'RTC-STRICT-PARENT',
+        ]);
+        $teacherone = $this->getDataGenerator()->create_user();
+        $teachertwo = $this->getDataGenerator()->create_user();
+        $student = $this->getDataGenerator()->create_user();
+
+        $base = [
+            'courseid' => (int) $parent->id,
+            'subject_id' => 44,
+            'description' => 'Strictly isolated teaching credit.',
+            'teacher_role_shortname' => 'editingteacher',
+            'student_role_shortname' => 'student',
+            'student_userids' => [(int) $student->id],
+        ];
+        $first = \local_rtcsync_external::upsert_credit($base + [
+            'idnumber' => 'rtc-credit-course:101',
+            'shortname' => 'RTC-CREDIT-101',
+            'name' => 'Credit 1 - Teacher One',
+            'teacher_userids' => [(int) $teacherone->id],
+        ]);
+        $second = \local_rtcsync_external::upsert_credit($base + [
+            'idnumber' => 'rtc-credit-course:102',
+            'shortname' => 'RTC-CREDIT-102',
+            'name' => 'Credit 2 - Teacher Two',
+            'teacher_userids' => [(int) $teachertwo->id],
+        ]);
+
+        $this->assertNotSame($first['courseid'], $second['courseid']);
+        $teacherrole = $DB->get_record('role', ['shortname' => 'editingteacher'], '*', MUST_EXIST);
+        $studentrole = $DB->get_record('role', ['shortname' => 'student'], '*', MUST_EXIST);
+        $firstcontext = \context_course::instance((int) $first['courseid']);
+        $secondcontext = \context_course::instance((int) $second['courseid']);
+
+        $this->assertTrue($DB->record_exists('role_assignments', [
+            'contextid' => $firstcontext->id,
+            'roleid' => (int) $teacherrole->id,
+            'userid' => (int) $teacherone->id,
+        ]));
+        $this->assertFalse($DB->record_exists('role_assignments', [
+            'contextid' => $secondcontext->id,
+            'roleid' => (int) $teacherrole->id,
+            'userid' => (int) $teacherone->id,
+        ]));
+        $this->assertTrue($DB->record_exists('role_assignments', [
+            'contextid' => $secondcontext->id,
+            'roleid' => (int) $teacherrole->id,
+            'userid' => (int) $teachertwo->id,
+        ]));
+        $this->assertFalse($DB->record_exists('role_assignments', [
+            'contextid' => $firstcontext->id,
+            'roleid' => (int) $teacherrole->id,
+            'userid' => (int) $teachertwo->id,
+        ]));
+        $this->assertTrue(has_capability('moodle/course:update', $firstcontext, $teacherone));
+        $this->assertFalse(has_capability('moodle/course:update', $secondcontext, $teacherone));
+        $this->assertTrue(has_capability('moodle/course:update', $secondcontext, $teachertwo));
+        $this->assertFalse(has_capability('moodle/course:update', $firstcontext, $teachertwo));
+        foreach ([$firstcontext, $secondcontext] as $context) {
+            $this->assertTrue($DB->record_exists('role_assignments', [
+                'contextid' => $context->id,
+                'roleid' => (int) $studentrole->id,
+                'userid' => (int) $student->id,
+            ]));
+        }
+
+        $state = \local_rtcsync_external::get_managed_state(
+            'credits',
+            ['rtc-credit-course:101', 'rtc-credit-course:102'],
+            0,
+            100
+        );
+        $this->assertSame(2, $state['total']);
+        $this->assertCount(2, $state['records']);
+        $this->assertStringContainsString(
+            $teacherone->id . ':editingteacher',
+            $state['records'][0]['member_roles']
+        );
+
+        \local_rtcsync_external::delete_credit([
+            'courseid' => (int) $parent->id,
+            'idnumber' => 'rtc-credit-course:101',
+            'teacher_role_shortname' => 'editingteacher',
+            'student_role_shortname' => 'student',
+        ]);
+        $this->assertSame(0, (int) $DB->get_field('course', 'visible', [
+            'id' => (int) $first['courseid'],
+        ]));
+        $this->assertFalse($DB->record_exists('role_assignments', [
+            'contextid' => $firstcontext->id,
+            'userid' => (int) $teacherone->id,
+        ]));
+        $this->assertFalse($DB->record_exists('role_assignments', [
+            'contextid' => $firstcontext->id,
+            'userid' => (int) $student->id,
+        ]));
+    }}

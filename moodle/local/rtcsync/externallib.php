@@ -7,12 +7,15 @@ require_once($CFG->libdir . '/externallib.php');
 require_once($CFG->dirroot . '/course/lib.php');
 require_once($CFG->dirroot . '/user/lib.php');
 require_once($CFG->dirroot . '/local/rtcsync/locallib.php');
+require_once($CFG->dirroot . '/local/rtcsync/creditclasslib.php');
 require_once($CFG->libdir . '/enrollib.php');
 require_once($CFG->libdir . '/gradelib.php');
 require_once($CFG->libdir . '/grade/grade_item.php');
 
 class local_rtcsync_external extends external_api
 {
+    use local_rtcsync_credit_class_external;
+
     public static function upsert_course_parameters(): external_function_parameters
     {
         return new external_function_parameters([
@@ -475,11 +478,11 @@ class local_rtcsync_external extends external_api
         return new external_function_parameters([
             'scope' => new external_value(
                 PARAM_ALPHA,
-                'State scope: users, systemroles, courses, enrolments, or grades.'
+                'State scope: users, systemroles, courses, credits, classes, enrolments, or grades.'
             ),
             'idnumbers' => new external_multiple_structure(
                 new external_value(PARAM_RAW, 'Explicit RTC-managed user or course idnumber.'),
-                'Identifiers to read. User scope expects user idnumbers; all other scopes expect course idnumbers.'
+                'Identifiers to read. Identifiers use the stable idnumber for the selected managed scope.'
             ),
             'offset' => new external_value(PARAM_INT, 'Page offset.', VALUE_DEFAULT, 0),
             'limit' => new external_value(PARAM_INT, 'Page size, capped at 100.', VALUE_DEFAULT, 100),
@@ -502,7 +505,7 @@ class local_rtcsync_external extends external_api
         ]);
 
         $scope = strtolower(trim($params['scope']));
-        if (!in_array($scope, ['users', 'systemroles', 'courses', 'enrolments', 'grades'], true)) {
+        if (!in_array($scope, ['users', 'systemroles', 'courses', 'credits', 'classes', 'enrolments', 'grades'], true)) {
             throw new invalid_parameter_exception('Unsupported RTC managed-state scope.');
         }
 
@@ -612,6 +615,78 @@ class local_rtcsync_external extends external_api
                 $offset,
                 $limit
             );
+        } else if ($scope === 'credits') {
+            $where = "c.idnumber {$insql}";
+            $total = $DB->count_records_sql(
+                "SELECT COUNT(1) FROM {course} c WHERE {$where}",
+                $inparams
+            );
+            $records = $DB->get_records_sql(
+                "SELECT c.id AS record_id,
+                        c.id AS moodle_id,
+                        c.idnumber,
+                        c.shortname,
+                        c.fullname,
+                        c.visible,
+                        c.id AS course_id
+                   FROM {course} c
+                  WHERE {$where}
+               ORDER BY c.id",
+                $inparams,
+                $offset,
+                $limit
+            );
+            foreach ($records as $record) {
+                $context = context_course::instance((int) $record->record_id);
+                $assignments = $DB->get_records_sql(
+                    "SELECT ra.id, ra.userid, r.shortname
+                       FROM {role_assignments} ra
+                       JOIN {role} r ON r.id = ra.roleid
+                       JOIN {user} u ON u.id = ra.userid
+                      WHERE ra.contextid = :contextid
+                        AND u.deleted = 0
+                   ORDER BY ra.userid, r.shortname",
+                    ['contextid' => $context->id]
+                );
+                $members = [];
+                $memberroles = [];
+                foreach ($assignments as $assignment) {
+                    $members[] = (int) $assignment->userid;
+                    $memberroles[] = (int) $assignment->userid . ':' . $assignment->shortname;
+                }
+                $members = array_values(array_unique($members));
+                sort($members, SORT_NUMERIC);
+                sort($memberroles, SORT_STRING);
+                $record->member_count = count($members);
+                $record->member_userids = json_encode($members);
+                $record->member_roles = json_encode($memberroles);
+            }        } else if ($scope === 'classes') {
+            $where = "ch.idnumber {$insql}";
+            $total = $DB->count_records_sql(
+                "SELECT COUNT(1) FROM {cohort} ch WHERE {$where}",
+                $inparams
+            );
+            $records = $DB->get_records_sql(
+                "SELECT ch.id AS record_id,
+                        ch.id AS moodle_id,
+                        ch.idnumber,
+                        ch.name AS fullname,
+                        ch.visible
+                   FROM {cohort} ch
+                  WHERE {$where}
+               ORDER BY ch.id",
+                $inparams,
+                $offset,
+                $limit
+            );
+            foreach ($records as $record) {
+                $members = array_map('intval', array_keys($DB->get_records(
+                    'cohort_members', ['cohortid' => $record->record_id], '', 'userid'
+                )));
+                sort($members, SORT_NUMERIC);
+                $record->member_count = count($members);
+                $record->member_userids = json_encode($members);
+            }
         } else if ($scope === 'enrolments') {
             $where = "c.idnumber {$insql}
                       AND e.enrol = :enrolmethod
@@ -738,6 +813,9 @@ class local_rtcsync_external extends external_api
                     ),
                     'grade_max' => new external_value(PARAM_FLOAT, 'Maximum grade.'),
                     'hidden' => new external_value(PARAM_INT, 'Grade item hidden flag.'),
+                    'member_count' => new external_value(PARAM_INT, 'Managed member count.'),
+                    'member_userids' => new external_value(PARAM_RAW, 'JSON array of managed Moodle user ids.'),
+                    'member_roles' => new external_value(PARAM_RAW, 'JSON array of Moodle userid:role assignments.'),
                 ])
             ),
         ]);
@@ -768,6 +846,9 @@ class local_rtcsync_external extends external_api
             'grade' => isset($record->grade) ? (float) $record->grade : null,
             'grade_max' => (float) ($record->grade_max ?? 0),
             'hidden' => (int) ($record->hidden ?? 0),
+            'member_count' => (int) ($record->member_count ?? 0),
+            'member_userids' => (string) ($record->member_userids ?? '[]'),
+            'member_roles' => (string) ($record->member_roles ?? '[]'),
         ];
     }
 
