@@ -42,3 +42,25 @@ For one program only:
 ```bash
 php artisan moodle:sync --all --program-id=123
 ```
+## Guarded Clean Rebuild
+
+Before replacing an existing Moodle database or data directory, run the
+read-only inventory:
+
+```bash
+php local/rtcsync/cli/rebuild_inventory.php --strict
+```
+
+The command blocks a clean cutover when it finds activities, submissions,
+quiz attempts, final grades, or completion records that RTC synchronization
+cannot recreate. Use `--json` to retain machine-readable evidence.
+
+Run candidate-instance acceptance checks after installing the plugin and
+before directing production traffic to the new instance:
+
+```bash
+php local/rtcsync/cli/rebuild_acceptance.php
+```
+
+These commands never modify Moodle. See `docs/rtc-blue-green-rebuild.md` for
+the complete backup, synchronization, cutover, and rollback process.
