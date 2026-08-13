@@ -196,6 +196,28 @@ trait local_rtcsync_credit_class_external
                     new external_value(PARAM_INT, 'Moodle user id.'),
                     'Desired cohort members.', VALUE_DEFAULT, []
                 ),
+                'courseids' => new external_multiple_structure(
+                    new external_value(PARAM_INT, 'Applicable Moodle course id.'),
+                    'Courses that receive the class grouping.', VALUE_DEFAULT, []
+                ),
+                'grouping_idnumber' => new external_value(
+                    PARAM_RAW, 'Stable class grouping idnumber.', VALUE_DEFAULT, ''
+                ),
+                'grouping_name' => new external_value(
+                    PARAM_TEXT, 'Class grouping display name.', VALUE_DEFAULT, ''
+                ),
+                'groups' => new external_multiple_structure(
+                    new external_single_structure([
+                        'idnumber' => new external_value(PARAM_RAW, 'Stable SMS child-group idnumber.'),
+                        'name' => new external_value(PARAM_TEXT, 'Child-group display name.'),
+                        'description' => new external_value(PARAM_RAW, 'Child-group description.', VALUE_DEFAULT, ''),
+                        'userids' => new external_multiple_structure(
+                            new external_value(PARAM_INT, 'Moodle group member id.'),
+                            'Exact child-group members.', VALUE_DEFAULT, []
+                        ),
+                    ]),
+                    'Child groups placed inside the class grouping.', VALUE_DEFAULT, []
+                ),
             ]),
         ]);
     }
@@ -242,7 +264,21 @@ trait local_rtcsync_credit_class_external
             cohort_remove_member($cohortid, $userid);
         }
 
-        return ['id' => $cohortid, 'idnumber' => $idnumber, 'member_count' => count($desired)];
+        $structure = self::reconcile_class_course_groups(
+            self::valid_courseids($class['courseids'] ?? []),
+            trim((string) ($class['grouping_idnumber'] ?? '')),
+            trim((string) ($class['grouping_name'] ?? '')),
+            $class['groups'] ?? [],
+            (int) $class['visible'] === 1
+        );
+
+        return [
+            'id' => $cohortid,
+            'idnumber' => $idnumber,
+            'member_count' => count($desired),
+            'course_count' => $structure['course_count'],
+            'group_count' => $structure['group_count'],
+        ];
     }
 
     public static function upsert_class_returns(): external_single_structure
@@ -251,7 +287,188 @@ trait local_rtcsync_credit_class_external
             'id' => new external_value(PARAM_INT, 'Moodle cohort id.'),
             'idnumber' => new external_value(PARAM_RAW, 'Class idnumber.'),
             'member_count' => new external_value(PARAM_INT, 'Managed cohort member count.'),
+            'course_count' => new external_value(PARAM_INT, 'Courses receiving the class grouping.'),
+            'group_count' => new external_value(PARAM_INT, 'Managed child groups per course in total.'),
         ]);
+    }
+
+    private static function valid_courseids(array $courseids): array
+    {
+        global $DB;
+
+        $desired = array_values(array_unique(array_filter(
+            array_map('intval', $courseids),
+            static fn(int $courseid): bool => $courseid > 1
+        )));
+        if (!$desired) {
+            return [];
+        }
+
+        [$sql, $params] = $DB->get_in_or_equal($desired, SQL_PARAMS_NAMED, 'classcourse');
+        $existing = array_map('intval', array_keys($DB->get_records_select(
+            'course', "id {$sql}", $params, '', 'id'
+        )));
+
+        return array_values(array_intersect($desired, $existing));
+    }
+
+    private static function reconcile_class_course_groups(
+        array $courseids,
+        string $groupingidnumber,
+        string $groupingname,
+        array $groups,
+        bool $visible
+    ): array {
+        global $DB;
+
+        if ($groupingidnumber === '' || !str_starts_with($groupingidnumber, 'rtc-class-grouping:')) {
+            throw new invalid_parameter_exception(
+                'Class grouping idnumber must use the rtc-class-grouping: prefix.'
+            );
+        }
+
+        $desiredcourseids = $visible && $groups ? $courseids : [];
+        $existinggroupings = $DB->get_records('groupings', ['idnumber' => $groupingidnumber]);
+        foreach ($existinggroupings as $existinggrouping) {
+            if (!in_array((int) $existinggrouping->courseid, $desiredcourseids, true)) {
+                self::delete_class_grouping((int) $existinggrouping->id);
+            }
+        }
+
+        $groupcount = 0;
+        foreach ($desiredcourseids as $courseid) {
+            $groupcount += self::reconcile_class_grouping_course(
+                $courseid,
+                $groupingidnumber,
+                $groupingname,
+                $groups
+            );
+        }
+
+        return ['course_count' => count($desiredcourseids), 'group_count' => $groupcount];
+    }
+
+    private static function reconcile_class_grouping_course(
+        int $courseid,
+        string $groupingidnumber,
+        string $groupingname,
+        array $groups
+    ): int {
+        global $DB;
+
+        $context = context_course::instance($courseid);
+        self::validate_context($context);
+        require_capability('moodle/course:managegroups', $context);
+
+        $grouping = $DB->get_record('groupings', [
+            'courseid' => $courseid,
+            'idnumber' => $groupingidnumber,
+        ], '*', IGNORE_MISSING);
+        $record = (object) [
+            'courseid' => $courseid,
+            'name' => $groupingname,
+            'idnumber' => $groupingidnumber,
+            'description' => '',
+            'descriptionformat' => FORMAT_HTML,
+        ];
+        if ($grouping) {
+            $record->id = (int) $grouping->id;
+            groups_update_grouping($record);
+            $groupingid = (int) $grouping->id;
+        } else {
+            $groupingid = (int) groups_create_grouping($record);
+        }
+
+        $desiredids = [];
+        foreach ($groups as $group) {
+            $desiredids[] = self::upsert_class_group($courseid, $groupingid, $group);
+        }
+
+        $assigned = $DB->get_records_sql(
+            'SELECT g.id, g.idnumber
+               FROM {groupings_groups} gg
+               JOIN {groups} g ON g.id = gg.groupid
+              WHERE gg.groupingid = :groupingid',
+            ['groupingid' => $groupingid]
+        );
+        foreach ($assigned as $existing) {
+            if (str_starts_with((string) $existing->idnumber, 'rtc-class-group:')
+                    && !in_array((int) $existing->id, $desiredids, true)) {
+                groups_delete_group($existing);
+            }
+        }
+
+        return count($desiredids);
+    }
+
+    private static function upsert_class_group(int $courseid, int $groupingid, array $group): int
+    {
+        global $DB;
+
+        $idnumber = trim((string) ($group['idnumber'] ?? ''));
+        if ($idnumber === '' || !str_starts_with($idnumber, 'rtc-class-group:')) {
+            throw new invalid_parameter_exception(
+                'Class group idnumber must use the rtc-class-group: prefix.'
+            );
+        }
+
+        $existing = $DB->get_record('groups', [
+            'courseid' => $courseid,
+            'idnumber' => $idnumber,
+        ], '*', IGNORE_MISSING);
+        $record = (object) [
+            'courseid' => $courseid,
+            'name' => trim((string) ($group['name'] ?? '')),
+            'idnumber' => $idnumber,
+            'description' => (string) ($group['description'] ?? ''),
+            'descriptionformat' => FORMAT_HTML,
+        ];
+        if ($existing) {
+            $record->id = (int) $existing->id;
+            groups_update_group($record);
+            $groupid = (int) $existing->id;
+        } else {
+            $groupid = (int) groups_create_group($record);
+        }
+
+        if (!$DB->record_exists('groupings_groups', [
+            'groupingid' => $groupingid,
+            'groupid' => $groupid,
+        ])) {
+            groups_assign_grouping($groupingid, $groupid);
+        }
+
+        $desired = self::valid_userids($group['userids'] ?? [], 'classgroupuser');
+        $existingmembers = array_map('intval', array_keys($DB->get_records(
+            'groups_members', ['groupid' => $groupid], '', 'userid'
+        )));
+        foreach (array_diff($desired, $existingmembers) as $userid) {
+            groups_add_member($groupid, $userid);
+        }
+        foreach (array_diff($existingmembers, $desired) as $userid) {
+            groups_remove_member($groupid, $userid);
+        }
+
+        return $groupid;
+    }
+
+    private static function delete_class_grouping(int $groupingid): void
+    {
+        global $DB;
+
+        $groups = $DB->get_records_sql(
+            'SELECT g.*
+               FROM {groupings_groups} gg
+               JOIN {groups} g ON g.id = gg.groupid
+              WHERE gg.groupingid = :groupingid',
+            ['groupingid' => $groupingid]
+        );
+        foreach ($groups as $group) {
+            if (str_starts_with((string) $group->idnumber, 'rtc-class-group:')) {
+                groups_delete_group($group);
+            }
+        }
+        groups_delete_grouping($groupingid);
     }
 
     private static function reconcile_credit_role(int $courseid, string $roleshortname, array $desired): void
