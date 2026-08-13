@@ -227,12 +227,19 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame('Updated', $saved->firstname);
         $this->assertSame(1, (int) $saved->suspended);
 
+        $DB->set_field('user', 'confirmed', 0, ['id' => $created['id']]);
         $payload['suspended'] = 0;
-        \local_rtcsync_external::upsert_user($payload);
+        $activated = \local_rtcsync_external::upsert_user($payload);
 
+        $this->assertSame(1, $activated['confirmed']);
+        $this->assertSame(0, $activated['suspended']);
         $this->assertSame(
             0,
             (int) $DB->get_field('user', 'suspended', ['id' => $created['id']])
+        );
+        $this->assertSame(
+            1,
+            (int) $DB->get_field('user', 'confirmed', ['id' => $created['id']])
         );
     }
 
@@ -546,4 +553,106 @@ final class externallib_test extends \advanced_testcase
             'contextid' => $firstcontext->id,
             'userid' => (int) $student->id,
         ]));
-    }}
+    }
+
+    public function test_class_cohort_reconciles_child_groups_inside_course_grouping(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $courseone = $this->getDataGenerator()->create_course();
+        $coursetwo = $this->getDataGenerator()->create_course();
+        $studentone = $this->getDataGenerator()->create_user();
+        $studenttwo = $this->getDataGenerator()->create_user();
+        $studentthree = $this->getDataGenerator()->create_user();
+
+        $result = \local_rtcsync_external::upsert_class([
+            'idnumber' => 'rtc-class:100',
+            'name' => '[Class] ADN Year 1 A',
+            'description' => 'Managed class.',
+            'visible' => 1,
+            'userids' => [$studentone->id, $studenttwo->id, $studentthree->id],
+            'courseids' => [$courseone->id, $coursetwo->id],
+            'grouping_idnumber' => 'rtc-class-grouping:100',
+            'grouping_name' => '[Class] ADN Year 1 A',
+            'groups' => [
+                [
+                    'idnumber' => 'rtc-class-group:101',
+                    'name' => '[Group] Group 1',
+                    'userids' => [$studentone->id, $studenttwo->id],
+                ],
+                [
+                    'idnumber' => 'rtc-class-group:102',
+                    'name' => '[Group] Group 2',
+                    'userids' => [$studentthree->id],
+                ],
+            ],
+        ]);
+
+        $this->assertSame(3, $result['member_count']);
+        $this->assertSame(2, $result['course_count']);
+        $this->assertSame(4, $result['group_count']);
+        foreach ([$courseone, $coursetwo] as $course) {
+            $grouping = $DB->get_record('groupings', [
+                'courseid' => $course->id,
+                'idnumber' => 'rtc-class-grouping:100',
+            ], '*', MUST_EXIST);
+            $groups = $DB->get_records('groups', ['courseid' => $course->id], 'id');
+            $this->assertCount(2, $groups);
+            $this->assertSame(2, $DB->count_records('groupings_groups', [
+                'groupingid' => $grouping->id,
+            ]));
+            $first = $DB->get_record('groups', [
+                'courseid' => $course->id,
+                'idnumber' => 'rtc-class-group:101',
+            ], '*', MUST_EXIST);
+            $this->assertSame(2, $DB->count_records('groups_members', ['groupid' => $first->id]));
+        }
+        $state = \local_rtcsync_external::get_managed_state(
+            'classes',
+            ['rtc-class:100'],
+            0,
+            100
+        );
+        $this->assertSame(1, $state['total']);
+        $structure = json_decode($state['records'][0]['course_structure'], true, 512, JSON_THROW_ON_ERROR);
+        $this->assertCount(2, $structure);
+        $this->assertSame('rtc-class-grouping:100', $structure[0]['grouping_idnumber']);
+        $this->assertCount(2, $structure[0]['groups']);
+
+        \local_rtcsync_external::upsert_class([
+            'idnumber' => 'rtc-class:100',
+            'name' => '[Class] ADN Year 1 A',
+            'visible' => 1,
+            'userids' => [$studentone->id],
+            'courseids' => [$courseone->id],
+            'grouping_idnumber' => 'rtc-class-grouping:100',
+            'grouping_name' => '[Class] ADN Year 1 A',
+            'groups' => [[
+                'idnumber' => 'rtc-class-group:101',
+                'name' => '[Group] Group 1',
+                'userids' => [$studentone->id],
+            ]],
+        ]);
+
+        $this->assertFalse($DB->record_exists('groupings', [
+            'courseid' => $coursetwo->id,
+            'idnumber' => 'rtc-class-grouping:100',
+        ]));
+        $this->assertFalse($DB->record_exists('groups', [
+            'courseid' => $courseone->id,
+            'idnumber' => 'rtc-class-group:102',
+        ]));
+        $state = \local_rtcsync_external::get_managed_state(
+            'classes',
+            ['rtc-class:100'],
+            0,
+            100
+        );
+        $structure = json_decode($state['records'][0]['course_structure'], true, 512, JSON_THROW_ON_ERROR);
+        $this->assertCount(1, $structure);
+        $this->assertSame((int) $courseone->id, $structure[0]['courseid']);
+        $this->assertCount(1, $structure[0]['groups']);
+    }
+}

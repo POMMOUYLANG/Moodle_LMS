@@ -187,6 +187,7 @@ class local_rtcsync_external extends external_api
             'idnumber' => trim($user['idnumber']),
             'phone1' => trim($user['phone1']),
             'suspended' => (int) $user['suspended'],
+            'confirmed' => 1,
         ];
 
         if ($existing) {
@@ -216,6 +217,8 @@ class local_rtcsync_external extends external_api
             'username' => $saved->username,
             'email' => $saved->email,
             'idnumber' => $saved->idnumber,
+            'confirmed' => (int) $saved->confirmed,
+            'suspended' => (int) $saved->suspended,
             'profile_fields_saved' => $profilesaved,
         ];
     }
@@ -227,6 +230,8 @@ class local_rtcsync_external extends external_api
             'username' => new external_value(PARAM_USERNAME, 'Username.'),
             'email' => new external_value(PARAM_EMAIL, 'Email address.'),
             'idnumber' => new external_value(PARAM_RAW, 'User idnumber.'),
+            'confirmed' => new external_value(PARAM_INT, 'Confirmed account flag.'),
+            'suspended' => new external_value(PARAM_INT, 'Suspended account flag.'),
             'profile_fields_saved' => new external_value(PARAM_INT, 'Number of profile fields updated.'),
         ]);
     }
@@ -567,6 +572,7 @@ class local_rtcsync_external extends external_api
                         u.email,
                         u.firstname,
                         u.lastname,
+                        u.confirmed,
                         u.suspended
                    FROM {user} u
                   WHERE {$where}
@@ -705,6 +711,9 @@ class local_rtcsync_external extends external_api
                 sort($members, SORT_NUMERIC);
                 $record->member_count = count($members);
                 $record->member_userids = json_encode($members);
+                $record->course_structure = self::class_course_structure(
+                    (string) $record->idnumber
+                );
             }
         } else if ($scope === 'enrolments') {
             $where = "c.idnumber {$insql}
@@ -812,6 +821,7 @@ class local_rtcsync_external extends external_api
                     'firstname' => new external_value(PARAM_TEXT, 'First name.'),
                     'lastname' => new external_value(PARAM_TEXT, 'Last name.'),
                     'suspended' => new external_value(PARAM_INT, 'User suspension status.'),
+                    'confirmed' => new external_value(PARAM_INT, 'User confirmation status.'),
                     'shortname' => new external_value(PARAM_TEXT, 'Course shortname.'),
                     'fullname' => new external_value(PARAM_TEXT, 'Course fullname.'),
                     'visible' => new external_value(PARAM_INT, 'Course visibility.'),
@@ -837,6 +847,10 @@ class local_rtcsync_external extends external_api
                     'member_count' => new external_value(PARAM_INT, 'Managed member count.'),
                     'member_userids' => new external_value(PARAM_RAW, 'JSON array of managed Moodle user ids.'),
                     'member_roles' => new external_value(PARAM_RAW, 'JSON array of Moodle userid:role assignments.'),
+                    'course_structure' => new external_value(
+                        PARAM_RAW,
+                        'JSON course grouping and child-group structure for a managed SMS class.'
+                    ),
                 ])
             ),
         ]);
@@ -853,6 +867,7 @@ class local_rtcsync_external extends external_api
             'firstname' => (string) ($record->firstname ?? ''),
             'lastname' => (string) ($record->lastname ?? ''),
             'suspended' => (int) ($record->suspended ?? 0),
+            'confirmed' => (int) ($record->confirmed ?? 0),
             'shortname' => (string) ($record->shortname ?? ''),
             'fullname' => (string) ($record->fullname ?? ''),
             'visible' => (int) ($record->visible ?? 0),
@@ -874,7 +889,60 @@ class local_rtcsync_external extends external_api
             'member_count' => (int) ($record->member_count ?? 0),
             'member_userids' => (string) ($record->member_userids ?? '[]'),
             'member_roles' => (string) ($record->member_roles ?? '[]'),
+            'course_structure' => (string) ($record->course_structure ?? '[]'),
         ];
+    }
+
+    private static function class_course_structure(string $classidnumber): string
+    {
+        global $DB;
+
+        if (!str_starts_with($classidnumber, 'rtc-class:')) {
+            return '[]';
+        }
+
+        $groupingidnumber = 'rtc-class-grouping:' . substr($classidnumber, strlen('rtc-class:'));
+        $groupings = $DB->get_records('groupings', ['idnumber' => $groupingidnumber], 'courseid, id');
+        $structure = [];
+        foreach ($groupings as $grouping) {
+            $groups = $DB->get_records_sql(
+                "SELECT g.id, g.idnumber, g.name
+                   FROM {groups} g
+                   JOIN {groupings_groups} gg ON gg.groupid = g.id
+                  WHERE gg.groupingid = :groupingid
+                    AND g.idnumber LIKE :managedprefix
+               ORDER BY g.idnumber",
+                [
+                    'groupingid' => $grouping->id,
+                    'managedprefix' => 'rtc-class-group:%',
+                ]
+            );
+            $children = [];
+            foreach ($groups as $group) {
+                $userids = array_map('intval', array_keys($DB->get_records(
+                    'groups_members',
+                    ['groupid' => $group->id],
+                    '',
+                    'userid'
+                )));
+                sort($userids, SORT_NUMERIC);
+                $children[] = [
+                    'idnumber' => (string) $group->idnumber,
+                    'name' => (string) $group->name,
+                    'userids' => $userids,
+                ];
+            }
+            $structure[] = [
+                'courseid' => (int) $grouping->courseid,
+                'grouping_idnumber' => (string) $grouping->idnumber,
+                'grouping_name' => (string) $grouping->name,
+                'groups' => $children,
+            ];
+        }
+
+        usort($structure, static fn (array $a, array $b): int => $a['courseid'] <=> $b['courseid']);
+
+        return json_encode($structure);
     }
 
     private static function ensure_category_path(
