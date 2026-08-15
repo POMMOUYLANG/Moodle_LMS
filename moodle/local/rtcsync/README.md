@@ -9,6 +9,23 @@ This local plugin exposes Moodle web-service functions used by RTC to mirror aca
 - RTC student enrollment -> Moodle user + student enrolment
 - RTC user-program metadata -> Moodle RTC custom profile fields
 - Published RTC score -> Moodle manual grade item/grade
+- Selected Moodle activity grades -> RTC/SMS formative teacher score
+
+## SMS Formative Sync
+
+Teachers with course editing access can open **SMS formative sync** from the
+course navigation. The page keeps the SMS destination fixed as Formative and
+lets the teacher:
+
+- turn automatic synchronization on or off for that course;
+- include only the quizzes, assignments, or other graded activities they want;
+- customize the SMS label for each included activity; and
+- assign activity percentages that total 100% (or balance them automatically).
+
+SMS imports only opted-in courses and waits until every selected activity has a
+grade for the student. Turning synchronization off stops future updates and does
+not erase the last formative score already stored in SMS. The RTC backend
+scheduler runs `moodle:import-grades --apply` every five minutes.
 
 Student profile fields include RTC user program ID, program ID/name/Khmer/code/degree/department, generation ID/label/year range, academic year ID/label, study year, user-program promotion, enrollment status/type, previous enrollment ID, and a JSON snapshot of all RTC enrollments for that student.
 

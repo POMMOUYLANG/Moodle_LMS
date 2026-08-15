@@ -74,6 +74,66 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame((int) $included->id, $result['records'][0]['moodle_id']);
     }
 
+    public function test_activity_grade_read_returns_only_course_items_enabled_for_sms_formative(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:11']);
+        $student = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:22']);
+        $item = new \grade_item([
+            'courseid' => $course->id,
+            'itemtype' => 'mod',
+            'itemmodule' => 'quiz',
+            'iteminstance' => 101,
+            'itemnumber' => 0,
+            'itemname' => 'Quiz 1',
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademin' => 0,
+            'grademax' => 10,
+        ]);
+        $item->insert();
+        $item->update_final_grade($student->id, 8, 'test');
+
+        $configid = $DB->insert_record('local_rtcsync_formcfg', (object) [
+            'courseid' => $course->id,
+            'enabled' => 1,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+        $DB->insert_record('local_rtcsync_formitem', (object) [
+            'courseid' => $course->id,
+            'itemid' => $item->id,
+            'included' => 1,
+            'label' => 'Knowledge check',
+            'weight' => 100,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'activitygrades',
+            ['rtc-subject:11'],
+            0,
+            100
+        );
+
+        $this->assertSame(1, $result['total']);
+        $this->assertSame('Knowledge check', $result['records'][0]['sync_label']);
+        $this->assertSame(100.0, $result['records'][0]['sync_weight']);
+        $this->assertSame(1, $result['records'][0]['sync_selected_count']);
+
+        $DB->set_field('local_rtcsync_formcfg', 'enabled', 0, ['id' => $configid]);
+        $disabled = \local_rtcsync_external::get_managed_state(
+            'activitygrades',
+            ['rtc-subject:11'],
+            0,
+            100
+        );
+        $this->assertSame(0, $disabled['total']);
+    }
+
     public function test_course_upsert_reuses_nested_legacy_categories_and_moves_existing_course(): void
     {
         global $DB;

@@ -496,7 +496,7 @@ class local_rtcsync_external extends external_api
         return new external_function_parameters([
             'scope' => new external_value(
                 PARAM_ALPHA,
-                'State scope: users, systemroles, courses, credits, classes, enrolments, or grades.'
+                'State scope: users, systemroles, courses, credits, classes, enrolments, grades, or activitygrades.'
             ),
             'idnumbers' => new external_multiple_structure(
                 new external_value(PARAM_RAW, 'Explicit RTC-managed user or course idnumber.'),
@@ -523,7 +523,7 @@ class local_rtcsync_external extends external_api
         ]);
 
         $scope = strtolower(trim($params['scope']));
-        if (!in_array($scope, ['users', 'systemroles', 'courses', 'credits', 'classes', 'enrolments', 'grades'], true)) {
+        if (!in_array($scope, ['users', 'systemroles', 'courses', 'credits', 'classes', 'enrolments', 'grades', 'activitygrades'], true)) {
             throw new invalid_parameter_exception('Unsupported RTC managed-state scope.');
         }
 
@@ -755,7 +755,7 @@ class local_rtcsync_external extends external_api
                 $offset,
                 $limit
             );
-        } else {
+        } else if ($scope === 'grades') {
             $where = "c.idnumber {$insql}
                       AND gi.idnumber LIKE :gradeprefix
                       AND u.deleted = 0
@@ -780,12 +780,69 @@ class local_rtcsync_external extends external_api
                         u.idnumber AS user_idnumber,
                         gi.id AS grade_item_id,
                         gi.idnumber AS grade_item_idnumber,
+                        gi.itemname AS grade_item_name,
+                        gi.itemmodule AS grade_item_module,
                         gg.finalgrade AS grade,
                         gi.grademax AS grade_max,
                         gi.hidden
                    {$from}
                   WHERE {$where}
                ORDER BY c.id, gi.id, u.id",
+                $queryparams,
+                $offset,
+                $limit
+            );
+        } else {
+            $where = "c.idnumber {$insql}
+                      AND cfg.enabled = 1
+                      AND syncitem.included = 1
+                      AND gi.itemtype = 'mod'
+                      AND gi.itemmodule IS NOT NULL
+                      AND u.deleted = 0
+                      AND gg.finalgrade IS NOT NULL";
+            $queryparams = $inparams;
+            $from = "FROM {course} c
+                     JOIN {local_rtcsync_formcfg} cfg
+                       ON cfg.courseid = c.id
+                     JOIN {local_rtcsync_formitem} syncitem
+                       ON syncitem.courseid = c.id
+                      AND syncitem.included = 1
+                     JOIN {grade_items} gi
+                       ON gi.id = syncitem.itemid
+                      AND gi.courseid = c.id
+                     JOIN {grade_grades} gg
+                       ON gg.itemid = gi.id
+                     JOIN {user} u
+                       ON u.id = gg.userid";
+            $total = $DB->count_records_sql(
+                "SELECT COUNT(1) {$from} WHERE {$where}",
+                $queryparams
+            );
+            $records = $DB->get_records_sql(
+                "SELECT gg.id AS record_id,
+                        c.id AS course_id,
+                        c.idnumber AS course_idnumber,
+                        u.id AS user_id,
+                        u.idnumber AS user_idnumber,
+                        gi.id AS grade_item_id,
+                        gi.idnumber AS grade_item_idnumber,
+                        gi.itemname AS grade_item_name,
+                        gi.itemmodule AS grade_item_module,
+                        gg.finalgrade AS grade,
+                        gi.grademax AS grade_max,
+                        gi.hidden,
+                        syncitem.label AS sync_label,
+                        syncitem.weight AS sync_weight,
+                        (SELECT COUNT(1)
+                           FROM {local_rtcsync_formitem} allselected
+                           JOIN {grade_items} selectedgradeitem
+                             ON selectedgradeitem.id = allselected.itemid
+                            AND selectedgradeitem.courseid = c.id
+                          WHERE allselected.courseid = c.id
+                            AND allselected.included = 1) AS sync_selected_count
+                   {$from}
+                  WHERE {$where}
+               ORDER BY c.id, gi.sortorder, u.id",
                 $queryparams,
                 $offset,
                 $limit
@@ -835,6 +892,11 @@ class local_rtcsync_external extends external_api
                     'enrolment_status' => new external_value(PARAM_INT, 'Moodle enrolment status.'),
                     'grade_item_id' => new external_value(PARAM_INT, 'Moodle grade item id.'),
                     'grade_item_idnumber' => new external_value(PARAM_RAW, 'RTC grade item idnumber.'),
+                    'grade_item_name' => new external_value(PARAM_TEXT, 'Grade item name.'),
+                    'grade_item_module' => new external_value(PARAM_ALPHANUMEXT, 'Activity module type.'),
+                    'sync_label' => new external_value(PARAM_TEXT, 'Teacher-defined SMS formative label.'),
+                    'sync_weight' => new external_value(PARAM_FLOAT, 'Teacher-defined formative weight percentage.'),
+                    'sync_selected_count' => new external_value(PARAM_INT, 'Number of activities required for a complete formative result.'),
                     'grade' => new external_value(
                         PARAM_FLOAT,
                         'Final grade.',
@@ -883,6 +945,11 @@ class local_rtcsync_external extends external_api
             'enrolment_status' => (int) ($record->enrolment_status ?? 0),
             'grade_item_id' => (int) ($record->grade_item_id ?? 0),
             'grade_item_idnumber' => (string) ($record->grade_item_idnumber ?? ''),
+            'grade_item_name' => (string) ($record->grade_item_name ?? ''),
+            'grade_item_module' => (string) ($record->grade_item_module ?? ''),
+            'sync_label' => (string) ($record->sync_label ?? ''),
+            'sync_weight' => (float) ($record->sync_weight ?? 0),
+            'sync_selected_count' => (int) ($record->sync_selected_count ?? 0),
             'grade' => isset($record->grade) ? (float) $record->grade : null,
             'grade_max' => (float) ($record->grade_max ?? 0),
             'hidden' => (int) ($record->hidden ?? 0),

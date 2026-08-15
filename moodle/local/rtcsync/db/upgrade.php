@@ -61,5 +61,42 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         upgrade_plugin_savepoint(true, 2026072701, 'local', 'rtcsync');
     }
 
+    if ($oldversion < 2026081503) {
+        $dbman = $DB->get_manager();
+
+        $configtable = new xmldb_table('local_rtcsync_formcfg');
+        $configtable->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $configtable->add_field('courseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $configtable->add_field('enabled', XMLDB_TYPE_INTEGER, '1', null, XMLDB_NOTNULL, null, '0');
+        $configtable->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $configtable->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $configtable->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $configtable->add_key('course_fk', XMLDB_KEY_FOREIGN, ['courseid'], 'course', ['id']);
+        $configtable->add_index('course_uix', XMLDB_INDEX_UNIQUE, ['courseid']);
+        if (!$dbman->table_exists($configtable)) {
+            $dbman->create_table($configtable);
+        }
+
+        $itemtable = new xmldb_table('local_rtcsync_formitem');
+        $itemtable->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $itemtable->add_field('courseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $itemtable->add_field('itemid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $itemtable->add_field('included', XMLDB_TYPE_INTEGER, '1', null, XMLDB_NOTNULL, null, '0');
+        $itemtable->add_field('label', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL, null, '');
+        $itemtable->add_field('weight', XMLDB_TYPE_NUMBER, '5, 2', null, XMLDB_NOTNULL, null, '0');
+        $itemtable->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $itemtable->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $itemtable->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $itemtable->add_key('course_fk', XMLDB_KEY_FOREIGN, ['courseid'], 'course', ['id']);
+        $itemtable->add_key('item_fk', XMLDB_KEY_FOREIGN, ['itemid'], 'grade_items', ['id']);
+        $itemtable->add_index('courseitem_uix', XMLDB_INDEX_UNIQUE, ['courseid', 'itemid']);
+        $itemtable->add_index('included_ix', XMLDB_INDEX_NOTUNIQUE, ['courseid', 'included']);
+        if (!$dbman->table_exists($itemtable)) {
+            $dbman->create_table($itemtable);
+        }
+
+        upgrade_plugin_savepoint(true, 2026081503, 'local', 'rtcsync');
+    }
+
     return true;
 }
