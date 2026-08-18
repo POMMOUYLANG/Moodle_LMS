@@ -11,11 +11,8 @@
       </FIELDS>
       <KEYS>
         <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
-        <KEY NAME="course_fk" TYPE="foreign" FIELDS="courseid" REFTABLE="course" REFFIELDS="id"/>
+        <KEY NAME="course_fk" TYPE="foreign-unique" FIELDS="courseid" REFTABLE="course" REFFIELDS="id"/>
       </KEYS>
-      <INDEXES>
-        <INDEX NAME="course_uix" UNIQUE="true" FIELDS="courseid"/>
-      </INDEXES>
     </TABLE>
     <TABLE NAME="local_rtcsync_formitem" COMMENT="Grade items selected for SMS formative sync">
       <FIELDS>
