@@ -71,8 +71,7 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         $configtable->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
         $configtable->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
         $configtable->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
-        $configtable->add_key('course_fk', XMLDB_KEY_FOREIGN, ['courseid'], 'course', ['id']);
-        $configtable->add_index('course_uix', XMLDB_INDEX_UNIQUE, ['courseid']);
+        $configtable->add_key('course_fk', XMLDB_KEY_FOREIGN_UNIQUE, ['courseid'], 'course', ['id']);
         if (!$dbman->table_exists($configtable)) {
             $dbman->create_table($configtable);
         }
