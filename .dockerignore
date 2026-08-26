@@ -1,6 +1,5 @@
-*
-!Dockerfile
-!docker/
-!docker/start-moodle.sh
-!php-config/
-!php-config/moodle.ini
+moodle/
+moodledata/
+.git/
+.github/
+*.log
