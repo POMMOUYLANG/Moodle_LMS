@@ -4,9 +4,9 @@ FROM php:8.3-apache
 RUN apt-get update && apt-get install -y \
     libpng-dev libjpeg-dev libfreetype6-dev \
     libxml2-dev libzip-dev zip unzip git \
-    libicu-dev g++ mariadb-client curl && \
+    libicu-dev g++ mariadb-client curl libcurl4-openssl-dev && \
     docker-php-ext-configure gd --with-freetype --with-jpeg && \
-    docker-php-ext-install gd intl mysqli pdo pdo_mysql zip opcache && \
+    docker-php-ext-install gd intl mysqli pdo pdo_mysql zip opcache curl && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Enable Apache modules
@@ -21,11 +21,13 @@ RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf
 
 # Copy PHP configuration (optional)
 COPY php-config/moodle.ini /usr/local/etc/php/conf.d/moodle.ini
+COPY docker/start-moodle.sh /usr/local/bin/start-moodle.sh
+RUN chmod +x /usr/local/bin/start-moodle.sh
 
-# Fix permissions for Moodle
-RUN mkdir -p /var/www/moodledata && \
-    chown -R www-data:www-data /var/www/html /var/www/moodledata && \
-    chmod -R 755 /var/www/html /var/www/moodledata
+# Fix permissions for Moodle.
+RUN mkdir -p /var/moodledata && \
+    chown -R www-data:www-data /var/www/html /var/moodledata && \
+    chmod -R 755 /var/www/html /var/moodledata
 
 EXPOSE 80
-CMD ["apache2-foreground"]
+CMD ["/usr/local/bin/start-moodle.sh"]

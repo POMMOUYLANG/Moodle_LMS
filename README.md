@@ -19,10 +19,20 @@ This compose file joins the shared Docker network `rtc_net`, so that network mus
 
 ## Database Settings
 
+For the shared root deployment used by `./deploy.sh` and GitHub Actions:
+
+- database host: run `./sync-compose.sh --service moodle-db`
 - database name: `moodle_lms`
 - database user: `moodle`
 - database password: `Moodle@123`
 - MySQL root password: `Root@123`
+
+For the standalone `Moodle_LMS/docker-compose.yml` only:
+
+- database host: `db`
+- database name: `moodle`
+- database user: `moodleuser`
+- database password: `moodlepass`
 
 ## First-Time Setup
 
@@ -33,10 +43,14 @@ Then finish the application installation from the browser:
 - Production: `https://moodle.rtc-kp.camai.kh`
 - Local/internal route: `http://moodle.rtc-kp.localhost`
 
-Use these values in the Moodle installer:
+`./setup_moodle.sh` now generates `Moodle_LMS/moodle/config.php` automatically when it is missing, so the browser installer does not need write access to create that file inside the bind-mounted repo checkout.
+For the shared Caddy deployment, Moodle should keep `sslproxy=true` but `reverseproxy=false` by default, because Caddy forwards the public host header directly.
 
+Use these values in the Moodle installer for the shared root deployment:
+
+- Data directory: `/var/moodledata`
 - Database type: `mysqli`
-- Database host: `moodle-db`
+- Database host: the value from `./sync-compose.sh --service moodle-db`
 - Database name: `moodle_lms`
 - Database user: `moodle`
 - Database password: `Moodle@123`
@@ -46,12 +60,21 @@ Use these values in the Moodle installer:
 To remove the current Moodle DB volume and start again:
 
 ```bash
-docker compose --env-file ../.env down
-docker volume rm "${CONTAINER_PREFIX}-moodle_db_data"
+docker compose --env-file ../.env down -v
 docker compose --env-file ../.env up -d
 ```
 
-If you also want to reset uploaded files and generated Moodle state, review the contents of `moodledata/` before deleting anything manually.
+Moodle data is stored in the Docker volume mounted at `/var/moodledata`, not in the repo checkout.
+
+For the shared root deployment and GitHub Actions flow, use:
+
+```bash
+./setup_moodle.sh --reset-moodle-db
+./setup_moodle.sh --reset-moodle-data
+./setup_moodle.sh --reset-moodle-db --reset-moodle-data
+```
+
+There is also a dedicated GitHub Actions workflow named `Moodle Setup` for CI/CD-driven re-setup and resets.
 
 ## Useful Commands
 

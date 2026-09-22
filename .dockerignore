@@ -1,0 +1,5 @@
+moodle/
+moodledata/
+.git/
+.github/
+*.log

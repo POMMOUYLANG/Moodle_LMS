@@ -30,6 +30,9 @@ if (!file_exists('./config.php')) {
 require_once('config.php');
 require_once($CFG->dirroot .'/course/lib.php');
 require_once($CFG->libdir .'/filelib.php');
+require_once($CFG->dirroot . '/local/rtc_sso.php');
+
+rtc_sso_bootstrap();
 
 redirect_if_major_upgrade_required();
 

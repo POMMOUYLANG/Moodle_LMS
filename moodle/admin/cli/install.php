@@ -103,7 +103,7 @@ if (file_exists($distrolibfile)) {
 }
 
 // Nothing to do if config.php exists
-$configfile = dirname(__DIR__, 2).'/config.php';
+$configfile = __DIR__.'/../../config.php';
 if (file_exists($configfile)) {
     require($configfile);
     require_once($CFG->libdir.'/clilib.php');
@@ -150,15 +150,14 @@ define('PHPUNIT_TEST', false);
 define('IGNORE_COMPONENT_CACHE', true);
 
 // Check that PHP is of a sufficient version as soon as possible.
-require_once(dirname(__DIR__, 2) . '/public/lib/phpminimumversionlib.php');
+require_once(__DIR__.'/../../lib/phpminimumversionlib.php');
 moodle_require_minimum_php_version();
 
 // set up configuration
 global $CFG;
 $CFG = new stdClass();
 $CFG->lang                 = 'en';
-$CFG->root                 = dirname(__DIR__, 2);
-$CFG->dirroot              = $CFG->root . '/public';
+$CFG->dirroot              = dirname(dirname(__DIR__));
 $CFG->libdir               = "$CFG->dirroot/lib";
 $CFG->wwwroot              = "http://localhost";
 $CFG->httpswwwroot         = $CFG->wwwroot;
@@ -238,13 +237,13 @@ list($options, $unrecognized) = cli_get_params(
         'chmod'             => isset($distro->directorypermissions) ? sprintf('%04o',$distro->directorypermissions) : '2777', // let distros set dir permissions
         'lang'              => $CFG->lang,
         'wwwroot'           => '',
-        'dataroot'          => empty($distro->dataroot) ? str_replace('\\', '/', dirname(dirname(dirname(__DIR__))).'/moodledata'): $distro->dataroot, // initialised later after including libs or by distro
+        'dataroot'          => empty($distro->dataroot) ? install_default_dataroot(str_replace('\\', '/', dirname(dirname(dirname(__DIR__))).'/moodledata')): $distro->dataroot, // initialised later after including libs or by distro
         'dbtype'            => empty($distro->dbtype) ? $defaultdb : $distro->dbtype, // let distro skip dbtype selection
-        'dbhost'            => empty($distro->dbhost) ? 'localhost' : $distro->dbhost, // let distros set dbhost
-        'dbname'            => 'moodle',
-        'dbuser'            => empty($distro->dbuser) ? 'root' : $distro->dbuser, // let distros set dbuser
-        'dbpass'            => '',
-        'dbport'            => '',
+        'dbhost'            => install_default_dbhost(empty($distro->dbhost) ? 'localhost' : $distro->dbhost), // let distros set dbhost
+        'dbname'            => install_default_dbname('moodle'),
+        'dbuser'            => install_default_dbuser(empty($distro->dbuser) ? 'root' : $distro->dbuser), // let distros set dbuser
+        'dbpass'            => install_default_dbpass(''),
+        'dbport'            => install_default_dbport(''),
         'dbsocket'          => '',
         'prefix'            => 'mdl_',
         'fullname'          => '',

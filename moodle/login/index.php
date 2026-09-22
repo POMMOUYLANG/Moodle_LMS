@@ -26,6 +26,10 @@
 
 require('../config.php');
 require_once('lib.php');
+require_once($CFG->dirroot . '/local/rtc_sso.php');
+
+rtc_sso_bootstrap();
+rtc_sso_try_credentials_login();
 
 redirect_if_major_upgrade_required();
 

@@ -1,0 +1,59 @@
+<div class="local-rtcsync-guide" data-region="local-rtcsync-guide">
+    <div class="local-rtcsync-guide__launcher">
+        <button
+            class="btn btn-primary local-rtcsync-guide__open"
+            type="button"
+            data-action="open-guide"
+            aria-controls="local-rtcsync-guide-panel"
+            aria-expanded="false"
+        >
+            <span aria-hidden="true">?</span>
+            {{openlabel}}
+        </button>
+    </div>
+
+    <section
+        class="local-rtcsync-guide__panel"
+        id="local-rtcsync-guide-panel"
+        data-region="guide-panel"
+        role="dialog"
+        aria-modal="false"
+        aria-labelledby="local-rtcsync-guide-title"
+        hidden
+    >
+        <header class="local-rtcsync-guide__header">
+            <div>
+                <div class="local-rtcsync-guide__eyebrow">{{eyebrow}}</div>
+                <h2 id="local-rtcsync-guide-title">{{title}}</h2>
+            </div>
+            <button
+                class="btn btn-light local-rtcsync-guide__close"
+                type="button"
+                data-action="close-guide"
+                aria-label="{{closelabel}}"
+            >
+                <span aria-hidden="true">&times;</span>
+            </button>
+        </header>
+
+        <div class="local-rtcsync-guide__content">
+            <p class="local-rtcsync-guide__intro">{{intro}}</p>
+            <ol class="local-rtcsync-guide__steps">
+                {{#steps}}
+                    <li>
+                        <span class="local-rtcsync-guide__number" aria-hidden="true">{{number}}</span>
+                        <div>
+                            <h3>{{title}}</h3>
+                            <p>{{body}}</p>
+                        </div>
+                    </li>
+                {{/steps}}
+            </ol>
+            <aside class="local-rtcsync-guide__tip">
+                <strong>{{tiptitle}}</strong>
+                <p>{{tipbody}}</p>
+            </aside>
+        </div>
+    </section>
+</div>
+

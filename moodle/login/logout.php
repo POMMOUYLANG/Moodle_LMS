@@ -25,6 +25,7 @@
  */
 
 require_once('../config.php');
+require_once($CFG->dirroot . '/local/rtc_sso.php');
 
 $PAGE->set_url('/login/logout.php');
 $PAGE->set_context(context_system::instance());
@@ -41,21 +42,7 @@ if ($login) {
 
 if (!isloggedin()) {
     // no confirmation, user has already logged out
-
-    // ===== RTC SSO CLEAR (important) =====
-    if (!empty($_COOKIE['auth_token'])) {
-        // Clear token cookie so index.php won't auto-login again
-        setcookie('auth_token', '', time() - 3600, '/', '', true, true);
-        setcookie('auth_token', '', time() - 3600, '/', '', false, true);
-
-        // If your cookie was created with a domain, also clear it with domain:
-        // setcookie('auth_token', '', time() - 3600, '/', '.rtc-bb.camai.kh', true, true);
-        // setcookie('auth_token', '', time() - 3600, '/', '.rtc-bb.camai.kh', false, true);
-
-        unset($_COOKIE['auth_token']);
-    }
-    // ===== END RTC SSO CLEAR =====
-
+    rtc_sso_logout();
     require_logout();
     redirect($redirect);
 } else if (!confirm_sesskey($sesskey)) {
@@ -73,23 +60,6 @@ foreach ($authsequence as $authname) {
     $authplugin->logoutpage_hook();
 }
 
-// ===== RTC SSO CLEAR (important) =====
-global $SESSION;
-
-if (!empty($_COOKIE['auth_token'])) {
-    setcookie('auth_token', '', time() - 3600, '/', '', true, true);
-    setcookie('auth_token', '', time() - 3600, '/', '', false, true);
-
-    // If you set cookie domain before, uncomment and match domain exactly:
-    // setcookie('auth_token', '', time() - 3600, '/', '.rtc-bb.camai.kh', true, true);
-    // setcookie('auth_token', '', time() - 3600, '/', '.rtc-bb.camai.kh', false, true);
-
-    unset($_COOKIE['auth_token']);
-}
-
-// Clear RTC session values too (prevents token sync relogin)
-unset($SESSION->rtc_token, $SESSION->rtc_email, $SESSION->rtc_idcard);
-// ===== END RTC SSO CLEAR =====
-
+rtc_sso_logout();
 require_logout();
 redirect($redirect);

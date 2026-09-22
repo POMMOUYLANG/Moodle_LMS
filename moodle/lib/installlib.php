@@ -47,7 +47,22 @@ define('INSTALL_SAVE',          6);
  */
 function install_guess_wwwroot() {
     $wwwroot = '';
-    if (empty($_SERVER['HTTPS']) or $_SERVER['HTTPS'] == 'off') {
+
+    $forwardedproto = $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '';
+    if (strpos($forwardedproto, ',') !== false) {
+        $forwardedproto = trim(explode(',', $forwardedproto)[0]);
+    }
+
+    $ishttps = false;
+    if (!empty($forwardedproto)) {
+        $ishttps = (strtolower($forwardedproto) === 'https');
+    } else if (!empty($_SERVER['HTTP_X_FORWARDED_SSL'])) {
+        $ishttps = (strtolower($_SERVER['HTTP_X_FORWARDED_SSL']) === 'on');
+    } else if (!empty($_SERVER['HTTPS']) and $_SERVER['HTTPS'] != 'off') {
+        $ishttps = true;
+    }
+
+    if (!$ishttps) {
         $wwwroot .= 'http://';
     } else {
         $wwwroot .= 'https://';
@@ -62,6 +77,104 @@ function install_guess_wwwroot() {
     list($wwwroot, $xtra) = explode('/install.php', $wwwroot);
 
     return $wwwroot;
+}
+
+/**
+ * Returns the preferred dataroot for this environment.
+ *
+ * Docker deployments in this repo mount Moodle data at /var/moodledata,
+ * which differs from Moodle's default relative guess of ../moodledata.
+ *
+ * @param string $fallback
+ * @return string
+ */
+function install_default_dataroot($fallback) {
+    $configured = getenv('MOODLE_DATA_ROOT');
+    if ($configured !== false) {
+        $configured = trim($configured);
+        if ($configured !== '') {
+            return rtrim($configured, "/\\");
+        }
+    }
+
+    if (DIRECTORY_SEPARATOR === '/' && is_dir('/var')) {
+        return '/var/moodledata';
+    }
+
+    return $fallback;
+}
+
+/**
+ * Returns a trimmed environment value or the provided fallback when empty.
+ *
+ * @param array $names
+ * @param string $fallback
+ * @return string
+ */
+function install_env_default(array $names, $fallback) {
+    foreach ($names as $name) {
+        $value = getenv($name);
+        if ($value === false) {
+            continue;
+        }
+
+        $value = trim((string) $value);
+        if ($value !== '') {
+            return $value;
+        }
+    }
+
+    return $fallback;
+}
+
+/**
+ * Returns the preferred database host for this environment.
+ *
+ * @param string $fallback
+ * @return string
+ */
+function install_default_dbhost($fallback) {
+    return install_env_default(['MOODLE_DB_HOST', 'DB_HOST'], $fallback);
+}
+
+/**
+ * Returns the preferred database name for this environment.
+ *
+ * @param string $fallback
+ * @return string
+ */
+function install_default_dbname($fallback) {
+    return install_env_default(['MOODLE_DB_NAME', 'MYSQL_DATABASE'], $fallback);
+}
+
+/**
+ * Returns the preferred database user for this environment.
+ *
+ * @param string $fallback
+ * @return string
+ */
+function install_default_dbuser($fallback) {
+    return install_env_default(['MOODLE_DB_USER', 'MYSQL_USER'], $fallback);
+}
+
+/**
+ * Returns the preferred database password for this environment.
+ *
+ * @param string $fallback
+ * @return string
+ */
+function install_default_dbpass($fallback) {
+    return install_env_default(['MOODLE_DB_PASSWORD', 'MYSQL_PASSWORD'], $fallback);
+}
+
+/**
+ * Returns the preferred database port for this environment.
+ *
+ * @param string $fallback
+ * @return string
+ */
+function install_default_dbport($fallback) {
+    return install_env_default(['MOODLE_DB_PORT', 'DB_PORT'], $fallback);
 }
 
 /**
