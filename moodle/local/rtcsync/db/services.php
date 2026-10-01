@@ -87,7 +87,7 @@ $functions = [
         'classname' => 'local_rtcsync_external',
         'methodname' => 'get_managed_state',
         'classpath' => 'local/rtcsync/externallib.php',
-        'description' => 'Read bounded state for explicitly identified RTC-managed records.',
+        'description' => 'Read bounded state for explicitly identified records and marked RTC-managed inventories.',
         'type' => 'read',
         'capabilities' => 'local/rtcsync:readmanagedstate',
     ],

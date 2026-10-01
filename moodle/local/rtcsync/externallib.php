@@ -211,6 +211,24 @@ class local_rtcsync_external extends external_api
         }
 
         $profilesaved = local_rtcsync_save_profile_fields((int) $saved->id, $user['profile_fields'] ?? []);
+        $manageduser = $DB->get_record(
+            'local_rtcsync_user',
+            ['userid' => (int) $saved->id],
+            '*',
+            IGNORE_MISSING
+        );
+        $marker = (object) [
+            'userid' => (int) $saved->id,
+            'idnumber' => (string) $saved->idnumber,
+            'timemodified' => time(),
+        ];
+        if ($manageduser) {
+            $marker->id = (int) $manageduser->id;
+            $DB->update_record('local_rtcsync_user', $marker);
+        } else {
+            $marker->timecreated = time();
+            $DB->insert_record('local_rtcsync_user', $marker);
+        }
 
         return [
             'id' => (int) $saved->id,
@@ -633,7 +651,7 @@ class local_rtcsync_external extends external_api
         return new external_function_parameters([
             'scope' => new external_value(
                 PARAM_ALPHA,
-                'State scope: users, systemroles, categoryroles, courses, credits, classes, enrolments, grades, or activitygrades.'
+                'State scope: users, systemroles, categoryroles, courses, credits, classes, enrolments, grades, activitygrades, managedusers, or managedcourses.'
             ),
             'idnumbers' => new external_multiple_structure(
                 new external_value(PARAM_RAW, 'Explicit RTC-managed user or course idnumber.'),
@@ -660,7 +678,7 @@ class local_rtcsync_external extends external_api
         ]);
 
         $scope = strtolower(trim($params['scope']));
-        if (!in_array($scope, ['users', 'systemroles', 'categoryroles', 'courses', 'credits', 'classes', 'enrolments', 'grades', 'activitygrades'], true)) {
+        if (!in_array($scope, ['users', 'systemroles', 'categoryroles', 'courses', 'credits', 'classes', 'enrolments', 'grades', 'activitygrades', 'managedusers', 'managedcourses'], true)) {
             throw new invalid_parameter_exception('Unsupported RTC managed-state scope.');
         }
 
@@ -678,7 +696,7 @@ class local_rtcsync_external extends external_api
         self::validate_context($systemcontext);
         require_capability('local/rtcsync:readmanagedstate', $systemcontext);
 
-        if (!$idnumbers) {
+        if (!$idnumbers && !in_array($scope, ['managedusers', 'managedcourses'], true)) {
             return [
                 'scope' => $scope,
                 'offset' => $offset,
@@ -688,11 +706,71 @@ class local_rtcsync_external extends external_api
             ];
         }
 
-        [$insql, $inparams] = $DB->get_in_or_equal($idnumbers, SQL_PARAMS_NAMED, 'rtcid');
         $records = [];
         $total = 0;
 
-        if ($scope === 'users') {
+        if ($scope === 'managedusers') {
+            $where = "mu.userid = u.id
+                      AND u.deleted = 0
+                      AND u.mnethostid = :mnethostid";
+            $queryparams = ['mnethostid' => $CFG->mnet_localhost_id];
+            $from = "FROM {local_rtcsync_user} mu
+                     JOIN {user} u ON u.id = mu.userid";
+            $total = $DB->count_records_sql(
+                "SELECT COUNT(1) {$from} WHERE {$where}",
+                $queryparams
+            );
+            $records = $DB->get_records_sql(
+                "SELECT mu.id AS record_id,
+                        u.id AS moodle_id,
+                        u.idnumber,
+                        u.username,
+                        u.email,
+                        u.firstname,
+                        u.lastname,
+                        u.confirmed,
+                        u.suspended
+                   {$from}
+                  WHERE {$where}
+               ORDER BY u.id",
+                $queryparams,
+                $offset,
+                $limit
+            );
+        } else if ($scope === 'managedcourses') {
+            $where = "c.id <> :siteid
+                      AND (c.idnumber LIKE :subjectpattern OR c.idnumber LIKE :creditpattern)";
+            $queryparams = [
+                'siteid' => SITEID,
+                'subjectpattern' => 'rtc-subject:%',
+                'creditpattern' => 'rtc-credit-course:%',
+            ];
+            $total = $DB->count_records_sql(
+                "SELECT COUNT(1) FROM {course} c WHERE {$where}",
+                $queryparams
+            );
+            $records = $DB->get_records_sql(
+                "SELECT c.id AS record_id,
+                        c.id AS moodle_id,
+                        c.idnumber,
+                        c.shortname,
+                        c.fullname,
+                        c.visible,
+                        cc.id AS category_id,
+                        cc.idnumber AS category_idnumber
+                   FROM {course} c
+                   JOIN {course_categories} cc ON cc.id = c.category
+                  WHERE {$where}
+               ORDER BY c.id",
+                $queryparams,
+                $offset,
+                $limit
+            );
+        } else {
+            [$insql, $inparams] = $DB->get_in_or_equal($idnumbers, SQL_PARAMS_NAMED, 'rtcid');
+        }
+
+        if ($scope !== 'managedcourses' && $scope === 'users') {
             $where = "u.idnumber {$insql}
                       AND u.deleted = 0
                       AND u.mnethostid = :mnethostid";
@@ -963,7 +1041,7 @@ class local_rtcsync_external extends external_api
                 $offset,
                 $limit
             );
-        } else {
+        } else if ($scope === 'activitygrades') {
             $where = "c.idnumber {$insql}
                       AND cfg.enabled = 1
                       AND syncitem.included = 1

@@ -103,5 +103,29 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         upgrade_plugin_savepoint(true, 2026100101, 'local', 'rtcsync');
     }
 
+    if ($oldversion < 2026100102) {
+        // Code-only release: managed-course inventory uses the existing
+        // external-service contract and requires no schema migration.
+        upgrade_plugin_savepoint(true, 2026100102, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026100103) {
+        $dbman = $DB->get_manager();
+        $table = new xmldb_table('local_rtcsync_user');
+        $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $table->add_field('userid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $table->add_field('idnumber', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL);
+        $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $table->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $table->add_key('user_fk', XMLDB_KEY_FOREIGN_UNIQUE, ['userid'], 'user', ['id']);
+        $table->add_index('idnumber_ix', XMLDB_INDEX_NOTUNIQUE, ['idnumber']);
+        if (!$dbman->table_exists($table)) {
+            $dbman->create_table($table);
+        }
+
+        upgrade_plugin_savepoint(true, 2026100103, 'local', 'rtcsync');
+    }
+
     return true;
 }

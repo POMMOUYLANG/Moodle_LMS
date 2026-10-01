@@ -49,6 +49,63 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame('rtc-user:included', $result['records'][0]['idnumber']);
     }
 
+    public function test_managed_user_inventory_uses_marker_for_sms_id_card_idnumbers(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $managed = \local_rtcsync_external::upsert_user([
+            'moodleid' => 0,
+            'username' => 'rtc-managed-card',
+            'email' => 'rtc-managed-card@example.test',
+            'firstname' => 'Managed',
+            'lastname' => 'Card',
+            'idnumber' => 'CARD-001',
+            'phone1' => '',
+            'suspended' => 0,
+            'profile_fields' => [],
+        ]);
+        $this->getDataGenerator()->create_user([
+            'idnumber' => 'CARD-999',
+        ]);
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'managedusers',
+            [],
+            0,
+            100
+        );
+
+        $this->assertSame(1, $result['total']);
+        $this->assertCount(1, $result['records']);
+        $this->assertSame((int) $managed['id'], $result['records'][0]['moodle_id']);
+        $this->assertSame('CARD-001', $result['records'][0]['idnumber']);
+    }
+
+    public function test_bilingual_labels_render_one_language_for_text_and_strings(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        filter_set_global_state('multilang', TEXTFILTER_ON);
+        filter_set_applies_to_strings('multilang', true);
+
+        global $SESSION;
+        $bilingual = '<span class="multilang" lang="en">English label</span>'
+            .'<span class="multilang" lang="km">ស្លាកខ្មែរ</span>';
+        $legacy = '<span class="multilang" lang="en">English label</span>'
+            .'<span class="multilang" lang="kh">ស្លាកខ្មែរ</span>';
+        $options = ['context' => \context_system::instance()];
+
+        $SESSION->forcelang = 'en';
+        $this->assertSame('English label', format_text($bilingual, FORMAT_HTML, $options));
+        $this->assertSame('English label', format_string($bilingual, true, $options));
+
+        $SESSION->forcelang = 'km';
+        $this->assertSame('ស្លាកខ្មែរ', format_text($bilingual, FORMAT_HTML, $options));
+        $this->assertSame('ស្លាកខ្មែរ', format_string($bilingual, true, $options));
+        $this->assertSame('ស្លាកខ្មែរ', format_text($legacy, FORMAT_HTML, $options));
+    }
+
     public function test_user_profile_contract_persists_batch_fields_and_rejects_unknown_fields(): void
     {
         $this->resetAfterTest();
@@ -172,6 +229,38 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame(1, $result['limit']);
         $this->assertCount(1, $result['records']);
         $this->assertSame((int) $included->id, $result['records'][0]['moodle_id']);
+    }
+
+    public function test_managed_course_inventory_lists_subject_and_credit_courses_only(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $subject = $this->getDataGenerator()->create_course([
+            'idnumber' => 'rtc-subject:11',
+        ]);
+        $credit = $this->getDataGenerator()->create_course([
+            'idnumber' => 'rtc-credit-course:22',
+        ]);
+        $this->getDataGenerator()->create_course([
+            'idnumber' => 'manual-course:33',
+        ]);
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'managedcourses',
+            [],
+            0,
+            100
+        );
+
+        $this->assertSame(2, $result['total']);
+        $this->assertSame(
+            [(int) $subject->id, (int) $credit->id],
+            array_map(
+                static fn (array $record): int => $record['moodle_id'],
+                $result['records']
+            )
+        );
     }
 
     public function test_activity_grade_read_returns_only_course_items_enabled_for_sms_formative(): void
