@@ -67,6 +67,7 @@ final class rebuild_audit
             'local_rtcsync_upsert_course',
             'local_rtcsync_upsert_user',
             'local_rtcsync_sync_system_roles',
+            'local_rtcsync_sync_category_roles',
             'local_rtcsync_enrol_user',
             'local_rtcsync_unenrol_user',
             'local_rtcsync_upsert_credit',

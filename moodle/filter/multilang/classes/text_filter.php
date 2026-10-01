@@ -82,12 +82,12 @@ class text_filter extends \core_filters\text_filter {
 
         $langlist = [];
         foreach ($rawlanglist[1] as $index => $lang) {
-            $lang = str_replace('-', '_', strtolower($lang)); // Normalize languages.
+            $lang = $this->normalise_language_code($lang);
             $langlist[$lang] = $rawlanglist[2][$index];
         }
 
         // Follow the stream of parent languages.
-        $lang = current_language();
+        $lang = $this->normalise_language_code(current_language());
         do {
             if (isset($langlist[$lang])) {
                 return $langlist[$lang];
@@ -96,6 +96,22 @@ class text_filter extends \core_filters\text_filter {
 
         // If we don't find a match, default to the first provided translation.
         return array_shift($langlist);
+    }
+
+    /**
+     * Normalise language codes used by legacy RTC content.
+     *
+     * Moodle uses "km" for Khmer, while older RTC bilingual content used
+     * "kh". Treat both values as the same language so existing labels do not
+     * silently fall back to English after the multilang filter is enabled.
+     *
+     * @param string $lang Language code.
+     * @return string Normalised language code.
+     */
+    private function normalise_language_code(string $lang): string {
+        $lang = str_replace('-', '_', strtolower($lang));
+
+        return $lang === 'kh' ? 'km' : $lang;
     }
 
     /**

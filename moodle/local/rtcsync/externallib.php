@@ -324,6 +324,139 @@ class local_rtcsync_external extends external_api
         ]);
     }
 
+    public static function sync_category_roles_parameters(): external_function_parameters
+    {
+        return new external_function_parameters([
+            'access' => new external_single_structure([
+                'userid' => new external_value(PARAM_INT, 'Moodle user id.'),
+                'category_roles' => new external_multiple_structure(
+                    new external_single_structure([
+                        'category_idnumber' => new external_value(PARAM_RAW, 'Stable RTC category idnumber.'),
+                        'category_name' => new external_value(PARAM_RAW, 'Multilingual category name.', VALUE_DEFAULT, ''),
+                        'role_shortname' => new external_value(PARAM_ALPHANUMEXT, 'Approved category role shortname.'),
+                    ]),
+                    'Desired RTC-managed category roles.',
+                    VALUE_DEFAULT,
+                    []
+                ),
+            ]),
+        ]);
+    }
+
+    public static function sync_category_roles(array $access): array
+    {
+        global $DB;
+
+        $params = self::validate_parameters(self::sync_category_roles_parameters(), ['access' => $access]);
+        $access = $params['access'];
+        $systemcontext = context_system::instance();
+        self::validate_context($systemcontext);
+        require_capability('moodle/role:assign', $systemcontext);
+
+        $userid = (int) $access['userid'];
+        $DB->get_record('user', ['id' => $userid, 'deleted' => 0], 'id', MUST_EXIST);
+        $allowedshortnames = ['manager'];
+        $managedroles = $DB->get_records_list('role', 'shortname', $allowedshortnames);
+        $managedroleids = array_map('intval', array_keys($managedroles));
+        $desired = [];
+
+        foreach ($access['category_roles'] ?? [] as $requested) {
+            $idnumber = trim((string) ($requested['category_idnumber'] ?? ''));
+            $roleshortname = trim((string) ($requested['role_shortname'] ?? ''));
+            if ($idnumber === '' || !in_array($roleshortname, $allowedshortnames, true)) {
+                throw new invalid_parameter_exception(
+                    'RTC category roles may only use a non-empty category idnumber and the approved manager role.'
+                );
+            }
+
+            $categoryid = self::ensure_category(
+                $idnumber,
+                trim((string) ($requested['category_name'] ?? '')) ?: $idnumber,
+                0
+            );
+            $role = $managedroles[$roleshortname] ?? null;
+            if (!$role) {
+                throw new invalid_parameter_exception(
+                    'The approved Moodle category role is not installed: ' . $roleshortname
+                );
+            }
+            $context = context_coursecat::instance($categoryid);
+            $desired[$context->id . ':' . $role->id] = [
+                'categoryid' => $categoryid,
+                'idnumber' => $idnumber,
+                'contextid' => (int) $context->id,
+                'roleid' => (int) $role->id,
+            ];
+        }
+
+        $component = 'local_rtcsync';
+        foreach ($DB->get_records_sql(
+            'SELECT ra.id, ra.roleid, ra.contextid
+               FROM {role_assignments} ra
+               JOIN {context} ctx ON ctx.id = ra.contextid
+              WHERE ra.userid = :userid
+                AND ra.component = :component
+                AND ctx.contextlevel = :contextlevel',
+            [
+                'userid' => $userid,
+                'component' => $component,
+                'contextlevel' => CONTEXT_COURSECAT,
+            ]
+        ) as $assignment) {
+            $key = (string) $assignment->contextid . ':' . (string) $assignment->roleid;
+            if (
+                in_array((int) $assignment->roleid, $managedroleids, true)
+                && !isset($desired[$key])
+            ) {
+                role_unassign(
+                    (int) $assignment->roleid,
+                    $userid,
+                    (int) $assignment->contextid,
+                    $component,
+                    0
+                );
+            }
+        }
+
+        foreach ($desired as $wanted) {
+            if (!$DB->record_exists('role_assignments', [
+                'roleid' => $wanted['roleid'],
+                'userid' => $userid,
+                'contextid' => $wanted['contextid'],
+                'component' => $component,
+                'itemid' => 0,
+            ])) {
+                role_assign(
+                    $wanted['roleid'],
+                    $userid,
+                    $wanted['contextid'],
+                    $component,
+                    0
+                );
+            }
+        }
+
+        return [
+            'userid' => $userid,
+            'category_count' => count($desired),
+            'category_idnumbers' => array_values(array_map(
+                static fn (array $role): string => (string) $role['idnumber'],
+                $desired
+            )),
+        ];
+    }
+
+    public static function sync_category_roles_returns(): external_single_structure
+    {
+        return new external_single_structure([
+            'userid' => new external_value(PARAM_INT, 'Moodle user id.'),
+            'category_count' => new external_value(PARAM_INT, 'Number of managed category role assignments.'),
+            'category_idnumbers' => new external_multiple_structure(
+                new external_value(PARAM_ALPHANUMEXT, 'Managed category id.')
+            ),
+        ]);
+    }
+
     public static function enrol_user_parameters(): external_function_parameters
     {
         return new external_function_parameters([
@@ -496,7 +629,7 @@ class local_rtcsync_external extends external_api
         return new external_function_parameters([
             'scope' => new external_value(
                 PARAM_ALPHA,
-                'State scope: users, systemroles, courses, credits, classes, enrolments, grades, or activitygrades.'
+                'State scope: users, systemroles, categoryroles, courses, credits, classes, enrolments, grades, or activitygrades.'
             ),
             'idnumbers' => new external_multiple_structure(
                 new external_value(PARAM_RAW, 'Explicit RTC-managed user or course idnumber.'),
@@ -523,7 +656,7 @@ class local_rtcsync_external extends external_api
         ]);
 
         $scope = strtolower(trim($params['scope']));
-        if (!in_array($scope, ['users', 'systemroles', 'courses', 'credits', 'classes', 'enrolments', 'grades', 'activitygrades'], true)) {
+        if (!in_array($scope, ['users', 'systemroles', 'categoryroles', 'courses', 'credits', 'classes', 'enrolments', 'grades', 'activitygrades'], true)) {
             throw new invalid_parameter_exception('Unsupported RTC managed-state scope.');
         }
 
@@ -610,6 +743,40 @@ class local_rtcsync_external extends external_api
                    {$from}
                   WHERE {$where}
                ORDER BY u.id, r.id",
+                $queryparams,
+                $offset,
+                $limit
+            );
+        } else if ($scope === 'categoryroles') {
+            $where = "u.idnumber {$insql}
+                      AND u.deleted = 0
+                      AND ctx.contextlevel = :contextlevel
+                      AND ra.component = :synccomponent";
+            $queryparams = $inparams + [
+                'contextlevel' => CONTEXT_COURSECAT,
+                'synccomponent' => 'local_rtcsync',
+            ];
+            $from = "FROM {user} u
+                     JOIN {role_assignments} ra ON ra.userid = u.id
+                     JOIN {context} ctx ON ctx.id = ra.contextid
+                     JOIN {course_categories} cc ON cc.id = ctx.instanceid
+                     JOIN {role} r ON r.id = ra.roleid";
+            $total = $DB->count_records_sql(
+                "SELECT COUNT(1) {$from} WHERE {$where}",
+                $queryparams
+            );
+            $records = $DB->get_records_sql(
+                "SELECT ra.id AS record_id,
+                        u.id AS moodle_id,
+                        u.idnumber,
+                        u.id AS user_id,
+                        u.idnumber AS user_idnumber,
+                        cc.id AS category_id,
+                        cc.idnumber AS category_idnumber,
+                        r.shortname AS role_shortname
+                   {$from}
+                  WHERE {$where}
+               ORDER BY u.id, cc.id, r.id",
                 $queryparams,
                 $offset,
                 $limit

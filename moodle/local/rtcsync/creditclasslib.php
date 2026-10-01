@@ -200,6 +200,16 @@ trait local_rtcsync_credit_class_external
                     new external_value(PARAM_INT, 'Applicable Moodle course id.'),
                     'Courses that receive the class grouping.', VALUE_DEFAULT, []
                 ),
+                'teacher_role_shortname' => new external_value(
+                    PARAM_ALPHANUMEXT,
+                    'Moodle role for class teachers.',
+                    VALUE_DEFAULT,
+                    'editingteacher'
+                ),
+                'teacher_userids' => new external_multiple_structure(
+                    new external_value(PARAM_INT, 'Assigned Moodle class-teacher id.'),
+                    'Desired class-teacher users.', VALUE_DEFAULT, []
+                ),
                 'grouping_idnumber' => new external_value(
                     PARAM_RAW, 'Stable class grouping idnumber.', VALUE_DEFAULT, ''
                 ),
@@ -233,8 +243,12 @@ trait local_rtcsync_credit_class_external
         require_capability('moodle/cohort:manage', $systemcontext);
 
         $idnumber = trim((string) $class['idnumber']);
-        if ($idnumber === '' || !str_starts_with($idnumber, 'rtc-class:')) {
-            throw new invalid_parameter_exception('Class idnumber must use the rtc-class: prefix.');
+        if ($idnumber === ''
+                || (!str_starts_with($idnumber, 'rtc-class:')
+                    && !str_starts_with($idnumber, 'rtc-delivery:'))) {
+            throw new invalid_parameter_exception(
+                'Class idnumber must use the rtc-class: or rtc-delivery: prefix.'
+            );
         }
 
         $cohort = $DB->get_record('cohort', ['idnumber' => $idnumber], '*', IGNORE_MISSING);
@@ -264,11 +278,20 @@ trait local_rtcsync_credit_class_external
             cohort_remove_member($cohortid, $userid);
         }
 
+        $courseids = self::valid_courseids($class['courseids'] ?? []);
         $structure = self::reconcile_class_course_groups(
-            self::valid_courseids($class['courseids'] ?? []),
+            $courseids,
             trim((string) ($class['grouping_idnumber'] ?? '')),
             trim((string) ($class['grouping_name'] ?? '')),
             $class['groups'] ?? [],
+            (int) $class['visible'] === 1
+        );
+        $teacherids = self::valid_userids($class['teacher_userids'] ?? [], 'classteacher');
+        $teacherCount = self::reconcile_class_course_roles(
+            $courseids,
+            $cohortid,
+            trim((string) ($class['teacher_role_shortname'] ?? 'editingteacher')),
+            $teacherids,
             (int) $class['visible'] === 1
         );
 
@@ -278,6 +301,7 @@ trait local_rtcsync_credit_class_external
             'member_count' => count($desired),
             'course_count' => $structure['course_count'],
             'group_count' => $structure['group_count'],
+            'teacher_count' => $teacherCount,
         ];
     }
 
@@ -289,6 +313,7 @@ trait local_rtcsync_credit_class_external
             'member_count' => new external_value(PARAM_INT, 'Managed cohort member count.'),
             'course_count' => new external_value(PARAM_INT, 'Courses receiving the class grouping.'),
             'group_count' => new external_value(PARAM_INT, 'Managed child groups per course in total.'),
+            'teacher_count' => new external_value(PARAM_INT, 'Managed class-teacher users.'),
         ]);
     }
 
@@ -321,9 +346,11 @@ trait local_rtcsync_credit_class_external
     ): array {
         global $DB;
 
-        if ($groupingidnumber === '' || !str_starts_with($groupingidnumber, 'rtc-class-grouping:')) {
+        if ($groupingidnumber === ''
+                || (!str_starts_with($groupingidnumber, 'rtc-class-grouping:')
+                    && !str_starts_with($groupingidnumber, 'rtc-delivery-grouping:'))) {
             throw new invalid_parameter_exception(
-                'Class grouping idnumber must use the rtc-class-grouping: prefix.'
+                'Class grouping idnumber must use the rtc-class-grouping: or rtc-delivery-grouping: prefix.'
             );
         }
 
@@ -399,6 +426,147 @@ trait local_rtcsync_credit_class_external
         }
 
         return count($desiredids);
+    }
+
+    /**
+     * Reconcile class-scoped teacher role assignments without touching
+     * subject-teacher or other unrelated course roles.
+     *
+     * The managed assignment uses the class cohort id as itemid. This leaves
+     * normal manual/subject assignments intact when a class teacher changes.
+     *
+     * @param array<int, int> $courseids
+     * @param array<int, int> $teacherids
+     */
+    private static function reconcile_class_course_roles(
+        array $courseids,
+        int $cohortid,
+        string $roleshortname,
+        array $teacherids,
+        bool $visible
+    ): int {
+        global $DB;
+
+        $role = self::role_by_shortname($roleshortname);
+        $desiredcourseids = $visible ? $courseids : [];
+        $desiredteacherids = self::valid_userids($teacherids, 'classteacher');
+        $desired = [];
+        foreach ($desiredcourseids as $courseid) {
+            foreach ($desiredteacherids as $userid) {
+                $desired[$courseid.':'.$userid] = [$courseid, $userid];
+            }
+        }
+
+        $existing = $DB->get_records_sql(
+            'SELECT ra.id, ra.userid, ra.contextid, ctx.instanceid AS courseid
+               FROM {role_assignments} ra
+               JOIN {context} ctx ON ctx.id = ra.contextid
+              WHERE ra.component = :component
+                AND ra.itemid = :itemid
+                AND ra.roleid = :roleid
+                AND ctx.contextlevel = :contextlevel',
+            [
+                'component' => 'local_rtcsync',
+                'itemid' => $cohortid,
+                'roleid' => (int) $role->id,
+                'contextlevel' => CONTEXT_COURSE,
+            ]
+        );
+
+        foreach ($existing as $assignment) {
+            $key = ((int) $assignment->courseid).':'.((int) $assignment->userid);
+            if (!isset($desired[$key])) {
+                role_unassign(
+                    (int) $role->id,
+                    (int) $assignment->userid,
+                    (int) $assignment->contextid,
+                    'local_rtcsync',
+                    $cohortid
+                );
+                self::unenrol_if_course_has_no_roles(
+                    (int) $assignment->courseid,
+                    (int) $assignment->userid
+                );
+            }
+        }
+
+        foreach ($desired as [$courseid, $userid]) {
+            $context = context_course::instance((int) $courseid);
+            self::validate_context($context);
+            require_capability('moodle/role:assign', $context);
+
+            $markerExists = $DB->record_exists('role_assignments', [
+                'roleid' => (int) $role->id,
+                'userid' => (int) $userid,
+                'contextid' => $context->id,
+                'component' => 'local_rtcsync',
+                'itemid' => $cohortid,
+            ]);
+            if ($markerExists) {
+                continue;
+            }
+
+            $hasRole = $DB->record_exists('role_assignments', [
+                'roleid' => (int) $role->id,
+                'userid' => (int) $userid,
+                'contextid' => $context->id,
+            ]);
+            if (!$hasRole) {
+                self::enrol_user([
+                    'courseid' => (int) $courseid,
+                    'userid' => (int) $userid,
+                    'role_shortname' => $roleshortname,
+                    'suspend' => 0,
+                ]);
+
+                // Take ownership of the role assignment created by manual
+                // enrolment so it can be removed safely with this class.
+                $baseassignment = $DB->get_record('role_assignments', [
+                    'roleid' => (int) $role->id,
+                    'userid' => (int) $userid,
+                    'contextid' => $context->id,
+                    'component' => '',
+                    'itemid' => 0,
+                ], '*', IGNORE_MISSING);
+                if ($baseassignment) {
+                    $baseassignment->component = 'local_rtcsync';
+                    $baseassignment->itemid = $cohortid;
+                    $DB->update_record('role_assignments', $baseassignment);
+                    continue;
+                }
+            }
+
+            role_assign(
+                (int) $role->id,
+                (int) $userid,
+                $context->id,
+                'local_rtcsync',
+                $cohortid
+            );
+        }
+
+        return count($desiredteacherids);
+    }
+
+    private static function unenrol_if_course_has_no_roles(int $courseid, int $userid): void
+    {
+        global $DB;
+
+        $context = context_course::instance($courseid);
+        if ($DB->record_exists('role_assignments', [
+            'contextid' => $context->id,
+            'userid' => $userid,
+        ])) {
+            return;
+        }
+
+        $instance = $DB->get_record('enrol', [
+            'courseid' => $courseid,
+            'enrol' => 'manual',
+        ], '*', IGNORE_MISSING);
+        if ($instance) {
+            enrol_get_plugin('manual')->unenrol_user($instance, $userid);
+        }
     }
 
     private static function upsert_class_group(int $courseid, int $groupingid, array $group): int

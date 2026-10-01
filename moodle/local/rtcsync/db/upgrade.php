@@ -97,5 +97,11 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         upgrade_plugin_savepoint(true, 2026081503, 'local', 'rtcsync');
     }
 
+    if ($oldversion < 2026100101) {
+        require_once($CFG->dirroot . '/local/rtcsync/locallib.php');
+        local_rtcsync_ensure_profile_fields();
+        upgrade_plugin_savepoint(true, 2026100101, 'local', 'rtcsync');
+    }
+
     return true;
 }

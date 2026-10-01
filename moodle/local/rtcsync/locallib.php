@@ -18,6 +18,9 @@ function local_rtcsync_profile_field_definitions(): array
         'rtc_generation_id' => 'RTC Generation ID',
         'rtc_generation' => 'RTC Generation',
         'rtc_generation_years' => 'RTC Generation Years',
+        'rtc_program_batch_id' => 'RTC Program Batch ID',
+        'rtc_batch_code' => 'RTC Batch Code',
+        'rtc_batch_number' => 'RTC Batch Number',
         'rtc_academic_year_id' => 'RTC Academic Year ID',
         'rtc_academic_year' => 'RTC Academic Year',
         'rtc_study_year' => 'RTC Study Year',
@@ -107,7 +110,9 @@ function local_rtcsync_save_profile_fields(int $userid, array $fields): int
     foreach ($fields as $field) {
         $shortname = trim((string) ($field['shortname'] ?? ''));
         if ($shortname === '' || !array_key_exists($shortname, $allowed)) {
-            continue;
+            throw new invalid_parameter_exception(
+                'Unknown RTC profile field: ' . ($shortname !== '' ? $shortname : '[missing shortname]')
+            );
         }
 
         $data = (string) ($field['value'] ?? '');

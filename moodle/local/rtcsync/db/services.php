@@ -27,6 +27,14 @@ $functions = [
         'type' => 'write',
         'capabilities' => 'moodle/role:assign',
     ],
+    'local_rtcsync_sync_category_roles' => [
+        'classname' => 'local_rtcsync_external',
+        'methodname' => 'sync_category_roles',
+        'classpath' => 'local/rtcsync/externallib.php',
+        'description' => 'Reconcile approved RTC-managed Moodle category roles.',
+        'type' => 'write',
+        'capabilities' => 'moodle/role:assign,moodle/category:manage',
+    ],
     'local_rtcsync_enrol_user' => [
         'classname' => 'local_rtcsync_external',
         'methodname' => 'enrol_user',

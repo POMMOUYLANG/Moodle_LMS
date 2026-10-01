@@ -28,3 +28,27 @@
 /* Add the CSS styles from the CSS custom box */
 
 [[setting:customcss]]
+
+/*
+ * Moodle multilingual content fallback.
+ *
+ * RTC-Sync stores bilingual labels using Moodle's standard markup:
+ *   <span class="multilang" lang="en">...</span>
+ *   <span class="multilang" lang="km">...</span>
+ *
+ * The multilang filter normally removes the inactive language server-side.
+ * Keep the display language correct even when the site-level "filter all
+ * strings" setting is disabled or a category name is rendered without the
+ * normal filter pipeline.
+ */
+.multilang {
+    display: none;
+}
+
+html[lang^="en"] .multilang[lang^="en"],
+html[lang^="km"] .multilang[lang^="km"],
+html[lang^="km"] .multilang[lang^="kh"],
+html[lang^="kh"] .multilang[lang^="km"],
+html[lang^="kh"] .multilang[lang^="kh"] {
+    display: inline;
+}

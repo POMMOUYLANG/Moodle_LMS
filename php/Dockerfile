@@ -4,6 +4,9 @@ FROM php:8.2-fpm
 RUN apt-get update && apt-get install -y \
     git unzip libpng-dev libjpeg-dev libfreetype6-dev libxml2-dev libzip-dev \
     libicu-dev g++ libxslt1-dev libwebp-dev libonig-dev libcurl4-openssl-dev \
+    locales \
+    && sed -i '/^# *en_AU.UTF-8 UTF-8/s/^# *//' /etc/locale.gen \
+    && locale-gen en_AU.UTF-8 \
     && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install gd mysqli pdo pdo_mysql zip intl opcache soap xsl exif curl \
     && rm -rf /var/lib/apt/lists/*

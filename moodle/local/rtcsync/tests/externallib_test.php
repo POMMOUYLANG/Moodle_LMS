@@ -49,6 +49,98 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame('rtc-user:included', $result['records'][0]['idnumber']);
     }
 
+    public function test_user_profile_contract_persists_batch_fields_and_rejects_unknown_fields(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $result = \local_rtcsync_external::upsert_user([
+            'moodleid' => 0,
+            'username' => 'rtc-batch-contract',
+            'email' => 'rtc-batch-contract@example.test',
+            'firstname' => 'Batch',
+            'lastname' => 'Contract',
+            'idnumber' => 'rtc-user:batch-contract',
+            'phone1' => '',
+            'suspended' => 0,
+            'profile_fields' => [
+                ['shortname' => 'rtc_program_batch_id', 'value' => '41'],
+                ['shortname' => 'rtc_batch_code', 'value' => 'BATCH-41'],
+                ['shortname' => 'rtc_batch_number', 'value' => '3'],
+            ],
+        ]);
+
+        $this->assertSame(3, $result['profile_fields_saved']);
+
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::upsert_user([
+            'moodleid' => (int) $result['id'],
+            'username' => 'rtc-batch-contract',
+            'email' => 'rtc-batch-contract@example.test',
+            'firstname' => 'Batch',
+            'lastname' => 'Contract',
+            'idnumber' => 'rtc-user:batch-contract',
+            'phone1' => '',
+            'suspended' => 0,
+            'profile_fields' => [
+                ['shortname' => 'rtc_unknown_contract_field', 'value' => 'should fail'],
+            ],
+        ]);
+    }
+
+    public function test_category_roles_are_scoped_and_managed_without_removing_manual_roles(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $user = $this->getDataGenerator()->create_user([
+            'idnumber' => 'rtc-user:hod-category',
+        ]);
+
+        $result = \local_rtcsync_external::sync_category_roles([
+            'userid' => (int) $user->id,
+            'category_roles' => [[
+                'category_idnumber' => 'DEPT-TEST',
+                'category_name' => 'Department Test',
+                'role_shortname' => 'manager',
+            ]],
+        ]);
+
+        $this->assertSame(1, $result['category_count']);
+        $category = $DB->get_record('course_categories', ['idnumber' => 'DEPT-TEST'], '*', MUST_EXIST);
+        $manager = $DB->get_record('role', ['shortname' => 'manager'], '*', MUST_EXIST);
+        $context = \context_coursecat::instance((int) $category->id);
+        $this->assertTrue($DB->record_exists('role_assignments', [
+            'userid' => (int) $user->id,
+            'roleid' => (int) $manager->id,
+            'contextid' => $context->id,
+            'component' => 'local_rtcsync',
+            'itemid' => 0,
+        ]));
+
+        role_assign((int) $manager->id, (int) $user->id, $context->id);
+        \local_rtcsync_external::sync_category_roles([
+            'userid' => (int) $user->id,
+            'category_roles' => [],
+        ]);
+
+        $this->assertFalse($DB->record_exists('role_assignments', [
+            'userid' => (int) $user->id,
+            'roleid' => (int) $manager->id,
+            'contextid' => $context->id,
+            'component' => 'local_rtcsync',
+            'itemid' => 0,
+        ]));
+        $this->assertTrue($DB->record_exists('role_assignments', [
+            'userid' => (int) $user->id,
+            'roleid' => (int) $manager->id,
+            'contextid' => $context->id,
+            'component' => '',
+            'itemid' => 0,
+        ]));
+    }
+
     public function test_course_read_is_explicit_and_paginated(): void
     {
         $this->resetAfterTest();
