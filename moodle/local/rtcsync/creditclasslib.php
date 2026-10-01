@@ -206,6 +206,12 @@ trait local_rtcsync_credit_class_external
                     VALUE_DEFAULT,
                     'editingteacher'
                 ),
+                'student_role_shortname' => new external_value(
+                    PARAM_ALPHANUMEXT,
+                    'Moodle role for class students.',
+                    VALUE_DEFAULT,
+                    'student'
+                ),
                 'teacher_userids' => new external_multiple_structure(
                     new external_value(PARAM_INT, 'Assigned Moodle class-teacher id.'),
                     'Desired class-teacher users.', VALUE_DEFAULT, []
@@ -279,6 +285,16 @@ trait local_rtcsync_credit_class_external
         }
 
         $courseids = self::valid_courseids($class['courseids'] ?? []);
+        // Moodle only permits a user who is enrolled in the course to join a
+        // course group. Reconcile class students before creating memberships
+        // so the child-group assignment is effective on the same sync pass.
+        self::reconcile_class_course_roles(
+            $courseids,
+            $cohortid,
+            trim((string) ($class['student_role_shortname'] ?? 'student')),
+            $desired,
+            (int) $class['visible'] === 1
+        );
         $structure = self::reconcile_class_course_groups(
             $courseids,
             trim((string) ($class['grouping_idnumber'] ?? '')),
@@ -412,7 +428,7 @@ trait local_rtcsync_credit_class_external
         }
 
         $assigned = $DB->get_records_sql(
-            'SELECT g.id, g.idnumber
+            'SELECT g.*
                FROM {groupings_groups} gg
                JOIN {groups} g ON g.id = gg.groupid
               WHERE gg.groupingid = :groupingid',

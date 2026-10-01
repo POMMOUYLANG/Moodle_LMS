@@ -358,6 +358,10 @@ class local_rtcsync_external extends external_api
         $allowedshortnames = ['manager'];
         $managedroles = $DB->get_records_list('role', 'shortname', $allowedshortnames);
         $managedroleids = array_map('intval', array_keys($managedroles));
+        $managedrolesbyshortname = [];
+        foreach ($managedroles as $managedrole) {
+            $managedrolesbyshortname[(string) $managedrole->shortname] = $managedrole;
+        }
         $desired = [];
 
         foreach ($access['category_roles'] ?? [] as $requested) {
@@ -374,7 +378,7 @@ class local_rtcsync_external extends external_api
                 trim((string) ($requested['category_name'] ?? '')) ?: $idnumber,
                 0
             );
-            $role = $managedroles[$roleshortname] ?? null;
+            $role = $managedrolesbyshortname[$roleshortname] ?? null;
             if (!$role) {
                 throw new invalid_parameter_exception(
                     'The approved Moodle category role is not installed: ' . $roleshortname

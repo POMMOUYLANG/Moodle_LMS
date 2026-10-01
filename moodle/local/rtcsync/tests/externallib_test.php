@@ -94,6 +94,14 @@ final class externallib_test extends \advanced_testcase
 
         $this->resetAfterTest();
         $this->setAdminUser();
+        if (!$DB->record_exists('role', ['shortname' => 'manager'])) {
+            create_role(
+                'RTC category manager',
+                'manager',
+                'RTC category manager role for synchronization tests.',
+                'manager'
+            );
+        }
         $user = $this->getDataGenerator()->create_user([
             'idnumber' => 'rtc-user:hod-category',
         ]);
@@ -174,18 +182,22 @@ final class externallib_test extends \advanced_testcase
         $this->setAdminUser();
         $course = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:11']);
         $student = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:22']);
-        $item = new \grade_item([
+        $quiz = $this->getDataGenerator()->create_module('quiz', [
+            'course' => $course->id,
+            'name' => 'Quiz 1',
+        ]);
+        $quizitem = \grade_item::fetch([
             'courseid' => $course->id,
             'itemtype' => 'mod',
             'itemmodule' => 'quiz',
-            'iteminstance' => 101,
+            'iteminstance' => $quiz->id,
             'itemnumber' => 0,
-            'itemname' => 'Quiz 1',
-            'gradetype' => GRADE_TYPE_VALUE,
-            'grademin' => 0,
-            'grademax' => 10,
         ]);
-        $item->insert();
+        $this->assertNotFalse($quizitem);
+        $item = $quizitem;
+        $item->itemname = 'Quiz 1';
+        $item->grademax = 10;
+        $item->update();
         $item->update_final_grade($student->id, 8, 'test');
 
         $configid = $DB->insert_record('local_rtcsync_formcfg', (object) [
