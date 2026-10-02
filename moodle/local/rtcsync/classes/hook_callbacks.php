@@ -58,11 +58,20 @@ final class hook_callbacks
      */
     public static function should_show_group_guide(\moodle_page $page, \stdClass $course): bool
     {
+        global $CFG;
+
         if (!isloggedin() || isguestuser() || empty($course->id) || (int) $course->id === SITEID) {
             return false;
         }
 
-        if (!in_array($page->url->get_path(), self::GROUP_GUIDE_PATHS, true)) {
+        $path = $page->url->get_path();
+        $basepath = parse_url((string) $CFG->wwwroot, PHP_URL_PATH) ?: '';
+        $basepath = rtrim('/' . trim($basepath, '/'), '/');
+        if ($basepath !== '' && str_starts_with($path, $basepath . '/')) {
+            $path = substr($path, strlen($basepath));
+        }
+
+        if (!in_array($path, self::GROUP_GUIDE_PATHS, true)) {
             return false;
         }
 

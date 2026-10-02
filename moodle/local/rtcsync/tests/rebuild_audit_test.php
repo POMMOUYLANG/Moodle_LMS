@@ -45,4 +45,17 @@ final class rebuild_audit_test extends \advanced_testcase
         $this->assertSame([], $inventory['blockers']);
         $this->assertTrue($inventory['safe_to_discard_without_content_migration']);
     }
+
+    public function test_acceptance_reads_current_protocol_state_without_legacy_table(): void
+    {
+        $this->resetAfterTest();
+        set_config('enablewebservices', 0);
+        set_config('webserviceprotocols', '');
+
+        $acceptance = rebuild_audit::acceptance();
+
+        $this->assertArrayHasKey('rest_protocol_enabled', $acceptance['checks']);
+        $this->assertFalse($acceptance['checks']['rest_protocol_enabled']);
+        $this->assertIsBool($acceptance['passed']);
+    }
 }

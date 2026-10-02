@@ -57,6 +57,8 @@ final class rebuild_audit
     {
         global $CFG, $DB;
 
+        require_once($CFG->dirroot . '/webservice/lib.php');
+
         $service = $DB->get_record(
             'external_services',
             ['name' => 'RTC Sync Service'],
@@ -90,10 +92,7 @@ final class rebuild_audit
         $checks = [
             'plugin_installed' => get_config('local_rtcsync', 'version') !== false,
             'web_services_enabled' => (bool) get_config('core', 'enablewebservices'),
-            'rest_protocol_enabled' => $DB->record_exists('external_protocol', [
-                'name' => 'rest',
-                'enabled' => 1,
-            ]),
+            'rest_protocol_enabled' => webservice_protocol_is_enabled('rest'),
             'rtc_service_enabled' => $service !== false && (bool) $service->enabled,
             'rtc_service_restricted' => $service !== false && (bool) $service->restrictedusers,
             'required_functions_present' => $missingfunctions === [],

@@ -11,10 +11,25 @@ final class hook_callbacks_test extends \advanced_testcase
 {
     public function test_group_guide_requires_the_right_page_and_capability(): void
     {
+        global $DB;
+
         $this->resetAfterTest();
 
         $course = $this->getDataGenerator()->create_course();
         $teacher = $this->getDataGenerator()->create_user();
+
+        // Moodle distributions may ship editingteacher without group management.
+        // Grant the capability for this course so the test exercises the
+        // page/capability gate rather than depending on a site's role preset.
+        $teacherrole = $DB->get_record('role', ['shortname' => 'editingteacher'], '*', MUST_EXIST);
+        $coursecontext = \context_course::instance((int) $course->id);
+        assign_capability(
+            'moodle/course:managegroups',
+            CAP_ALLOW,
+            (int) $teacherrole->id,
+            $coursecontext->id,
+            true
+        );
         $this->getDataGenerator()->enrol_user($teacher->id, $course->id, 'editingteacher');
         $this->setUser($teacher);
 
