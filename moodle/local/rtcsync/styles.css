@@ -1,3 +1,15 @@
+.multilang {
+    display: none;
+}
+
+html[lang^="en"] .multilang[lang^="en"],
+html[lang^="km"] .multilang[lang^="km"],
+html[lang^="km"] .multilang[lang^="kh"],
+html[lang^="kh"] .multilang[lang^="km"],
+html[lang^="kh"] .multilang[lang^="kh"] {
+    display: inline;
+}
+
 .local-rtcsync-guide__launcher {
     display: flex;
     justify-content: flex-end;

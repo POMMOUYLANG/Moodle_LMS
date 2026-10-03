@@ -300,6 +300,52 @@ final class externallib_test extends \advanced_testcase
         );
     }
 
+    public function test_managed_class_inventory_lists_class_and_delivery_cohorts_only(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:inventory']);
+        $student = $this->createManagedUser(['idnumber' => 'rtc-user:inventory']);
+
+        \local_rtcsync_external::upsert_class([
+            'idnumber' => 'rtc-class:inventory',
+            'name' => '[Class] Inventory',
+            'visible' => 1,
+            'userids' => [$student->id],
+            'courseids' => [$course->id],
+            'grouping_idnumber' => 'rtc-class-grouping:inventory',
+            'grouping_name' => '[Class] Inventory',
+            'groups' => [],
+        ]);
+        \local_rtcsync_external::upsert_class([
+            'idnumber' => 'rtc-delivery:inventory',
+            'name' => '[Delivery] Inventory',
+            'visible' => 1,
+            'userids' => [$student->id],
+            'courseids' => [$course->id],
+            'grouping_idnumber' => 'rtc-delivery-grouping:inventory',
+            'grouping_name' => '[Delivery] Inventory',
+            'groups' => [],
+        ]);
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'managedclasses',
+            [],
+            0,
+            100
+        );
+
+        $this->assertSame(2, $result['total']);
+        $this->assertSame(
+            ['rtc-class:inventory', 'rtc-delivery:inventory'],
+            array_map(
+                static fn (array $record): string => $record['idnumber'],
+                $result['records']
+            )
+        );
+    }
+
     public function test_activity_grade_read_returns_only_course_items_enabled_for_sms_formative(): void
     {
         global $DB;

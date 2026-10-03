@@ -666,7 +666,7 @@ class local_rtcsync_external extends external_api
         return new external_function_parameters([
             'scope' => new external_value(
                 PARAM_ALPHA,
-                'State scope: users, systemroles, categoryroles, courses, credits, classes, enrolments, grades, activitygrades, managedusers, or managedcourses.'
+                'State scope: users, systemroles, categoryroles, courses, credits, classes, enrolments, grades, activitygrades, managedusers, managedcourses, or managedclasses.'
             ),
             'idnumbers' => new external_multiple_structure(
                 new external_value(PARAM_RAW, 'Explicit RTC-managed user or course idnumber.'),
@@ -693,7 +693,7 @@ class local_rtcsync_external extends external_api
         ]);
 
         $scope = strtolower(trim($params['scope']));
-        if (!in_array($scope, ['users', 'systemroles', 'categoryroles', 'courses', 'credits', 'classes', 'enrolments', 'grades', 'activitygrades', 'managedusers', 'managedcourses'], true)) {
+        if (!in_array($scope, ['users', 'systemroles', 'categoryroles', 'courses', 'credits', 'classes', 'enrolments', 'grades', 'activitygrades', 'managedusers', 'managedcourses', 'managedclasses'], true)) {
             throw new invalid_parameter_exception('Unsupported RTC managed-state scope.');
         }
 
@@ -711,7 +711,7 @@ class local_rtcsync_external extends external_api
         self::validate_context($systemcontext);
         require_capability('local/rtcsync:readmanagedstate', $systemcontext);
 
-        if (!$idnumbers && !in_array($scope, ['managedusers', 'managedcourses'], true)) {
+        if (!$idnumbers && !in_array($scope, ['managedusers', 'managedcourses', 'managedclasses'], true)) {
             return [
                 'scope' => $scope,
                 'offset' => $offset,
@@ -781,6 +781,12 @@ class local_rtcsync_external extends external_api
                 $offset,
                 $limit
             );
+        } else if ($scope === 'managedclasses') {
+            // The managed class inventory is enumerated by its stable
+            // idnumber prefixes below, so it must not call get_in_or_equal()
+            // with the intentionally empty identifier list.
+            $insql = '1=1';
+            $inparams = [];
         } else {
             [$insql, $inparams] = $DB->get_in_or_equal($idnumbers, SQL_PARAMS_NAMED, 'rtcid');
         }
@@ -949,11 +955,21 @@ class local_rtcsync_external extends external_api
                 $record->member_count = count($members);
                 $record->member_userids = json_encode($members);
                 $record->member_roles = json_encode($memberroles);
-            }        } else if ($scope === 'classes') {
-            $where = "ch.idnumber {$insql}";
+            }
+        } else if (in_array($scope, ['classes', 'managedclasses'], true)) {
+            if ($scope === 'managedclasses') {
+                $where = "ch.idnumber LIKE :classpattern OR ch.idnumber LIKE :deliverypattern";
+                $queryparams = [
+                    'classpattern' => 'rtc-class:%',
+                    'deliverypattern' => 'rtc-delivery:%',
+                ];
+            } else {
+                $where = "ch.idnumber {$insql}";
+                $queryparams = $inparams;
+            }
             $total = $DB->count_records_sql(
                 "SELECT COUNT(1) FROM {cohort} ch WHERE {$where}",
-                $inparams
+                $queryparams
             );
             $records = $DB->get_records_sql(
                 "SELECT ch.id AS record_id,
@@ -964,7 +980,7 @@ class local_rtcsync_external extends external_api
                    FROM {cohort} ch
                   WHERE {$where}
                ORDER BY ch.id",
-                $inparams,
+                $queryparams,
                 $offset,
                 $limit
             );

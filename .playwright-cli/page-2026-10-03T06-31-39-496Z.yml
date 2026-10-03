@@ -1,0 +1,64 @@
+- generic [active] [ref=e1]:
+  - status
+  - generic [ref=e2]:
+    - link "Skip to main content" [ref=e4] [cursor=pointer]:
+      - /url: "#maincontent"
+    - navigation "Site navigation" [ref=e5]:
+      - generic [ref=e6]:
+        - button "Side panel" [ref=e7]
+        - link:
+          - /url: http://localhost:8080/
+        - navigation [ref=e9]:
+          - menubar [ref=e10]:
+            - menuitem "Home" [ref=e11] [cursor=pointer]
+            - menuitem "More" [ref=e12] [cursor=pointer]
+            - menu "More"
+        - list
+        - generic [ref=e13]:
+          - generic [ref=e15]:
+            - button "Language" [ref=e16] [cursor=pointer]: English ‎(en)‎
+            - menu "Language" [ref=e17]:
+              - menuitem "English ‎(en)‎" [ref=e18] [cursor=pointer]
+              - menuitem "ខ្មែរ ‎(km)‎" [ref=e19] [cursor=pointer]
+          - link "Log in" [ref=e23] [cursor=pointer]:
+            - /url: http://localhost:8080/login/index.php
+    - generic [ref=e24]:
+      - generic [ref=e25]:
+        - button "Close drawer" [ref=e26]
+        - link:
+          - /url: http://localhost:8080/
+      - link "Home" [ref=e29] [cursor=pointer]:
+        - /url: http://localhost:8080/
+    - generic [ref=e30]:
+      - generic [ref=e31]:
+        - banner:
+          - generic:
+            - generic:
+              - generic:
+                - navigation "Navigation bar":
+                  - list
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - heading [level=1]
+        - main [ref=e35]:
+          - generic [ref=e41]:
+            - textbox "Search courses" [ref=e42]
+            - generic [ref=e43]: Search courses
+            - button "Search courses" [ref=e44]
+      - contentinfo [ref=e45]:
+        - button "Show footer" [ref=e47]
+        - generic [ref=e48]:
+          - generic [ref=e49]:
+            - generic [ref=e51]:
+              - text: You are not logged in. (
+              - link "Log in" [ref=e52] [cursor=pointer]:
+                - /url: http://localhost:8080/login/index.php
+              - text: )
+            - link "Data retention summary" [ref=e54] [cursor=pointer]:
+              - /url: http://localhost:8080/admin/tool/dataprivacy/summary.php
+          - generic [ref=e56]:
+            - text: Powered by
+            - link "Moodle" [ref=e57] [cursor=pointer]:
+              - /url: https://moodle.com

@@ -3,6 +3,7 @@
 namespace local_rtcsync;
 
 use core\hook\output\before_footer_html_generation;
+use core\hook\output\before_standard_head_html_generation;
 
 defined('MOODLE_INTERNAL') || die();
 
@@ -11,6 +12,26 @@ defined('MOODLE_INTERNAL') || die();
  */
 final class hook_callbacks
 {
+    /**
+     * Keeps standard Moodle multilingual spans language-specific even when a
+     * theme or custom-header renderer bypasses the normal filter pipeline.
+     */
+    public static function before_standard_head_html_generation(
+        before_standard_head_html_generation $hook
+    ): void {
+        $hook->add_html(<<<'HTML'
+<style id="local-rtcsync-multilang-fallback">
+.multilang { display: none !important; }
+html[lang^="en"] .multilang[lang^="en"],
+html[lang^="km"] .multilang[lang^="km"],
+html[lang^="km"] .multilang[lang^="kh"],
+html[lang^="kh"] .multilang[lang^="km"],
+html[lang^="kh"] .multilang[lang^="kh"] { display: inline !important; }
+</style>
+HTML
+        );
+    }
+
     /** @var string[] Moodle pages where the group-management guide is useful. */
     private const GROUP_GUIDE_PATHS = [
         '/group/index.php',

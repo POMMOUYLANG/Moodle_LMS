@@ -9,6 +9,22 @@ defined('MOODLE_INTERNAL') || die();
  */
 final class hook_callbacks_test extends \advanced_testcase
 {
+    public function test_head_hook_injects_language_specific_multilang_fallback(): void
+    {
+        $renderer = $this->getMockBuilder(\renderer_base::class)
+            ->disableOriginalConstructor()
+            ->getMock();
+        $hook = new \core\hook\output\before_standard_head_html_generation($renderer);
+
+        hook_callbacks::before_standard_head_html_generation($hook);
+
+        $output = $hook->get_output();
+        $this->assertStringContainsString('local-rtcsync-multilang-fallback', $output);
+        $this->assertStringContainsString('html[lang^="en"] .multilang[lang^="en"]', $output);
+        $this->assertStringContainsString('html[lang^="km"] .multilang[lang^="kh"]', $output);
+        $this->assertStringContainsString('display: none !important', $output);
+    }
+
     public function test_group_guide_requires_the_right_page_and_capability(): void
     {
         global $DB;

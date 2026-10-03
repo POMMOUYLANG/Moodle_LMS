@@ -10,7 +10,7 @@ defined('MOODLE_INTERNAL') || die();
 final class rebuild_audit
 {
     /** Minimum plugin DB version required by the current backend contract. */
-    private const MINIMUM_SUPPORTED_PLUGIN_VERSION = 2026100300;
+    private const MINIMUM_SUPPORTED_PLUGIN_VERSION = 2026100302;
 
     /**
      * Capabilities that must remain attached to each RTC external function.
