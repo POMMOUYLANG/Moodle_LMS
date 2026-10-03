@@ -81,7 +81,7 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         $itemtable->add_field('courseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
         $itemtable->add_field('itemid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
         $itemtable->add_field('included', XMLDB_TYPE_INTEGER, '1', null, XMLDB_NOTNULL, null, '0');
-        $itemtable->add_field('label', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL, null, '');
+        $itemtable->add_field('label', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL);
         $itemtable->add_field('weight', XMLDB_TYPE_NUMBER, '5, 2', null, XMLDB_NOTNULL, null, '0');
         $itemtable->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
         $itemtable->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
@@ -125,6 +125,30 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         }
 
         upgrade_plugin_savepoint(true, 2026100103, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026100201) {
+        // Code-only release: credit-course role assignments now carry an
+        // RTC ownership marker so unmanaged Moodle permissions are preserved.
+        upgrade_plugin_savepoint(true, 2026100201, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026100202) {
+        // Code-only release: acceptance now validates profile metadata and
+        // supports fingerprinted review of legacy credit-course roles.
+        upgrade_plugin_savepoint(true, 2026100202, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026100203) {
+        // Code-only release: all RTC-Sync write paths now require explicit
+        // ownership markers for target users and reserved course IDs.
+        upgrade_plugin_savepoint(true, 2026100203, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026100204) {
+        // Code-only release: acceptance now verifies the capability contract
+        // for every registered RTC-Sync external function.
+        upgrade_plugin_savepoint(true, 2026100204, 'local', 'rtcsync');
     }
 
     return true;

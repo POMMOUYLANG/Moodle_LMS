@@ -24,6 +24,43 @@ final class externallib_test extends \advanced_testcase
         require_once($CFG->dirroot . '/local/rtcsync/externallib.php');
     }
 
+    /**
+     * Build a Moodle user with the explicit RTC-Sync ownership marker.
+     *
+     * External-service tests should not accidentally exercise unmanaged
+     * records now that the write boundary is enforced.
+     *
+     * @param array<string, mixed> $options
+     */
+    private function createManagedUser(array $options = []): \stdClass
+    {
+        global $DB;
+
+        $user = $this->getDataGenerator()->create_user($options);
+        if (!$DB->record_exists('local_rtcsync_user', ['userid' => (int) $user->id])) {
+            $DB->insert_record('local_rtcsync_user', (object) [
+                'userid' => (int) $user->id,
+                'idnumber' => (string) ($user->idnumber ?? ''),
+                'timecreated' => time(),
+                'timemodified' => time(),
+            ]);
+        }
+
+        return $user;
+    }
+
+    /**
+     * Build an RTC subject course for write-path tests.
+     *
+     * @param array<string, mixed> $options
+     */
+    private function createManagedCourse(array $options = []): \stdClass
+    {
+        $options['idnumber'] ??= 'rtc-subject:test-'.uniqid('', true);
+
+        return $this->getDataGenerator()->create_course($options);
+    }
+
     public function test_user_read_returns_only_explicit_idnumbers(): void
     {
         $this->resetAfterTest();
@@ -159,7 +196,7 @@ final class externallib_test extends \advanced_testcase
                 'manager'
             );
         }
-        $user = $this->getDataGenerator()->create_user([
+        $user = $this->createManagedUser([
             'idnumber' => 'rtc-user:hod-category',
         ]);
 
@@ -395,8 +432,8 @@ final class externallib_test extends \advanced_testcase
             json_decode($state['records'][0]['category_path'], true, 512, JSON_THROW_ON_ERROR),
         );
 
-        $teacher = $this->getDataGenerator()->create_user();
-        $student = $this->getDataGenerator()->create_user();
+        $teacher = $this->createManagedUser();
+        $student = $this->createManagedUser();
         $credit = \local_rtcsync_external::upsert_credit([
             'courseid' => $saved['id'],
             'subject_id' => 255,
@@ -434,7 +471,7 @@ final class externallib_test extends \advanced_testcase
     {
         $this->resetAfterTest();
 
-        $user = $this->getDataGenerator()->create_user();
+        $user = $this->createManagedUser();
         $this->setUser($user);
 
         $this->expectException(\required_capability_exception::class);
@@ -496,6 +533,71 @@ final class externallib_test extends \advanced_testcase
         );
     }
 
+    public function test_user_upsert_refuses_to_mutate_an_unmanaged_existing_account(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $existing = $this->getDataGenerator()->create_user([
+            'username' => 'manual-owned-boundary',
+            'email' => 'manual-owned-boundary@example.test',
+        ]);
+
+        $this->expectException(\invalid_parameter_exception::class);
+
+        \local_rtcsync_external::upsert_user([
+            'moodleid' => (int) $existing->id,
+            'username' => $existing->username,
+            'email' => $existing->email,
+            'firstname' => 'Must Not Change',
+            'lastname' => $existing->lastname,
+            'idnumber' => 'CARD-MANUAL',
+            'phone1' => '',
+            'suspended' => 1,
+            'profile_fields' => [],
+        ]);
+    }
+
+    public function test_course_upsert_requires_a_reserved_subject_identifier(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $this->expectException(\invalid_parameter_exception::class);
+
+        \local_rtcsync_external::upsert_course([
+            'fullname' => 'Manual course must remain untouched',
+            'shortname' => 'MANUAL-COURSE',
+            'idnumber' => 'manual-course:1',
+            'summary' => '',
+            'category_idnumber' => 'rtc-academic',
+            'category_name' => 'RTC Academic Courses',
+            'category_path' => [],
+            'visible' => 1,
+        ]);
+    }
+
+    public function test_enrolment_refuses_unmanaged_course_even_for_a_managed_user(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
+
+        $course = $this->getDataGenerator()->create_course([
+            'idnumber' => 'manual-course:2',
+        ]);
+        $user = $this->createManagedUser();
+
+        $this->expectException(\invalid_parameter_exception::class);
+
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
+    }
+
     public function test_system_role_sync_manages_only_approved_component_assignments(): void
     {
         global $DB;
@@ -503,7 +605,7 @@ final class externallib_test extends \advanced_testcase
         $this->resetAfterTest();
         $this->setAdminUser();
 
-        $user = $this->getDataGenerator()->create_user();
+        $user = $this->createManagedUser();
         $systemcontext = \context_system::instance();
         $manager = $DB->get_record('role', ['shortname' => 'manager'], '*', MUST_EXIST);
         $student = $DB->get_record('role', ['shortname' => 'student'], '*', MUST_EXIST);
@@ -558,9 +660,9 @@ final class externallib_test extends \advanced_testcase
         $this->setAdminUser();
         set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
 
-        $course = $this->getDataGenerator()->create_course();
-        $firstteacher = $this->getDataGenerator()->create_user();
-        $secondteacher = $this->getDataGenerator()->create_user();
+        $course = $this->createManagedCourse();
+        $firstteacher = $this->createManagedUser();
+        $secondteacher = $this->createManagedUser();
 
         foreach ([$firstteacher, $secondteacher] as $teacher) {
             \local_rtcsync_external::enrol_user([
@@ -600,8 +702,8 @@ final class externallib_test extends \advanced_testcase
         $this->setAdminUser();
         set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
 
-        $course = $this->getDataGenerator()->create_course();
-        $user = $this->getDataGenerator()->create_user();
+        $course = $this->createManagedCourse();
+        $user = $this->createManagedUser();
         $context = \context_course::instance((int) $course->id);
         $student = $DB->get_record('role', ['shortname' => 'student'], '*', MUST_EXIST);
 
@@ -640,7 +742,7 @@ final class externallib_test extends \advanced_testcase
         $this->resetAfterTest();
         $this->setAdminUser();
 
-        $user = $this->getDataGenerator()->create_user([
+        $user = $this->createManagedUser([
             'idnumber' => 'rtc-user:sysrole',
         ]);
 
@@ -713,9 +815,9 @@ final class externallib_test extends \advanced_testcase
             'idnumber' => 'rtc-subject:strict',
             'shortname' => 'RTC-STRICT-PARENT',
         ]);
-        $teacherone = $this->getDataGenerator()->create_user();
-        $teachertwo = $this->getDataGenerator()->create_user();
-        $student = $this->getDataGenerator()->create_user();
+        $teacherone = $this->createManagedUser();
+        $teachertwo = $this->createManagedUser();
+        $student = $this->createManagedUser();
 
         $base = [
             'courseid' => (int) $parent->id,
@@ -789,6 +891,10 @@ final class externallib_test extends \advanced_testcase
             $state['records'][0]['member_roles']
         );
 
+        // A Moodle operator may add an unmanaged permission to an RTC-owned
+        // credit course. SMS must remove only the role assignment it created.
+        role_assign((int) $teacherrole->id, (int) $teacherone->id, $firstcontext->id);
+
         \local_rtcsync_external::delete_credit([
             'courseid' => (int) $parent->id,
             'idnumber' => 'rtc-credit-course:101',
@@ -801,6 +907,14 @@ final class externallib_test extends \advanced_testcase
         $this->assertFalse($DB->record_exists('role_assignments', [
             'contextid' => $firstcontext->id,
             'userid' => (int) $teacherone->id,
+            'component' => 'local_rtcsync',
+            'itemid' => (int) $first['courseid'],
+        ]));
+        $this->assertTrue($DB->record_exists('role_assignments', [
+            'contextid' => $firstcontext->id,
+            'userid' => (int) $teacherone->id,
+            'component' => '',
+            'itemid' => 0,
         ]));
         $this->assertFalse($DB->record_exists('role_assignments', [
             'contextid' => $firstcontext->id,
@@ -814,11 +928,11 @@ final class externallib_test extends \advanced_testcase
 
         $this->resetAfterTest();
         $this->setAdminUser();
-        $courseone = $this->getDataGenerator()->create_course();
-        $coursetwo = $this->getDataGenerator()->create_course();
-        $studentone = $this->getDataGenerator()->create_user();
-        $studenttwo = $this->getDataGenerator()->create_user();
-        $studentthree = $this->getDataGenerator()->create_user();
+        $courseone = $this->createManagedCourse();
+        $coursetwo = $this->createManagedCourse();
+        $studentone = $this->createManagedUser();
+        $studenttwo = $this->createManagedUser();
+        $studentthree = $this->createManagedUser();
 
         $result = \local_rtcsync_external::upsert_class([
             'idnumber' => 'rtc-class:100',
@@ -907,5 +1021,131 @@ final class externallib_test extends \advanced_testcase
         $this->assertCount(1, $structure);
         $this->assertSame((int) $courseone->id, $structure[0]['courseid']);
         $this->assertCount(1, $structure[0]['groups']);
+
+        \local_rtcsync_external::upsert_class([
+            'idnumber' => 'rtc-class:100',
+            'name' => '[Class] ADN Year 1 A',
+            'visible' => 0,
+            'userids' => [],
+            'courseids' => [$courseone->id, $coursetwo->id],
+            'grouping_idnumber' => 'rtc-class-grouping:100',
+            'grouping_name' => '[Class] ADN Year 1 A',
+            'groups' => [],
+        ]);
+
+        $cohort = $DB->get_record('cohort', ['idnumber' => 'rtc-class:100'], '*', MUST_EXIST);
+        $this->assertSame(0, (int) $cohort->visible);
+        $this->assertSame(0, $DB->count_records('cohort_members', ['cohortid' => $cohort->id]));
+        $this->assertFalse($DB->record_exists('groupings', ['idnumber' => 'rtc-class-grouping:100']));
+        $this->assertSame(0, $DB->count_records_select(
+            'role_assignments',
+            'component = :component AND itemid = :itemid',
+            ['component' => 'local_rtcsync', 'itemid' => $cohort->id]
+        ));
+    }
+
+    public function test_class_teacher_role_change_removes_stale_managed_role_assignment(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse();
+        $teacher = $this->createManagedUser();
+        $payload = [
+            'idnumber' => 'rtc-class:role-change',
+            'name' => '[Class] Role Change',
+            'description' => 'Managed class role transition.',
+            'visible' => 1,
+            'userids' => [],
+            'courseids' => [(int) $course->id],
+            'grouping_idnumber' => 'rtc-class-grouping:role-change',
+            'grouping_name' => '[Class] Role Change',
+            'groups' => [],
+            'teacher_userids' => [(int) $teacher->id],
+            'student_role_shortname' => 'student',
+        ];
+
+        \local_rtcsync_external::upsert_class($payload + [
+            'teacher_role_shortname' => 'editingteacher',
+        ]);
+
+        $cohort = $DB->get_record('cohort', [
+            'idnumber' => 'rtc-class:role-change',
+        ], '*', MUST_EXIST);
+        $context = \context_course::instance((int) $course->id);
+        $editingteacher = $DB->get_record('role', ['shortname' => 'editingteacher'], '*', MUST_EXIST);
+        $teacherrole = $DB->get_record('role', ['shortname' => 'teacher'], '*', MUST_EXIST);
+        $this->assertTrue($DB->record_exists('role_assignments', [
+            'roleid' => (int) $editingteacher->id,
+            'userid' => (int) $teacher->id,
+            'contextid' => $context->id,
+            'component' => 'local_rtcsync',
+            'itemid' => $cohort->id,
+        ]));
+
+        \local_rtcsync_external::upsert_class($payload + [
+            'teacher_role_shortname' => 'teacher',
+        ]);
+
+        $this->assertFalse($DB->record_exists('role_assignments', [
+            'roleid' => (int) $editingteacher->id,
+            'userid' => (int) $teacher->id,
+            'contextid' => $context->id,
+            'component' => 'local_rtcsync',
+            'itemid' => $cohort->id,
+        ]));
+        $this->assertTrue($DB->record_exists('role_assignments', [
+            'roleid' => (int) $teacherrole->id,
+            'userid' => (int) $teacher->id,
+            'contextid' => $context->id,
+            'component' => 'local_rtcsync',
+            'itemid' => $cohort->id,
+        ]));
+    }
+
+    public function test_class_managed_state_exposes_course_role_assignments(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse();
+        $teacher = $this->createManagedUser();
+        $student = $this->createManagedUser();
+
+        \local_rtcsync_external::upsert_class([
+            'idnumber' => 'rtc-class:managed-state-roles',
+            'name' => '[Class] Managed State Roles',
+            'description' => 'Managed class role read-back.',
+            'visible' => 1,
+            'userids' => [(int) $student->id],
+            'courseids' => [(int) $course->id],
+            'grouping_idnumber' => 'rtc-class-grouping:managed-state-roles',
+            'grouping_name' => '[Class] Managed State Roles',
+            'groups' => [],
+            'teacher_userids' => [(int) $teacher->id],
+            'teacher_role_shortname' => 'editingteacher',
+            'student_role_shortname' => 'student',
+        ]);
+
+        $state = \local_rtcsync_external::get_managed_state(
+            'classes',
+            ['rtc-class:managed-state-roles'],
+            0,
+            100
+        );
+        $roles = json_decode(
+            $state['records'][0]['class_role_assignments'],
+            true,
+            512,
+            JSON_THROW_ON_ERROR
+        );
+        sort($roles, SORT_STRING);
+        $expected = [
+            $course->id . ':' . $student->id . ':student',
+            $course->id . ':' . $teacher->id . ':editingteacher',
+        ];
+        sort($expected, SORT_STRING);
+
+        $this->assertSame($expected, $roles);
     }
 }

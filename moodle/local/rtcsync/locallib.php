@@ -143,3 +143,104 @@ function local_rtcsync_save_profile_fields(int $userid, array $fields): int
 
     return $saved;
 }
+
+/**
+ * Return an active Moodle user that is explicitly owned by RTC-Sync.
+ *
+ * Moodle capabilities answer whether the service account may perform an
+ * operation. The marker answers whether the target record is inside the
+ * synchronization ownership boundary. Both checks are required for writes.
+ */
+function local_rtcsync_require_managed_user(int $userid): stdClass
+{
+    global $DB;
+
+    $user = $DB->get_record('user', [
+        'id' => $userid,
+        'deleted' => 0,
+    ], '*', IGNORE_MISSING);
+    if (!$user) {
+        throw new invalid_parameter_exception('The requested Moodle user does not exist.');
+    }
+
+    if (!$DB->record_exists('local_rtcsync_user', ['userid' => $userid])) {
+        throw new invalid_parameter_exception(
+            'RTC-Sync refuses to mutate an unmanaged Moodle user.'
+        );
+    }
+
+    return $user;
+}
+
+/**
+ * Return a Moodle course owned by RTC-Sync through a reserved idnumber prefix.
+ *
+ * @param array<int, string> $prefixes
+ */
+function local_rtcsync_require_managed_course(int $courseid, array $prefixes = [
+    'rtc-subject:',
+    'rtc-credit-course:',
+]): stdClass {
+    global $DB;
+
+    $course = $DB->get_record('course', ['id' => $courseid], '*', IGNORE_MISSING);
+    if (!$course || (int) $course->id === SITEID) {
+        throw new invalid_parameter_exception('The requested Moodle course does not exist.');
+    }
+
+    $idnumber = trim((string) ($course->idnumber ?? ''));
+    foreach ($prefixes as $prefix) {
+        if ($prefix !== '' && str_starts_with($idnumber, $prefix)) {
+            return $course;
+        }
+    }
+
+    throw new invalid_parameter_exception(
+        'RTC-Sync refuses to mutate an unmanaged Moodle course.'
+    );
+}
+
+/**
+ * Validate a complete user-id collection against the RTC ownership marker.
+ *
+ * Silently dropping an unmanaged ID would make a successful-looking rebuild
+ * incomplete, so callers receive a hard validation error instead.
+ *
+ * @param array<int, mixed> $userids
+ * @return array<int, int>
+ */
+function local_rtcsync_validate_managed_userids(array $userids, string $scope): array
+{
+    global $DB;
+
+    $desired = array_values(array_unique(array_filter(
+        array_map('intval', $userids),
+        static fn(int $userid): bool => $userid > 0
+    )));
+    if (!$desired) {
+        return [];
+    }
+
+    [$usersql, $userparams] = $DB->get_in_or_equal($desired, SQL_PARAMS_NAMED, 'rtcsyncuser');
+    $managed = array_map('intval', array_keys($DB->get_records_sql(
+        "SELECT u.id
+           FROM {user} u
+           JOIN {local_rtcsync_user} marker ON marker.userid = u.id
+          WHERE u.deleted = 0
+            AND u.id {$usersql}",
+        $userparams
+    )));
+
+    if (count($managed) !== count($desired)) {
+        $missing = array_values(array_diff($desired, $managed));
+        throw new invalid_parameter_exception(
+            sprintf(
+                'RTC-Sync %s contains unmanaged or missing Moodle user IDs: %s.',
+                $scope,
+                implode(', ', $missing)
+            )
+        );
+    }
+
+    return $desired;
+}

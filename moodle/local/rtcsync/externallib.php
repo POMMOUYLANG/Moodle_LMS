@@ -48,6 +48,12 @@ class local_rtcsync_external extends external_api
 
         $params = self::validate_parameters(self::upsert_course_parameters(), ['course' => $course]);
         $course = $params['course'];
+        $course['idnumber'] = trim((string) $course['idnumber']);
+        if ($course['idnumber'] === '' || !str_starts_with($course['idnumber'], 'rtc-subject:')) {
+            throw new invalid_parameter_exception(
+                'Subject course idnumber must use the rtc-subject: prefix.'
+            );
+        }
 
         $systemcontext = context_system::instance();
         self::validate_context($systemcontext);
@@ -61,10 +67,9 @@ class local_rtcsync_external extends external_api
         $categorycontext = context_coursecat::instance($categoryid);
         require_capability('moodle/course:create', $categorycontext);
 
+        // Never fall back to shortname matching: a reused display identifier
+        // must not let SMS overwrite a manually managed Moodle course.
         $existing = $DB->get_record('course', ['idnumber' => $course['idnumber']], '*', IGNORE_MISSING);
-        if (!$existing) {
-            $existing = $DB->get_record('course', ['shortname' => $course['shortname']], '*', IGNORE_MISSING);
-        }
 
         $data = (object) [
             'fullname' => trim($course['fullname']),
@@ -179,6 +184,10 @@ class local_rtcsync_external extends external_api
             ], '*', IGNORE_MISSING);
         }
 
+        if ($existing) {
+            local_rtcsync_require_managed_user((int) $existing->id);
+        }
+
         $record = (object) [
             'username' => core_text::strtolower($user['username']),
             'email' => $user['email'],
@@ -280,7 +289,7 @@ class local_rtcsync_external extends external_api
         require_capability('moodle/role:assign', $systemcontext);
 
         $userid = (int) $access['userid'];
-        $DB->get_record('user', ['id' => $userid, 'deleted' => 0], 'id', MUST_EXIST);
+        local_rtcsync_require_managed_user($userid);
 
         // V2 permits only manager at system scope. Student and editingteacher
         // roles are always derived from individual course relationships.
@@ -372,7 +381,7 @@ class local_rtcsync_external extends external_api
         require_capability('moodle/role:assign', $systemcontext);
 
         $userid = (int) $access['userid'];
-        $DB->get_record('user', ['id' => $userid, 'deleted' => 0], 'id', MUST_EXIST);
+        local_rtcsync_require_managed_user($userid);
         $allowedshortnames = ['manager'];
         $managedroles = $DB->get_records_list('role', 'shortname', $allowedshortnames);
         $managedroleids = array_map('intval', array_keys($managedroles));
@@ -496,7 +505,8 @@ class local_rtcsync_external extends external_api
         $params = self::validate_parameters(self::enrol_user_parameters(), ['enrolment' => $enrolment]);
         $enrolment = $params['enrolment'];
 
-        $course = get_course((int) $enrolment['courseid']);
+        $course = local_rtcsync_require_managed_course((int) $enrolment['courseid']);
+        local_rtcsync_require_managed_user((int) $enrolment['userid']);
         $context = context_course::instance($course->id);
         self::validate_context($context);
         require_capability('enrol/manual:enrol', $context);
@@ -544,7 +554,8 @@ class local_rtcsync_external extends external_api
         $params = self::validate_parameters(self::unenrol_user_parameters(), ['enrolment' => $enrolment]);
         $enrolment = $params['enrolment'];
 
-        $course = get_course((int) $enrolment['courseid']);
+        $course = local_rtcsync_require_managed_course((int) $enrolment['courseid']);
+        local_rtcsync_require_managed_user((int) $enrolment['userid']);
         $context = context_course::instance($course->id);
         self::validate_context($context);
         require_capability('enrol/manual:unenrol', $context);
@@ -603,7 +614,11 @@ class local_rtcsync_external extends external_api
         $params = self::validate_parameters(self::upsert_grade_parameters(), ['grade' => $grade]);
         $grade = $params['grade'];
 
-        $course = get_course((int) $grade['courseid']);
+        $course = local_rtcsync_require_managed_course(
+            (int) $grade['courseid'],
+            ['rtc-subject:']
+        );
+        local_rtcsync_require_managed_user((int) $grade['userid']);
         $context = context_course::instance($course->id);
         self::validate_context($context);
         require_capability('moodle/grade:manage', $context);
@@ -960,6 +975,30 @@ class local_rtcsync_external extends external_api
                 sort($members, SORT_NUMERIC);
                 $record->member_count = count($members);
                 $record->member_userids = json_encode($members);
+                $assignments = $DB->get_records_sql(
+                    "SELECT ra.userid, r.shortname, ctx.instanceid AS courseid
+                       FROM {role_assignments} ra
+                       JOIN {role} r ON r.id = ra.roleid
+                       JOIN {context} ctx ON ctx.id = ra.contextid
+                      WHERE ra.component = :component
+                        AND ra.itemid = :itemid
+                        AND ctx.contextlevel = :contextlevel
+                   ORDER BY ctx.instanceid, ra.userid, r.shortname",
+                    [
+                        'component' => 'local_rtcsync',
+                        'itemid' => (int) $record->record_id,
+                        'contextlevel' => CONTEXT_COURSE,
+                    ]
+                );
+                $classroles = [];
+                foreach ($assignments as $assignment) {
+                    $classroles[] = (int) $assignment->courseid . ':'
+                        . (int) $assignment->userid . ':'
+                        . (string) $assignment->shortname;
+                }
+                $classroles = array_values(array_unique($classroles));
+                sort($classroles, SORT_STRING);
+                $record->class_role_assignments = json_encode($classroles);
                 $record->course_structure = self::class_course_structure(
                     (string) $record->idnumber
                 );
@@ -1158,6 +1197,10 @@ class local_rtcsync_external extends external_api
                     'member_count' => new external_value(PARAM_INT, 'Managed member count.'),
                     'member_userids' => new external_value(PARAM_RAW, 'JSON array of managed Moodle user ids.'),
                     'member_roles' => new external_value(PARAM_RAW, 'JSON array of Moodle userid:role assignments.'),
+                    'class_role_assignments' => new external_value(
+                        PARAM_RAW,
+                        'JSON array of managed class courseid:userid:role assignments.'
+                    ),
                     'course_structure' => new external_value(
                         PARAM_RAW,
                         'JSON course grouping and child-group structure for a managed SMS class.'
@@ -1205,6 +1248,7 @@ class local_rtcsync_external extends external_api
             'member_count' => (int) ($record->member_count ?? 0),
             'member_userids' => (string) ($record->member_userids ?? '[]'),
             'member_roles' => (string) ($record->member_roles ?? '[]'),
+            'class_role_assignments' => (string) ($record->class_role_assignments ?? '[]'),
             'course_structure' => (string) ($record->course_structure ?? '[]'),
         ];
     }
