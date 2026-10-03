@@ -8,6 +8,9 @@ require_once($CFG->dirroot . '/group/lib.php');
 
 trait local_rtcsync_credit_class_external
 {
+    private const MOODLE_IDNUMBER_MAX_LENGTH = 100;
+    private const MOODLE_NAME_MAX_LENGTH = 254;
+
     public static function upsert_credit_parameters(): external_function_parameters
     {
         return new external_function_parameters([
@@ -246,10 +249,68 @@ trait local_rtcsync_credit_class_external
 
     public static function upsert_class(array $class): array
     {
+        $idnumber = isset($class['idnumber']) && is_scalar($class['idnumber'])
+            ? trim((string) $class['idnumber'])
+            : 'missing';
+
+        try {
+            return self::upsert_class_impl($class);
+        } catch (dml_exception $exception) {
+            $groupcount = isset($class['groups']) && is_array($class['groups'])
+                ? count($class['groups'])
+                : 0;
+            $coursecount = isset($class['courseids']) && is_array($class['courseids'])
+                ? count($class['courseids'])
+                : 0;
+            $membercount = isset($class['userids']) && is_array($class['userids'])
+                ? count($class['userids'])
+                : 0;
+
+            debugging(
+                sprintf(
+                    'local_rtcsync_upsert_class failed for idnumber=%s '
+                        .'(courses=%d, groups=%d, members=%d): %s',
+                    $idnumber,
+                    $coursecount,
+                    $groupcount,
+                    $membercount,
+                    $exception->getMessage(),
+                ),
+                DEBUG_DEVELOPER,
+            );
+
+            throw $exception;
+        }
+    }
+
+    private static function upsert_class_impl(array $class): array
+    {
         global $DB;
 
         $params = self::validate_parameters(self::upsert_class_parameters(), ['class' => $class]);
         $class = $params['class'];
+        $class['idnumber'] = self::validated_class_identifier($class['idnumber'], 'Class');
+        $class['name'] = self::validated_class_name($class['name'], 'Class');
+        $class['grouping_idnumber'] = self::validated_class_identifier(
+            $class['grouping_idnumber'],
+            'Class grouping',
+        );
+        $class['grouping_name'] = self::validated_class_name(
+            $class['grouping_name'],
+            'Class grouping',
+        );
+        foreach ($class['groups'] as $index => &$group) {
+            $group['idnumber'] = self::validated_class_identifier(
+                $group['idnumber'],
+                'Class group '.((int) $index + 1),
+            );
+            $group['name'] = self::validated_class_name(
+                $group['name'],
+                'Class group '.((int) $index + 1),
+            );
+        }
+        unset($group);
+
         $systemcontext = context_system::instance();
         self::validate_context($systemcontext);
         require_capability('moodle/cohort:manage', $systemcontext);
@@ -263,7 +324,10 @@ trait local_rtcsync_credit_class_external
             );
         }
 
-        $cohort = $DB->get_record('cohort', ['idnumber' => $idnumber], '*', IGNORE_MISSING);
+        $cohort = $DB->get_record('cohort', [
+            'contextid' => $systemcontext->id,
+            'idnumber' => $idnumber,
+        ], '*', IGNORE_MISSING);
         $record = (object) [
             'contextid' => $systemcontext->id,
             'name' => trim((string) $class['name']),
@@ -278,7 +342,24 @@ trait local_rtcsync_credit_class_external
             cohort_update_cohort($record);
             $cohortid = (int) $cohort->id;
         } else {
-            $cohortid = (int) cohort_add_cohort($record);
+            try {
+                $cohortid = (int) cohort_add_cohort($record);
+            } catch (dml_exception $exception) {
+                // Another sync worker may have created this idnumber between
+                // the lookup and insert. Re-read it and finish as an update;
+                // unrelated DML errors still reach the diagnostic wrapper.
+                $cohort = $DB->get_record('cohort', [
+                    'contextid' => $systemcontext->id,
+                    'idnumber' => $idnumber,
+                ], '*', IGNORE_MISSING);
+                if (!$cohort) {
+                    throw $exception;
+                }
+
+                $record->id = $cohort->id;
+                cohort_update_cohort($record);
+                $cohortid = (int) $cohort->id;
+            }
         }
 
         $desired = self::valid_userids($class['userids'] ?? [], 'classuser');
@@ -341,6 +422,37 @@ trait local_rtcsync_credit_class_external
             'group_count' => $structure['group_count'],
             'teacher_count' => $teacherCount,
         ];
+    }
+
+    private static function validated_class_identifier(mixed $value, string $label): string
+    {
+        $identifier = trim((string) $value);
+        if ($identifier === '') {
+            throw new invalid_parameter_exception($label.' idnumber must not be empty.');
+        }
+        if (core_text::strlen($identifier) > self::MOODLE_IDNUMBER_MAX_LENGTH) {
+            throw new invalid_parameter_exception(
+                $label.' idnumber must be at most '
+                    .self::MOODLE_IDNUMBER_MAX_LENGTH.' characters.'
+            );
+        }
+
+        return $identifier;
+    }
+
+    private static function validated_class_name(mixed $value, string $label): string
+    {
+        $name = trim((string) $value);
+        if ($name === '') {
+            throw new invalid_parameter_exception($label.' name must not be empty.');
+        }
+        if (core_text::strlen($name) > self::MOODLE_NAME_MAX_LENGTH) {
+            throw new invalid_parameter_exception(
+                $label.' name must be at most '.self::MOODLE_NAME_MAX_LENGTH.' characters.'
+            );
+        }
+
+        return $name;
     }
 
     public static function upsert_class_returns(): external_single_structure

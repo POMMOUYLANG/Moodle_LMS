@@ -1044,6 +1044,23 @@ final class externallib_test extends \advanced_testcase
         ));
     }
 
+    public function test_class_payload_rejects_values_that_exceed_moodle_limits(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $this->expectException(\invalid_parameter_exception::class);
+        $this->expectExceptionMessage('Class idnumber must be at most 100 characters.');
+
+        \local_rtcsync_external::upsert_class([
+            'idnumber' => 'rtc-class:'.str_repeat('x', 100),
+            'name' => '[Class] Valid name',
+            'grouping_idnumber' => 'rtc-class-grouping:limit-check',
+            'grouping_name' => '[Class] Valid grouping',
+            'groups' => [],
+        ]);
+    }
+
     public function test_class_teacher_role_change_removes_stale_managed_role_assignment(): void
     {
         global $DB;
