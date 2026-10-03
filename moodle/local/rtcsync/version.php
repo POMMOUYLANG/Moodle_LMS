@@ -3,7 +3,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'local_rtcsync';
-$plugin->version = 2026100302;
+$plugin->version = 2026100303;
 $plugin->requires = 2025041400;
 $plugin->maturity = MATURITY_STABLE;
-$plugin->release = '1.9.10';
+$plugin->release = '1.9.11';

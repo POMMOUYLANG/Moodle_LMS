@@ -1107,6 +1107,52 @@ final class externallib_test extends \advanced_testcase
         ]);
     }
 
+    public function test_class_payload_accepts_delivery_identity_metadata(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse();
+
+        $result = \local_rtcsync_external::upsert_class([
+            'idnumber' => 'rtc-delivery:metadata:class:1',
+            'name' => '[Class] Delivery Metadata',
+            'visible' => 1,
+            'delivery_id' => 17,
+            'userids' => [],
+            'courseids' => [(int) $course->id],
+            'grouping_idnumber' => 'rtc-delivery-grouping:metadata:class:1',
+            'grouping_name' => '[Class] Delivery Metadata',
+            'groups' => [],
+        ]);
+
+        $this->assertSame('rtc-delivery:metadata:class:1', $result['idnumber']);
+        $this->assertSame(0, $result['member_count']);
+    }
+
+    public function test_class_payload_accepts_managed_isolated_credit_courses(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-credit-course:class-credit']);
+
+        $result = \local_rtcsync_external::upsert_class([
+            'idnumber' => 'rtc-class:credit-course',
+            'name' => '[Class] Credit Course',
+            'visible' => 1,
+            'userids' => [],
+            'courseids' => [(int) $course->id],
+            'grouping_idnumber' => 'rtc-class-grouping:credit-course',
+            'grouping_name' => '[Class] Credit Course',
+            'groups' => [[
+                'idnumber' => 'rtc-class-group:credit-course',
+                'name' => '[Group] Credit Course',
+                'userids' => [],
+            ]],
+        ]);
+
+        $this->assertSame(1, $result['course_count']);
+    }
+
     public function test_class_teacher_role_change_removes_stale_managed_role_assignment(): void
     {
         global $DB;

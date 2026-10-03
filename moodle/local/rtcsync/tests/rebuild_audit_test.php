@@ -57,8 +57,8 @@ final class rebuild_audit_test extends \advanced_testcase
         $this->assertArrayHasKey('rest_protocol_enabled', $acceptance['checks']);
         $this->assertFalse($acceptance['checks']['rest_protocol_enabled']);
         $this->assertIsBool($acceptance['passed']);
-        $this->assertSame('2026100302', $acceptance['required_plugin_version']);
-        $this->assertSame('2026100302', $acceptance['plugin_version']);
+        $this->assertSame('2026100303', $acceptance['required_plugin_version']);
+        $this->assertSame('2026100303', $acceptance['plugin_version']);
         $this->assertTrue($acceptance['checks']['plugin_version_supported']);
         $this->assertTrue($acceptance['checks']['required_profile_fields_present']);
         $this->assertTrue($acceptance['checks']['profile_fields_match_contract']);
@@ -188,5 +188,36 @@ final class rebuild_audit_test extends \advanced_testcase
             $acceptance['unmanaged_credit_role_assignments_fingerprint'],
             $reviewed['unmanaged_credit_role_assignments_acknowledged']
         );
+    }
+
+    public function test_acceptance_ignores_managed_class_cohort_roles_on_credit_courses(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->getDataGenerator()->create_course([
+            'idnumber' => 'rtc-credit-course:class-managed-501',
+        ]);
+        $user = $this->getDataGenerator()->create_user();
+        $cohort = $this->getDataGenerator()->create_cohort([
+            'idnumber' => 'rtc-class:managed-501',
+            'name' => '[Class] Managed 501',
+        ]);
+        $role = $DB->get_record('role', ['shortname' => 'student'], '*', MUST_EXIST);
+
+        role_assign(
+            (int) $role->id,
+            (int) $user->id,
+            \context_course::instance((int) $course->id)->id,
+            'local_rtcsync',
+            (int) $cohort->id
+        );
+
+        $acceptance = rebuild_audit::acceptance();
+
+        $this->assertTrue($acceptance['checks']['unmanaged_credit_role_assignments_reviewed']);
+        $this->assertSame([], $acceptance['unmanaged_credit_role_assignments']);
+        $this->assertNull($acceptance['unmanaged_credit_role_assignments_fingerprint']);
     }
 }

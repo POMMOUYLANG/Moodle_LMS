@@ -201,6 +201,12 @@ trait local_rtcsync_credit_class_external
                 'name' => new external_value(PARAM_TEXT, 'Class/cohort name.'),
                 'description' => new external_value(PARAM_RAW, 'Class description.', VALUE_DEFAULT, ''),
                 'visible' => new external_value(PARAM_INT, 'Cohort visibility.', VALUE_DEFAULT, 1),
+                'delivery_id' => new external_value(
+                    PARAM_RAW,
+                    'Optional SMS delivery id carried by class synchronization.',
+                    VALUE_DEFAULT,
+                    ''
+                ),
                 'userids' => new external_multiple_structure(
                     new external_value(PARAM_INT, 'Moodle user id.'),
                     'Desired cohort members.', VALUE_DEFAULT, []
@@ -484,7 +490,8 @@ trait local_rtcsync_credit_class_external
         $valid = [];
         foreach ($existing as $course) {
             $idnumber = (string) ($course->idnumber ?? '');
-            if (str_starts_with($idnumber, 'rtc-subject:')) {
+            if (str_starts_with($idnumber, 'rtc-subject:')
+                    || str_starts_with($idnumber, 'rtc-credit-course:')) {
                 $valid[] = (int) $course->id;
             }
         }
