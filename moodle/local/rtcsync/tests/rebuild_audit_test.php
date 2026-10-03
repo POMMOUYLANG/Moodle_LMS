@@ -57,8 +57,8 @@ final class rebuild_audit_test extends \advanced_testcase
         $this->assertArrayHasKey('rest_protocol_enabled', $acceptance['checks']);
         $this->assertFalse($acceptance['checks']['rest_protocol_enabled']);
         $this->assertIsBool($acceptance['passed']);
-        $this->assertSame('2026100204', $acceptance['required_plugin_version']);
-        $this->assertSame('2026100204', $acceptance['plugin_version']);
+        $this->assertSame('2026100205', $acceptance['required_plugin_version']);
+        $this->assertSame('2026100205', $acceptance['plugin_version']);
         $this->assertTrue($acceptance['checks']['plugin_version_supported']);
         $this->assertTrue($acceptance['checks']['required_profile_fields_present']);
         $this->assertTrue($acceptance['checks']['profile_fields_match_contract']);

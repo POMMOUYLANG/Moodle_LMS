@@ -976,7 +976,7 @@ class local_rtcsync_external extends external_api
                 $record->member_count = count($members);
                 $record->member_userids = json_encode($members);
                 $assignments = $DB->get_records_sql(
-                    "SELECT ra.userid, r.shortname, ctx.instanceid AS courseid
+                    "SELECT ra.id AS assignmentid, ra.userid, r.shortname, ctx.instanceid AS courseid
                        FROM {role_assignments} ra
                        JOIN {role} r ON r.id = ra.roleid
                        JOIN {context} ctx ON ctx.id = ra.contextid
