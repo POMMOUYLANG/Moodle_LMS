@@ -151,5 +151,27 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         upgrade_plugin_savepoint(true, 2026100204, 'local', 'rtcsync');
     }
 
+    if ($oldversion < 2026102401) {
+        $dbman = $DB->get_manager();
+        $table = new xmldb_table('local_rtcsync_history');
+        $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $table->add_field('userid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $table->add_field('courseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $table->add_field('sourcetype', XMLDB_TYPE_CHAR, '32', null, XMLDB_NOTNULL);
+        $table->add_field('sourceid', XMLDB_TYPE_INTEGER, '20', XMLDB_UNSIGNED, XMLDB_NOTNULL);
+        $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $table->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $table->add_key('user_fk', XMLDB_KEY_FOREIGN, ['userid'], 'user', ['id']);
+        $table->add_key('course_fk', XMLDB_KEY_FOREIGN, ['courseid'], 'course', ['id']);
+        $table->add_index('usercourse_src_uix', XMLDB_INDEX_UNIQUE, ['userid', 'courseid', 'sourcetype', 'sourceid']);
+        $table->add_index('courseuser_ix', XMLDB_INDEX_NOTUNIQUE, ['courseid', 'userid']);
+        if (!$dbman->table_exists($table)) {
+            $dbman->create_table($table);
+        }
+
+        upgrade_plugin_savepoint(true, 2026102401, 'local', 'rtcsync');
+    }
+
     return true;
 }

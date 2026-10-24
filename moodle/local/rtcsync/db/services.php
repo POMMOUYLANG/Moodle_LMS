@@ -51,6 +51,14 @@ $functions = [
         'type' => 'write',
         'capabilities' => 'enrol/manual:unenrol',
     ],
+    'local_rtcsync_sync_history_marker' => [
+        'classname' => 'local_rtcsync_external',
+        'methodname' => 'sync_history_marker',
+        'classpath' => 'local/rtcsync/externallib.php',
+        'description' => 'Synchronize one source-scoped, read-only student history marker without changing enrolment.',
+        'type' => 'write',
+        'capabilities' => 'enrol/manual:enrol',
+    ],
     'local_rtcsync_upsert_credit' => [
         'classname' => 'local_rtcsync_external',
         'methodname' => 'upsert_credit',

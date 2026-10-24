@@ -644,6 +644,153 @@ final class externallib_test extends \advanced_testcase
         ]);
     }
 
+    public function test_standalone_history_marker_writes_are_source_scoped_and_do_not_change_enrolment(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
+        $course = $this->createManagedCourse();
+        $user = $this->createManagedUser();
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+        $instance = $DB->get_record('enrol', [
+            'courseid' => (int) $course->id,
+            'enrol' => 'manual',
+        ], '*', MUST_EXIST);
+        $context = \context_course::instance((int) $course->id);
+        $enrolmentbefore = $DB->get_record('user_enrolments', [
+            'enrolid' => (int) $instance->id,
+            'userid' => (int) $user->id,
+        ], '*', MUST_EXIST);
+        $rolesbefore = $DB->get_records('role_assignments', [
+            'contextid' => (int) $context->id,
+            'userid' => (int) $user->id,
+        ], 'id ASC');
+
+        $first = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'user_program',
+            'historysourceid' => 101,
+        ]);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 202,
+        ]);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 202,
+        ]);
+
+        $enrolmentafter = $DB->get_record('user_enrolments', [
+            'enrolid' => (int) $instance->id,
+            'userid' => (int) $user->id,
+        ], '*', MUST_EXIST);
+        $rolesafter = $DB->get_records('role_assignments', [
+            'contextid' => (int) $context->id,
+            'userid' => (int) $user->id,
+        ], 'id ASC');
+
+        $this->assertSame(1, $first['historyaccess']);
+        $this->assertSame(ENROL_USER_SUSPENDED, (int) $enrolmentafter->status);
+        $this->assertEquals($enrolmentbefore, $enrolmentafter);
+        $this->assertEquals($rolesbefore, $rolesafter);
+        $this->assertTrue($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'user_program',
+            'sourceid' => 101,
+        ]));
+        $this->assertFalse($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 202,
+        ]));
+    }
+
+    public function test_history_marker_rejects_invalid_source_type(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse();
+        $user = $this->createManagedUser();
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'unsupported_source',
+            'historysourceid' => 303,
+        ]);
+    }
+
+    public function test_history_marker_rejects_invalid_access_flag(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse();
+        $user = $this->createManagedUser();
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 2,
+            'historysourcetype' => 'user_program',
+            'historysourceid' => 304,
+        ]);
+    }
+
+    public function test_history_marker_cannot_be_set_for_an_active_student_enrolment(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse();
+        $user = $this->createManagedUser();
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
+
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'user_program',
+            'historysourceid' => 305,
+        ]);
+    }
+
     public function test_system_role_sync_manages_only_approved_component_assignments(): void
     {
         global $DB;

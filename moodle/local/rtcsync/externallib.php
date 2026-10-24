@@ -496,12 +496,17 @@ class local_rtcsync_external extends external_api
                 'userid' => new external_value(PARAM_INT, 'Moodle user id.'),
                 'role_shortname' => new external_value(PARAM_ALPHANUMEXT, 'Moodle role shortname.'),
                 'suspend' => new external_value(PARAM_INT, 'Suspend enrolment flag.', VALUE_DEFAULT, 0),
+                'historyaccess' => new external_value(PARAM_INT, 'Retain read-only history marker.', VALUE_DEFAULT, 0),
+                'historysourcetype' => new external_value(PARAM_ALPHANUMEXT, 'History source type.', VALUE_DEFAULT, ''),
+                'historysourceid' => new external_value(PARAM_INT, 'History source ID.', VALUE_DEFAULT, 0),
             ]),
         ]);
     }
 
     public static function enrol_user(array $enrolment): array
     {
+        global $DB;
+
         $params = self::validate_parameters(self::enrol_user_parameters(), ['enrolment' => $enrolment]);
         $enrolment = $params['enrolment'];
 
@@ -515,8 +520,31 @@ class local_rtcsync_external extends external_api
         $instance = self::manual_enrol_instance($course);
         $plugin = enrol_get_plugin('manual');
         $status = (int) $enrolment['suspend'] === 1 ? ENROL_USER_SUSPENDED : ENROL_USER_ACTIVE;
+        $historyaccess = (int) $enrolment['historyaccess'];
+        $historysourcetype = trim((string) $enrolment['historysourcetype']);
+        $historysourceid = (int) $enrolment['historysourceid'];
 
+        self::validate_history_source($historyaccess, $historysourcetype, $historysourceid);
+        $hashistorysource = $historyaccess === 1 || $historysourcetype !== '' || $historysourceid !== 0;
+        if ($hashistorysource && $role->shortname !== 'student') {
+            throw new invalid_parameter_exception('Read-only history markers are only valid for student enrolments.');
+        }
+        if ($historyaccess === 1 && $status !== ENROL_USER_SUSPENDED) {
+            throw new invalid_parameter_exception('Read-only history markers require a suspended enrolment.');
+        }
+
+        $transaction = $DB->start_delegated_transaction();
         $plugin->enrol_user($instance, (int) $enrolment['userid'], (int) $role->id, 0, 0, $status);
+        if ($historyaccess === 1 || $historysourcetype !== '' || $historysourceid > 0) {
+            \local_rtcsync\local\student_history::sync_marker(
+                (int) $enrolment['userid'],
+                (int) $course->id,
+                $historyaccess,
+                $historysourcetype,
+                $historysourceid
+            );
+        }
+        $transaction->allow_commit();
 
         return [
             'courseid' => (int) $course->id,
@@ -543,6 +571,9 @@ class local_rtcsync_external extends external_api
                 'courseid' => new external_value(PARAM_INT, 'Moodle course id.'),
                 'userid' => new external_value(PARAM_INT, 'Moodle user id.'),
                 'role_shortname' => new external_value(PARAM_ALPHANUMEXT, 'Moodle role shortname.'),
+                'historyaccess' => new external_value(PARAM_INT, 'History access flag; unenrolment cannot retain access.', VALUE_DEFAULT, 0),
+                'historysourcetype' => new external_value(PARAM_ALPHANUMEXT, 'History source type to clear.', VALUE_DEFAULT, ''),
+                'historysourceid' => new external_value(PARAM_INT, 'History source ID to clear.', VALUE_DEFAULT, 0),
             ]),
         ]);
     }
@@ -561,6 +592,18 @@ class local_rtcsync_external extends external_api
         require_capability('enrol/manual:unenrol', $context);
 
         $role = self::role_by_shortname($enrolment['role_shortname']);
+        $historyaccess = (int) $enrolment['historyaccess'];
+        $historysourcetype = trim((string) $enrolment['historysourcetype']);
+        $historysourceid = (int) $enrolment['historysourceid'];
+        self::validate_history_source($historyaccess, $historysourcetype, $historysourceid);
+        if ($historyaccess === 1) {
+            throw new invalid_parameter_exception('Unenrolment cannot retain read-only history access.');
+        }
+        if (($historysourcetype !== '' || $historysourceid !== 0) && $role->shortname !== 'student') {
+            throw new invalid_parameter_exception('Only student enrolments can clear a history marker.');
+        }
+
+        $transaction = $DB->start_delegated_transaction();
         role_unassign((int) $role->id, (int) $enrolment['userid'], $context->id);
 
         $remainingroles = $DB->record_exists('role_assignments', [
@@ -573,6 +616,16 @@ class local_rtcsync_external extends external_api
                 enrol_get_plugin('manual')->unenrol_user($instance, (int) $enrolment['userid']);
             }
         }
+        if ($historysourcetype !== '' || $historysourceid > 0) {
+            \local_rtcsync\local\student_history::sync_marker(
+                (int) $enrolment['userid'],
+                (int) $course->id,
+                0,
+                $historysourcetype,
+                $historysourceid
+            );
+        }
+        $transaction->allow_commit();
 
         return [
             'courseid' => (int) $course->id,
@@ -589,6 +642,68 @@ class local_rtcsync_external extends external_api
             'userid' => new external_value(PARAM_INT, 'Moodle user id.'),
             'roleid' => new external_value(PARAM_INT, 'Moodle role id.'),
             'removed' => new external_value(PARAM_INT, 'Removal flag.'),
+        ]);
+    }
+
+    public static function sync_history_marker_parameters(): external_function_parameters
+    {
+        return new external_function_parameters([
+            'history' => new external_single_structure([
+                'courseid' => new external_value(PARAM_INT, 'RTC-managed Moodle course ID.'),
+                'userid' => new external_value(PARAM_INT, 'RTC-managed Moodle user ID.'),
+                'historyaccess' => new external_value(PARAM_INT, '1 to retain history; 0 to clear this source marker.'),
+                'historysourcetype' => new external_value(PARAM_ALPHANUMEXT, 'History source type.'),
+                'historysourceid' => new external_value(PARAM_INT, 'Positive history source ID.'),
+            ]),
+        ]);
+    }
+
+    public static function sync_history_marker(array $history): array
+    {
+        global $DB;
+
+        $params = self::validate_parameters(self::sync_history_marker_parameters(), ['history' => $history]);
+        $history = $params['history'];
+        $historyaccess = (int) $history['historyaccess'];
+        $historysourcetype = trim((string) $history['historysourcetype']);
+        $historysourceid = (int) $history['historysourceid'];
+        self::validate_history_source($historyaccess, $historysourcetype, $historysourceid);
+        if ($historysourcetype === '' || $historysourceid <= 0) {
+            throw new invalid_parameter_exception('A valid history source type and positive source ID are required.');
+        }
+        $course = local_rtcsync_require_managed_course((int) $history['courseid']);
+        local_rtcsync_require_managed_user((int) $history['userid']);
+        $context = context_course::instance($course->id);
+        self::validate_context($context);
+        require_capability('enrol/manual:enrol', $context);
+
+        $transaction = $DB->start_delegated_transaction();
+        \local_rtcsync\local\student_history::sync_marker(
+            (int) $history['userid'],
+            (int) $course->id,
+            $historyaccess,
+            $historysourcetype,
+            $historysourceid
+        );
+        $transaction->allow_commit();
+
+        return [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $history['userid'],
+            'historyaccess' => $historyaccess,
+            'historysourcetype' => $historysourcetype,
+            'historysourceid' => $historysourceid,
+        ];
+    }
+
+    public static function sync_history_marker_returns(): external_single_structure
+    {
+        return new external_single_structure([
+            'courseid' => new external_value(PARAM_INT, 'RTC-managed Moodle course ID.'),
+            'userid' => new external_value(PARAM_INT, 'RTC-managed Moodle user ID.'),
+            'historyaccess' => new external_value(PARAM_INT, 'History access flag.'),
+            'historysourcetype' => new external_value(PARAM_ALPHANUMEXT, 'History source type.'),
+            'historysourceid' => new external_value(PARAM_INT, 'History source ID.'),
         ]);
     }
 
@@ -1420,6 +1535,22 @@ class local_rtcsync_external extends external_api
         }
 
         return $role;
+    }
+
+    /**
+     * Validate the optional source-scoped history payload before any enrolment write.
+     */
+    private static function validate_history_source(int $historyaccess, string $sourcetype, int $sourceid): void
+    {
+        if (!in_array($historyaccess, [0, 1], true)) {
+            throw new invalid_parameter_exception('History access must be 0 or 1.');
+        }
+
+        $hasmarker = $historyaccess === 1 || $sourcetype !== '' || $sourceid !== 0;
+        if ($hasmarker && (!in_array($sourcetype, ['user_program', 'delivery_participation'], true)
+                || $sourceid <= 0)) {
+            throw new invalid_parameter_exception('A valid history source type and positive source ID are required.');
+        }
     }
 
     private static function manual_enrol_instance(stdClass $course): stdClass
