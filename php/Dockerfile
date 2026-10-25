@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y \
     && sed -i '/^# *en_AU.UTF-8 UTF-8/s/^# *//' /etc/locale.gen \
     && locale-gen en_AU.UTF-8 \
     && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
-    && docker-php-ext-install gd mysqli pdo pdo_mysql zip intl opcache soap xsl exif curl \
+    && docker-php-ext-install gd mbstring mysqli pdo pdo_mysql zip intl opcache soap xsl exif curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Enable recommended PHP settings for Moodle

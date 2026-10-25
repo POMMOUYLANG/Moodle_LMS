@@ -1,0 +1,52 @@
+name: rtc-moodle-phpunit
+
+services:
+  phpunit-db:
+    image: mysql:8.4
+    profiles: [phpunit]
+    environment:
+      MYSQL_DATABASE: ${MOODLE_PHPUNIT_DB_NAME:?Set MOODLE_PHPUNIT_DB_NAME in phpunit/.env}
+      MYSQL_USER: ${MOODLE_PHPUNIT_DB_USER:?Set MOODLE_PHPUNIT_DB_USER in phpunit/.env}
+      MYSQL_PASSWORD: ${MOODLE_PHPUNIT_DB_PASSWORD:?Set MOODLE_PHPUNIT_DB_PASSWORD in phpunit/.env}
+      MYSQL_ROOT_PASSWORD: ${MOODLE_PHPUNIT_DB_ROOT_PASSWORD:?Set MOODLE_PHPUNIT_DB_ROOT_PASSWORD in phpunit/.env}
+    command: --mysql-native-password=ON
+    volumes:
+      - phpunit_database:/var/lib/mysql
+    networks: [phpunit]
+    healthcheck:
+      test: [CMD-SHELL, 'mysqladmin ping -h 127.0.0.1 -uroot -p"$${MYSQL_ROOT_PASSWORD}" --silent']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  phpunit-runner:
+    build: ./php
+    profiles: [phpunit]
+    depends_on:
+      phpunit-db:
+        condition: service_healthy
+    environment:
+      MOODLE_PHPUNIT_DB_HOST: phpunit-db
+      MOODLE_PHPUNIT_DB_NAME: ${MOODLE_PHPUNIT_DB_NAME:?Set MOODLE_PHPUNIT_DB_NAME in phpunit/.env}
+      MOODLE_PHPUNIT_DB_USER: ${MOODLE_PHPUNIT_DB_USER:?Set MOODLE_PHPUNIT_DB_USER in phpunit/.env}
+      MOODLE_PHPUNIT_DB_PASSWORD: ${MOODLE_PHPUNIT_DB_PASSWORD:?Set MOODLE_PHPUNIT_DB_PASSWORD in phpunit/.env}
+    working_dir: /source
+    entrypoint: ["php", "/opt/rtc-phpunit/runner.php"]
+    command: ["--version"]
+    volumes:
+      - ./moodle:/source:ro
+      - ./phpunit/config.php:/opt/rtc-phpunit/config.php:ro
+      - ./phpunit/runner.php:/opt/rtc-phpunit/runner.php:ro
+      - phpunit_moodledata:/var/moodledata
+      - phpunit_state:/var/phpunit-state
+    networks: [phpunit]
+
+networks:
+  phpunit:
+    internal: true
+
+volumes:
+  phpunit_database: {}
+  phpunit_moodledata: {}
+  phpunit_state: {}

@@ -13,68 +13,27 @@ $PAGE->set_pagelayout('standard');
 $PAGE->set_title(get_string('studenthistorytitle', 'local_rtcsync'));
 $PAGE->set_heading(get_string('studenthistorytitle', 'local_rtcsync'));
 
-$token = trim((string) ($SESSION->rtc_token ?? ''));
-if ($token === '') {
-    throw new moodle_exception('studenthistorydenied', 'local_rtcsync');
-}
+$token = (string) ($SESSION->rtc_token ?? '');
 
-// The SSO bootstrap can reuse an existing Moodle session without checking its
-// RTC token again. This page always revalidates before showing released grades.
-$rtcuser = rtc_sso_fetch_user_detail($token);
-if (!$rtcuser || ($rtcuser['account_is_active'] ?? null) !== true) {
-    rtc_sso_clear_login_state();
-    require_logout();
-    throw new moodle_exception('studenthistorydenied', 'local_rtcsync');
-}
-
-$history = new \local_rtcsync\local\student_history();
-$history->require_current_rtc_student($rtcuser);
-$cursor = optional_param('cursor', '', PARAM_ALPHANUMEXT);
-$resultpage = $history->visible_results($cursor);
-
-echo $OUTPUT->header();
-echo $OUTPUT->heading(get_string('studenthistorytitle', 'local_rtcsync'));
-echo $OUTPUT->notification(get_string('studenthistoryintro', 'local_rtcsync'), 'info');
-
-if ($resultpage['results'] === []) {
-    echo $OUTPUT->notification(get_string('studenthistoryempty', 'local_rtcsync'), 'info');
-} else {
-    $table = new html_table();
-    $table->attributes['class'] = 'generaltable';
-    $table->head = [
-        get_string('studenthistorycourse', 'local_rtcsync'),
-        get_string('studenthistoryitem', 'local_rtcsync'),
-        get_string('studenthistorygrade', 'local_rtcsync'),
-    ];
-    foreach ($resultpage['results'] as $row) {
-        $table->data[] = [
-            format_string($row['course'], true, [
-                'context' => context_course::instance($row['courseid']),
-            ]),
-            format_string($row['item'], true, [
-                'context' => context_course::instance($row['courseid']),
-            ]),
-            $row['formatted'],
-        ];
+$historypage = new \local_rtcsync\local\student_history_page(
+    static fn (string $token): ?array => rtc_sso_fetch_user_detail($token)
+);
+$cursorreader = static fn (): string => optional_param('cursor', '', PARAM_ALPHANUMEXT);
+$request = new \local_rtcsync\local\student_history_request();
+$renderedpage = $request->handle(
+    $token,
+    static fn (string $token): ?string => $historypage->render($token, $cursorreader, $OUTPUT),
+    static function (): void {
+        rtc_sso_clear_login_state();
+    },
+    static function (): void {
+        require_logout();
+    },
+    static function (): void {
+        throw new moodle_exception('studenthistorydenied', 'local_rtcsync');
     }
-    echo html_writer::table($table);
-}
+);
 
-$navigation = [];
-if ($resultpage['hasprevious'] && $resultpage['previouscursor'] !== null) {
-    $navigation[] = html_writer::link(
-        new moodle_url('/local/rtcsync/student_history.php', ['cursor' => $resultpage['previouscursor']]),
-        get_string('previous')
-    );
+if ($renderedpage !== null) {
+    echo $renderedpage;
 }
-if ($resultpage['hasnext'] && $resultpage['nextcursor'] !== null) {
-    $navigation[] = html_writer::link(
-        new moodle_url('/local/rtcsync/student_history.php', ['cursor' => $resultpage['nextcursor']]),
-        get_string('next')
-    );
-}
-if ($navigation !== []) {
-    echo html_writer::div(implode(' ', $navigation), 'mt-3');
-}
-
-echo $OUTPUT->footer();

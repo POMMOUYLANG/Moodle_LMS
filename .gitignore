@@ -1,1 +1,4 @@
 /moodledata
+/docker-compose.staging.env
+/staging-runtime/
+/phpunit/.env

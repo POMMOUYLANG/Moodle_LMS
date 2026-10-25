@@ -371,6 +371,72 @@ final class student_history_test extends \advanced_testcase
         $history->require_current_rtc_student($this->rtcStudentIdentity($student['user'], false));
     }
 
+    public function test_history_page_renders_released_results_with_an_injected_fresh_identity(): void
+    {
+        global $PAGE;
+
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('page-render');
+        $this->createQuizGrade($student['course'], $student['user'], 'Released page result', 76.0);
+        $this->setUser($student['user']);
+
+        $PAGE->set_context(\context_system::instance());
+        $PAGE->set_cacheable(false);
+        $PAGE->set_url(new \moodle_url('/local/rtcsync/student_history.php'));
+        $PAGE->set_pagelayout('standard');
+        $PAGE->set_title(get_string('studenthistorytitle', 'local_rtcsync'));
+        $PAGE->set_heading(get_string('studenthistorytitle', 'local_rtcsync'));
+
+        $seentokens = [];
+        $identityprovider = function (string $token) use (&$seentokens, $student): array {
+            $seentokens[] = $token;
+            return $this->rtcStudentIdentity($student['user']);
+        };
+        $cursorreader = function () use (&$seentokens): string {
+            $this->assertSame(['phpunit-sentinel-token'], $seentokens, 'The cursor is read only after fresh RTC identity validation.');
+            return '';
+        };
+        $historypage = new \local_rtcsync\local\student_history_page(\Closure::fromCallable($identityprovider));
+        $output = $PAGE->get_renderer('core');
+        $rendered = $historypage->render('phpunit-sentinel-token', $cursorreader, $output);
+
+        $this->assertNotNull($rendered);
+        $this->assertSame(['phpunit-sentinel-token'], $seentokens);
+        $this->assertStringContainsString('Released page result', $rendered);
+        $this->assertStringContainsString('76', $rendered);
+        $this->assertSame(1, preg_match('/<table\b[^>]*>.*?<\/table>/s', $rendered, $tablematch));
+        $this->assertStringNotContainsString('<a', $tablematch[0], 'Result rows must not link into Moodle activities.');
+        $this->assertStringNotContainsString('/mod/quiz/view.php', $rendered);
+    }
+
+    public function test_history_page_returns_null_for_inactive_identity_before_reading_cursor(): void
+    {
+        global $PAGE;
+
+        $this->resetAfterTest();
+        $PAGE->set_context(\context_system::instance());
+        $requestedtoken = null;
+        $cursorread = false;
+        $identityprovider = function (string $token) use (&$requestedtoken): array {
+            $requestedtoken = $token;
+            return ['account_is_active' => false];
+        };
+        $cursorreader = function () use (&$cursorread): string {
+            $cursorread = true;
+            return '';
+        };
+        $historypage = new \local_rtcsync\local\student_history_page(\Closure::fromCallable($identityprovider));
+        $rendered = $historypage->render(
+            'inactive-sentinel-token',
+            $cursorreader,
+            $PAGE->get_renderer('core')
+        );
+
+        $this->assertSame('inactive-sentinel-token', $requestedtoken);
+        $this->assertNull($rendered);
+        $this->assertFalse($cursorread, 'An inactive RTC identity must not inspect even a sanitized history cursor.');
+    }
+
     public function test_mismatched_sms_identity_is_denied_even_when_history_exists(): void
     {
         $this->resetAfterTest();
@@ -522,7 +588,7 @@ final class student_history_test extends \advanced_testcase
 
     public function test_reassigning_a_module_keeps_history_read_only_and_requires_a_new_activity_instance(): void
     {
-        global $DB;
+        global $DB, $PAGE;
 
         $this->resetAfterTest();
         set_config('enableavailability', 1);
@@ -639,6 +705,25 @@ final class student_history_test extends \advanced_testcase
         $this->assertFalse($moduleinfo->get_cm($cmid)->uservisible);
         $this->assertTrue($moduleinfo->get_cm((int) $newquiz->cmid)->uservisible);
         $this->assertTrue(is_enrolled(\context_course::instance((int) $course->id), $student['user'], '', true));
+
+        $PAGE->set_context(\context_system::instance());
+        $PAGE->set_cacheable(false);
+        $PAGE->set_url(new \moodle_url('/local/rtcsync/student_history.php'));
+        $PAGE->set_pagelayout('standard');
+        $PAGE->set_title(get_string('studenthistorytitle', 'local_rtcsync'));
+        $PAGE->set_heading(get_string('studenthistorytitle', 'local_rtcsync'));
+        $historypage = new \local_rtcsync\local\student_history_page(
+            fn(string $token): array => $this->rtcStudentIdentity($student['user'])
+        );
+        $rendered = $historypage->render(
+            'transfer-sentinel-token',
+            static fn(): string => '',
+            $PAGE->get_renderer('core')
+        );
+        $this->assertNotNull($rendered);
+        $this->assertStringContainsString('Previous delivery released result', $rendered);
+        $this->assertStringContainsString('81', $rendered);
+        $this->assertStringNotContainsString('/mod/quiz/view.php', $rendered);
     }
 
     public function test_delivery_scope_denies_stale_activity_but_keeps_old_released_result(): void

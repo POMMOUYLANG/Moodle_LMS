@@ -1,0 +1,101 @@
+name: rtc-moodle-staging
+
+services:
+  db:
+    image: mysql:8.4
+    container_name: moodle_staging_db
+    restart: unless-stopped
+    labels:
+      com.rtc.environment: staging
+      com.rtc.stack: rtc-moodle-staging
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MOODLE_STAGING_DB_ROOT_PASSWORD:?Set MOODLE_STAGING_DB_ROOT_PASSWORD in the staging env file}
+      MYSQL_DATABASE: ${MOODLE_STAGING_DB_NAME:?Set MOODLE_STAGING_DB_NAME in the staging env file}
+      MYSQL_USER: ${MOODLE_STAGING_DB_USER:?Set MOODLE_STAGING_DB_USER in the staging env file}
+      MYSQL_PASSWORD: ${MOODLE_STAGING_DB_PASSWORD:?Set MOODLE_STAGING_DB_PASSWORD in the staging env file}
+    command: --mysql-native-password=ON
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "--host=127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    ports:
+      - "127.0.0.1:${MOODLE_STAGING_DB_PORT:?Set MOODLE_STAGING_DB_PORT in the staging env file}:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - staging
+
+  php:
+    build: ./php
+    container_name: moodle_staging_php
+    restart: unless-stopped
+    labels:
+      com.rtc.environment: staging
+      com.rtc.stack: rtc-moodle-staging
+    volumes:
+      - type: bind
+        source: ./moodle
+        target: /var/www/html
+        read_only: true
+      - type: bind
+        source: ./staging-runtime/config.php
+        target: /var/www/html/config.php
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./docker/staging-php-entrypoint.sh
+        target: /usr/local/bin/rtc-moodle-staging-entrypoint.sh
+        read_only: true
+        bind:
+          create_host_path: false
+      - moodle_data:/var/moodledata
+    entrypoint: ["/bin/sh", "/usr/local/bin/rtc-moodle-staging-entrypoint.sh"]
+    command: ["php-fpm"]
+    depends_on:
+      db:
+        condition: service_healthy
+    # rtc_sso.php has a generic backend-webserver fallback after trying the
+    # configured stage API. Pin that fallback locally so it cannot resolve to
+    # any shared or production backend if the stage API is unavailable.
+    extra_hosts:
+      - "backend-webserver:127.0.0.1"
+    networks:
+      - staging
+
+  nginx:
+    image: nginx:stable
+    container_name: moodle_staging_nginx
+    restart: unless-stopped
+    labels:
+      com.rtc.environment: staging
+      com.rtc.stack: rtc-moodle-staging
+    ports:
+      - "127.0.0.1:${MOODLE_STAGING_WEB_PORT:?Set MOODLE_STAGING_WEB_PORT in the staging env file}:8080"
+    volumes:
+      - type: bind
+        source: ./moodle/public
+        target: /var/www/html/public
+        read_only: true
+      - type: bind
+        source: ./nginx/default.conf
+        target: /etc/nginx/conf.d/default.conf
+        read_only: true
+    depends_on:
+      - php
+    networks:
+      - staging
+
+networks:
+  staging:
+    name: rtc-moodle-staging-network
+    driver: bridge
+    labels:
+      com.rtc.environment: staging
+      com.rtc.stack: rtc-moodle-staging
+
+volumes:
+  db_data:
+  moodle_data:
