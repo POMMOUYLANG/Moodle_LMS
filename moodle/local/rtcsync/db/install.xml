@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<XMLDB PATH="local/rtcsync/db" VERSION="20261024" COMMENT="XMLDB file for RTC Sync">
+<XMLDB PATH="local/rtcsync/db" VERSION="2026102502" COMMENT="XMLDB file for RTC Sync">
   <TABLES>
     <TABLE NAME="local_rtcsync_formcfg" COMMENT="Per-course SMS formative sync configuration">
       <FIELDS>
@@ -58,6 +58,7 @@
         <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
         <FIELD NAME="sourcetype" TYPE="char" LENGTH="32" NOTNULL="true" SEQUENCE="false"/>
         <FIELD NAME="sourceid" TYPE="int" LENGTH="20" UNSIGNED="true" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="deliveryid" TYPE="int" LENGTH="10" UNSIGNED="true" NOTNULL="false" SEQUENCE="false"/>
         <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
         <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
       </FIELDS>
@@ -69,6 +70,83 @@
       <INDEXES>
         <INDEX NAME="usercourse_src_uix" UNIQUE="true" FIELDS="userid,courseid,sourcetype,sourceid"/>
         <INDEX NAME="courseuser_ix" UNIQUE="false" FIELDS="courseid,userid"/>
+        <INDEX NAME="coursedeliv_ix" UNIQUE="false" FIELDS="courseid,deliveryid"/>
+      </INDEXES>
+    </TABLE>
+    <TABLE NAME="local_rtcsync_deliverycm" COMMENT="Delivery association and availability policy for course modules">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="cmid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="deliveryid" TYPE="int" LENGTH="10" UNSIGNED="true" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="groupingid" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="originalavailability" TYPE="text" NOTNULL="false" SEQUENCE="false"/>
+        <FIELD NAME="managedavailability" TYPE="text" NOTNULL="false" SEQUENCE="false"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+        <KEY NAME="cm_fk" TYPE="foreign" FIELDS="cmid" REFTABLE="course_modules" REFFIELDS="id"/>
+        <KEY NAME="course_fk" TYPE="foreign" FIELDS="courseid" REFTABLE="course" REFFIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="cm_uix" UNIQUE="true" FIELDS="cmid"/>
+        <INDEX NAME="coursedeliv_ix" UNIQUE="false" FIELDS="courseid,deliveryid"/>
+      </INDEXES>
+    </TABLE>
+    <TABLE NAME="local_rtcsync_deliverycmhist" COMMENT="Historical delivery associations for released module grades">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="cmid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="deliveryid" TYPE="int" LENGTH="10" UNSIGNED="true" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="cmcoursedeliv_uix" UNIQUE="true" FIELDS="cmid,courseid,deliveryid"/>
+        <INDEX NAME="coursedeliv_ix" UNIQUE="false" FIELDS="courseid,deliveryid"/>
+      </INDEXES>
+    </TABLE>
+    <TABLE NAME="local_rtcsync_deliverygrade" COMMENT="Delivery mapping for explicitly synchronized grade items">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="gradeitemid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="deliveryid" TYPE="int" LENGTH="10" UNSIGNED="true" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+        <KEY NAME="gradeitem_fk" TYPE="foreign" FIELDS="gradeitemid" REFTABLE="grade_items" REFFIELDS="id"/>
+        <KEY NAME="course_fk" TYPE="foreign" FIELDS="courseid" REFTABLE="course" REFFIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="gradeitem_uix" UNIQUE="true" FIELDS="gradeitemid"/>
+        <INDEX NAME="coursedeliv_ix" UNIQUE="false" FIELDS="courseid,deliveryid"/>
+      </INDEXES>
+    </TABLE>
+    <TABLE NAME="local_rtcsync_deliverycourse" COMMENT="Delivery-managed course backfill state">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="coursevisible" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="1" SEQUENCE="false"/>
+        <FIELD NAME="ready" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="lastcmid" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+        <KEY NAME="course_fk" TYPE="foreign" FIELDS="courseid" REFTABLE="course" REFFIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="course_uix" UNIQUE="true" FIELDS="courseid"/>
+        <INDEX NAME="ready_ix" UNIQUE="false" FIELDS="ready,courseid"/>
       </INDEXES>
     </TABLE>
   </TABLES>

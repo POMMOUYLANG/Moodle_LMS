@@ -29,8 +29,8 @@ if (!$rtcuser || ($rtcuser['account_is_active'] ?? null) !== true) {
 
 $history = new \local_rtcsync\local\student_history();
 $history->require_current_rtc_student($rtcuser);
-$page = max(0, min(1000, optional_param('page', 0, PARAM_INT)));
-$resultpage = $history->visible_results($page);
+$cursor = optional_param('cursor', '', PARAM_ALPHANUMEXT);
+$resultpage = $history->visible_results($cursor);
 
 echo $OUTPUT->header();
 echo $OUTPUT->heading(get_string('studenthistorytitle', 'local_rtcsync'));
@@ -61,15 +61,15 @@ if ($resultpage['results'] === []) {
 }
 
 $navigation = [];
-if ($page > 0) {
+if ($resultpage['hasprevious'] && $resultpage['previouscursor'] !== null) {
     $navigation[] = html_writer::link(
-        new moodle_url('/local/rtcsync/student_history.php', ['page' => $page - 1]),
+        new moodle_url('/local/rtcsync/student_history.php', ['cursor' => $resultpage['previouscursor']]),
         get_string('previous')
     );
 }
-if ($resultpage['hasnext']) {
+if ($resultpage['hasnext'] && $resultpage['nextcursor'] !== null) {
     $navigation[] = html_writer::link(
-        new moodle_url('/local/rtcsync/student_history.php', ['page' => $page + 1]),
+        new moodle_url('/local/rtcsync/student_history.php', ['cursor' => $resultpage['nextcursor']]),
         get_string('next')
     );
 }

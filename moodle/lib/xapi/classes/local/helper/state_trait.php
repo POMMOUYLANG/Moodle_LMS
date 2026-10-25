@@ -80,6 +80,51 @@ trait state_trait {
         return true;
     }
 
+    /** Enforce RTC delivery access when a state operation targets an H5P activity. */
+    private static function require_managed_h5p_activity_access(
+        string $component,
+        string $activityid,
+        int $userid
+    ): void {
+        global $DB;
+
+        if ($component !== 'mod_h5pactivity'
+                || !class_exists('\\local_rtcsync\\local\\delivery_activity_access')
+                || !$DB->get_manager()->table_exists('local_rtcsync_deliverycourse')
+                || !$DB->get_manager()->table_exists('local_rtcsync_deliverycm')) {
+            return;
+        }
+
+        // H5P uses the module context ID as its xAPI activity ID, with an optional subcontent query.
+        $contextid = explode('?', $activityid, 2)[0];
+        if (!ctype_digit($contextid) || (int) $contextid <= 0) {
+            throw new xapi_exception('Invalid H5P activity context');
+        }
+
+        try {
+            $context = \context::instance_by_id((int) $contextid);
+        } catch (\moodle_exception $exception) {
+            throw new xapi_exception('Invalid H5P activity context');
+        }
+        if (!$context instanceof \context_module) {
+            throw new xapi_exception('Invalid H5P activity context');
+        }
+
+        $cm = get_coursemodule_from_id('h5pactivity', $context->instanceid, 0, false);
+        if (!$cm) {
+            throw new xapi_exception('Invalid H5P activity context');
+        }
+
+        $courseid = (int) $cm->course;
+        if (\local_rtcsync\local\delivery_activity_access::is_enabled($courseid)) {
+            \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+                $courseid,
+                (int) $cm->id,
+                $userid
+            );
+        }
+    }
+
     /**
      * Convert the state data JSON into valid object.
      *

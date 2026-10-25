@@ -25,6 +25,83 @@ function local_rtcsync_extend_navigation_course(
 }
 
 /**
+ * Recheck delivery-scoped activity access after Moodle's normal login checks.
+ *
+ * Moodle's activity availability can be edited before the course-module
+ * observer restores the RTC grouping restriction. This request-time check
+ * denies managed Students if that persisted restriction is temporarily
+ * missing or out of sync.
+ *
+ * @param mixed $courseorid Course object or ID supplied by require_login().
+ * @param mixed $autologinguest Whether guest autologin was requested.
+ * @param mixed $cm Course-module info, when the request has a module context.
+ * @param mixed $setwantsurltome Whether the current URL should be retained.
+ * @param mixed $preventredirect Whether redirects are disabled.
+ */
+function local_rtcsync_after_require_login(
+    $courseorid = null,
+    $autologinguest = null,
+    $cm = null,
+    $setwantsurltome = null,
+    $preventredirect = null
+): void {
+    global $PAGE, $USER;
+
+    if (empty($USER->id)) {
+        return;
+    }
+
+    if (is_object($cm) && !empty($cm->id) && !empty($cm->course)) {
+        \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+            (int) $cm->course,
+            (int) $cm->id,
+            (int) $USER->id
+        );
+        return;
+    }
+
+    // Some content-bearing search routes authenticate only at course scope,
+    // then rely on course modinfo when filtering activity results.
+    $courseid = is_object($courseorid)
+        ? (int) ($courseorid->id ?? 0)
+        : (is_numeric($courseorid) ? (int) $courseorid : 0);
+    if ($courseid <= 1
+            && !empty($PAGE->url)
+            && str_ends_with($PAGE->url->get_path(), '/mod/forum/user.php')) {
+        $pageparams = $PAGE->url->params();
+        if (!array_key_exists('course', $pageparams)) {
+            \local_rtcsync\local\delivery_activity_access::require_student_all_managed_course_module_guards(
+                (int) $USER->id
+            );
+        } else if ((int) $pageparams['course'] > 1) {
+            \local_rtcsync\local\delivery_activity_access::require_student_course_module_guards(
+                (int) $pageparams['course'],
+                (int) $USER->id
+            );
+        }
+        return;
+    }
+
+    if ($courseid > 1) {
+        $coursecontext = context_course::instance($courseid);
+        if (has_capability('moodle/grade:viewall', $coursecontext)
+                && !\local_rtcsync\local\delivery_activity_access::is_active_manual_student(
+                    $courseid,
+                    (int) $USER->id
+                )) {
+            // Preserve course-only gradebook staff access. Active manual
+            // Students still receive the delivery course guard below.
+            return;
+        }
+
+        \local_rtcsync\local\delivery_activity_access::require_student_course_module_guards(
+            $courseid,
+            (int) $USER->id
+        );
+    }
+}
+
+/**
  * Add a site-level history entry for RTC Student sessions.
  *
  * Fresh account status and identity are checked again by the target page.

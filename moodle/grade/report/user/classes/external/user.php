@@ -79,6 +79,19 @@ class user extends external_api {
         // Specific capabilities.
         require_capability('gradereport/user:view', $context);
 
+        if ($userid === (int) $USER->id
+                && class_exists('\\local_rtcsync\\local\\delivery_activity_access')
+                && \local_rtcsync\local\delivery_activity_access::should_restrict_grade_report(
+                    (int) $USER->id,
+                    $courseid
+                )) {
+            throw new moodle_exception(
+                'studenthistoryreportonly',
+                'local_rtcsync',
+                new \moodle_url('/local/rtcsync/student_history.php')
+            );
+        }
+
         $user = null;
 
         if (empty($userid)) {

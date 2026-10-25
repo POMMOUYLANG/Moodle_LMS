@@ -25,6 +25,56 @@ defined('MOODLE_INTERNAL') || die();
 
 use core_h5p\local\library\autoloader;
 
+/** Require current RTC delivery access for H5P content stored by an activity module. */
+function core_h5p_require_delivery_activity_access(int $h5pid): void {
+    global $DB, $USER;
+
+    if ($h5pid <= 0
+            || !class_exists('\\local_rtcsync\\local\\delivery_activity_access')
+            || !$DB->get_manager()->table_exists('local_rtcsync_deliverycourse')) {
+        return;
+    }
+
+    $content = $DB->get_record('h5p', ['id' => $h5pid], 'pathnamehash', IGNORE_MISSING);
+    if (!$content) {
+        return;
+    }
+
+    $sourcefile = get_file_storage()->get_file_by_hash((string) $content->pathnamehash);
+    if (!$sourcefile
+            || $sourcefile->get_component() !== 'mod_h5pactivity'
+            || $sourcefile->get_filearea() !== 'package') {
+        return;
+    }
+
+    $sourcecontext = \context::instance_by_id((int) $sourcefile->get_contextid(), IGNORE_MISSING);
+    if (!$sourcecontext || $sourcecontext->contextlevel !== CONTEXT_MODULE) {
+        return;
+    }
+
+    $cmrecord = $DB->get_record('course_modules', [
+        'id' => (int) $sourcecontext->instanceid,
+    ], 'id,course,module', IGNORE_MISSING);
+    $modulename = $cmrecord
+        ? $DB->get_field('modules', 'name', ['id' => (int) $cmrecord->module], IGNORE_MISSING)
+        : false;
+    if (!$cmrecord || $modulename !== 'h5pactivity'
+            || !\local_rtcsync\local\delivery_activity_access::is_enabled((int) $cmrecord->course)) {
+        return;
+    }
+
+    [$course, $cm] = get_course_and_cm_from_cmid((int) $cmrecord->id, 'h5pactivity');
+    require_login($course, false, $cm);
+    if (isguestuser()) {
+        throw new \moodle_exception('activityiscurrentlyhidden', 'moodle');
+    }
+    \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+        (int) $course->id,
+        (int) $cm->id,
+        (int) $USER->id
+    );
+}
+
 /**
  * Serve the files from the core_h5p file areas.
  *
@@ -93,10 +143,20 @@ function core_h5p_pluginfile($course, $cm, $context, string $filearea, array $ar
                 return false; // Invalid context because the content files are loaded always in the context system.
             }
             $itemid = array_shift($args);
+            if (is_numeric($itemid)) {
+                core_h5p_require_delivery_activity_access((int) $itemid);
+            }
             break;
         case \core_h5p\file_storage::CACHED_ASSETS_FILEAREA:
-        case \core_h5p\file_storage::EXPORT_FILEAREA:
         case \core_h5p\file_storage::CSS_FILEAREA:
+            $itemid = 0;
+            break;
+        case \core_h5p\file_storage::EXPORT_FILEAREA:
+            $filename = end($args);
+            if (is_string($filename)
+                    && preg_match('/(?:^|-)([1-9][0-9]*)\.h5p$/i', $filename, $matches) === 1) {
+                core_h5p_require_delivery_activity_access((int) $matches[1]);
+            }
             $itemid = 0;
             break;
     }

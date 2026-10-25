@@ -75,6 +75,7 @@ class delete_states extends external_api {
         if ($user->id != $USER->id) {
             throw new xapi_exception('State agent is not the current user');
         }
+        self::require_managed_h5p_activity_access($component, $activityid, (int) $user->id);
         $handler->wipe_states($activityid, $user->id, null, $registration);
     }
 

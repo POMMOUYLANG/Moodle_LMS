@@ -59,6 +59,14 @@ $functions = [
         'type' => 'write',
         'capabilities' => 'enrol/manual:enrol',
     ],
+    'local_rtcsync_prepare_delivery_course' => [
+        'classname' => 'local_rtcsync_external',
+        'methodname' => 'prepare_delivery_course',
+        'classpath' => 'local/rtcsync/externallib.php',
+        'description' => 'Prepare a managed subject course for delivery-scoped student access and history.',
+        'type' => 'write',
+        'capabilities' => 'moodle/course:update,moodle/course:managegroups,enrol/manual:enrol',
+    ],
     'local_rtcsync_upsert_credit' => [
         'classname' => 'local_rtcsync_external',
         'methodname' => 'upsert_credit',

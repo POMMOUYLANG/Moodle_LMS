@@ -4,6 +4,7 @@ namespace local_rtcsync;
 
 use core\hook\output\before_footer_html_generation;
 use core\hook\output\before_standard_head_html_generation;
+use core\hook\after_config;
 
 defined('MOODLE_INTERNAL') || die();
 
@@ -12,6 +13,12 @@ defined('MOODLE_INTERNAL') || die();
  */
 final class hook_callbacks
 {
+    /** Fail closed before any route runs if grouping availability is disabled. */
+    public static function after_config(after_config $hook): void
+    {
+        \local_rtcsync\local\delivery_activity_access::enforce_availability_lockdown();
+    }
+
     /**
      * Keeps standard Moodle multilingual spans language-specific even when a
      * theme or custom-header renderer bypasses the normal filter pipeline.

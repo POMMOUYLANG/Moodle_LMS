@@ -94,6 +94,17 @@ class gradereport_overview_external extends external_api {
             require_capability('moodle/grade:viewall', $systemcontext);
         }
 
+        // Managed Students use the released-history page instead of cross-course grade totals.
+        if ((int) $USER->id === (int) $userid
+                && class_exists('\local_rtcsync\local\delivery_activity_access')
+                && \local_rtcsync\local\delivery_activity_access::should_restrict_grade_report((int) $USER->id)) {
+            throw new \moodle_exception(
+                'studenthistoryreportonly',
+                'local_rtcsync',
+                new \moodle_url('/local/rtcsync/student_history.php')
+            );
+        }
+
         // We need the site course, and course context.
         $course = get_course(SITEID);
         $context = context_course::instance($course->id);

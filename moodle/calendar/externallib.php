@@ -56,6 +56,30 @@ use core_external\util as external_util;
  * @since Moodle 2.5
  */
 class core_calendar_external extends external_api {
+    /** Filter event metadata to the current RTC delivery before it is exported. */
+    private static function filter_current_delivery_events(array $events, int $userid): array {
+        if (!class_exists('\\local_rtcsync\\local\\delivery_activity_access')) {
+            return $events;
+        }
+
+        $mapper = event_container::get_event_mapper();
+        foreach ($events as $key => $event) {
+            if (!$event instanceof \core_calendar\local\event\entities\event_interface) {
+                unset($events[$key]);
+                continue;
+            }
+            $legacy = $mapper->from_event_to_legacy_event($event);
+            if (!\local_rtcsync\local\delivery_activity_access::calendar_event_is_in_current_delivery(
+                    $legacy,
+                    $userid
+            )) {
+                unset($events[$key]);
+            }
+        }
+
+        return $events;
+    }
+
     /**
      * Returns description of method parameters
      *
@@ -320,6 +344,13 @@ class core_calendar_external extends external_api {
             $eventlist += $eventsbyid;
         }
         foreach ($eventlist as $eventid => $eventobj) {
+            if (class_exists('\\local_rtcsync\\local\\delivery_activity_access')
+                    && !\local_rtcsync\local\delivery_activity_access::calendar_event_is_in_current_delivery(
+                        $eventobj,
+                        (int) $USER->id
+                    )) {
+                continue;
+            }
             $event = (array) $eventobj;
             // Description formatting.
             $calendareventobj = new calendar_event($event);
@@ -473,6 +504,7 @@ class core_calendar_external extends external_api {
             $user,
             clean_param($params['searchvalue'], PARAM_TEXT)
         );
+        $events = self::filter_current_delivery_events($events, (int) $USER->id);
 
         $exportercache = new events_related_objects_cache($events);
         $exporter = new events_exporter($events, ['cache' => $exportercache]);
@@ -561,6 +593,7 @@ class core_calendar_external extends external_api {
             $params['limitnum'],
             clean_param($params['searchvalue'], PARAM_TEXT)
         );
+        $events = self::filter_current_delivery_events($events, (int) $USER->id);
 
         $exportercache = new events_related_objects_cache($events, $courses);
         $exporter = new events_exporter($events, ['cache' => $exportercache]);
@@ -645,6 +678,9 @@ class core_calendar_external extends external_api {
             $params['limitnum'],
             clean_param($params['searchvalue'], PARAM_TEXT)
         );
+        foreach ($events as $courseid => $courseevents) {
+            $events[$courseid] = self::filter_current_delivery_events($courseevents, (int) $USER->id);
+        }
 
         if (empty($events)) {
             return ['groupedbycourse' => []];
@@ -821,7 +857,13 @@ class core_calendar_external extends external_api {
         $eventvault = event_container::get_event_vault();
         if ($event = $eventvault->get_event_by_id($params['eventid'])) {
             $mapper = event_container::get_event_mapper();
-            if (!calendar_view_event_allowed($mapper->from_event_to_legacy_event($event))) {
+            $legacyevent = $mapper->from_event_to_legacy_event($event);
+            if ((class_exists('\\local_rtcsync\\local\\delivery_activity_access')
+                        && !\local_rtcsync\local\delivery_activity_access::calendar_event_is_in_current_delivery(
+                            $legacyevent,
+                            (int) $USER->id
+                        ))
+                    || !calendar_view_event_allowed($legacyevent)) {
                 throw new moodle_exception('nopermissiontoviewcalendar', 'error');
             }
         }

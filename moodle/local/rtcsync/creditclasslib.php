@@ -314,6 +314,36 @@ trait local_rtcsync_credit_class_external
                 $group['name'],
                 'Class group '.((int) $index + 1),
             );
+            if (str_starts_with($class['grouping_idnumber'], 'rtc-delivery-grouping:')) {
+                $deliverymatch = [];
+                $groupmatch = [];
+                $validdeliverygroup = preg_match(
+                    '/^rtc-delivery-grouping:([1-9][0-9]*)$/',
+                    $class['grouping_idnumber'],
+                    $deliverymatch
+                ) === 1;
+                $isdeliverychild = preg_match(
+                    '/^rtc-delivery-class-group:([1-9][0-9]*):([^:]+)$/',
+                    $group['idnumber'],
+                    $groupmatch
+                ) === 1;
+                $islegacyclassgroup = str_starts_with($group['idnumber'], 'rtc-class-group:')
+                    && strlen($group['idnumber']) > strlen('rtc-class-group:');
+                if (!$islegacyclassgroup
+                        && (!$validdeliverygroup
+                            || !$isdeliverychild
+                            || $deliverymatch[1] !== $groupmatch[1])) {
+                    throw new invalid_parameter_exception(
+                        'Delivery child groups must use a matching rtc-delivery-class-group:{deliveryId}:{childGroupId} idnumber.'
+                    );
+                }
+            } else if (!str_starts_with($class['grouping_idnumber'], 'rtc-class-grouping:')
+                    || !str_starts_with($group['idnumber'], 'rtc-class-group:')
+                    || strlen($group['idnumber']) <= strlen('rtc-class-group:')) {
+                throw new invalid_parameter_exception(
+                    'Class child groups must use the rtc-class-group:{childGroupId} idnumber.'
+                );
+            }
         }
         unset($group);
 
@@ -524,25 +554,237 @@ trait local_rtcsync_credit_class_external
             );
         }
 
-        $desiredcourseids = $visible && $groups ? $courseids : [];
+        $deliverygrouping = str_starts_with($groupingidnumber, 'rtc-delivery-grouping:');
+        if ($deliverygrouping && !$visible) {
+            // Keep the delivery grouping shell so historical module mappings
+            // remain resolvable. Empty its groups below so no student retains
+            // activity access through an archived delivery.
+            $groups = [];
+            if (!$courseids) {
+                $courseids = array_map(
+                    static fn(stdClass $record): int => (int) $record->courseid,
+                    $DB->get_records('groupings', ['idnumber' => $groupingidnumber], '', 'id,courseid')
+                );
+            }
+        }
+        $desiredcourseids = $deliverygrouping ? $courseids : ($visible && $groups ? $courseids : []);
+
         $existinggroupings = $DB->get_records('groupings', ['idnumber' => $groupingidnumber]);
         foreach ($existinggroupings as $existinggrouping) {
             if (!in_array((int) $existinggrouping->courseid, $desiredcourseids, true)) {
-                self::delete_class_grouping((int) $existinggrouping->id);
+                if ($deliverygrouping) {
+                    \local_rtcsync\local\delivery_activity_access::synchronize_grouping(
+                        (int) $existinggrouping->courseid,
+                        static function() use ($existinggrouping): void {
+                            if (self::delivery_grouping_has_history_references(
+                                    (int) $existinggrouping->courseid,
+                                    (string) $existinggrouping->idnumber
+                            )) {
+                                // Keep the grouping identity so read-only
+                                // history can still resolve guarded module
+                                // grades after the delivery leaves this course.
+                                self::empty_delivery_grouping((int) $existinggrouping->id);
+                            } else {
+                                self::delete_class_grouping((int) $existinggrouping->id);
+                            }
+                        }
+                    );
+                } else {
+                    \local_rtcsync\local\delivery_activity_access::with_course_access_lock(
+                        (int) $existinggrouping->courseid,
+                        static fn() => self::delete_class_grouping((int) $existinggrouping->id)
+                    );
+                }
             }
         }
 
         $groupcount = 0;
         foreach ($desiredcourseids as $courseid) {
-            $groupcount += self::reconcile_class_grouping_course(
-                $courseid,
-                $groupingidnumber,
-                $groupingname,
-                $groups
-            );
+            if ($deliverygrouping) {
+                \local_rtcsync\local\delivery_activity_access::synchronize_grouping(
+                    (int) $courseid,
+                    static function() use ($courseid, $groupingidnumber, $groupingname, $groups, &$groupcount): void {
+                        $groupcount += self::reconcile_class_grouping_course(
+                            (int) $courseid,
+                            $groupingidnumber,
+                            $groupingname,
+                            $groups
+                        );
+                    }
+                );
+            } else {
+                $groupcount += \local_rtcsync\local\delivery_activity_access::with_course_access_lock(
+                    (int) $courseid,
+                    static fn(): int => self::reconcile_class_grouping_course(
+                        (int) $courseid,
+                        $groupingidnumber,
+                        $groupingname,
+                        $groups
+                    )
+                );
+            }
         }
 
         return ['course_count' => count($desiredcourseids), 'group_count' => $groupcount];
+    }
+
+    /** Whether a delivery grouping is still referenced by retained history or grade mappings. */
+    private static function delivery_grouping_has_history_references(int $courseid, string $groupingidnumber): bool
+    {
+        global $DB;
+
+        if (!preg_match('/^rtc-delivery-grouping:([1-9][0-9]*)$/', $groupingidnumber, $matches)) {
+            return false;
+        }
+        $deliveryid = (int) $matches[1];
+        $manager = $DB->get_manager();
+        if ($manager->table_exists('local_rtcsync_history')
+                && $DB->record_exists('local_rtcsync_history', [
+                    'courseid' => $courseid,
+                    'deliveryid' => $deliveryid,
+                    'sourcetype' => 'delivery_participation',
+                ])) {
+            return true;
+        }
+        if ($manager->table_exists('local_rtcsync_deliverycm')
+                && $DB->record_exists('local_rtcsync_deliverycm', [
+                    'courseid' => $courseid,
+                    'deliveryid' => $deliveryid,
+                ])) {
+            return true;
+        }
+        return $manager->table_exists('local_rtcsync_deliverygrade')
+            && $DB->record_exists('local_rtcsync_deliverygrade', [
+                'courseid' => $courseid,
+                'deliveryid' => $deliveryid,
+            ]);
+    }
+
+    /** Remove group memberships from a delivery grouping while retaining its identity. */
+    private static function empty_delivery_grouping(int $groupingid): void
+    {
+        global $DB;
+
+        $groups = $DB->get_records_sql(
+            'SELECT g.*
+               FROM {groupings_groups} gg
+               JOIN {groups} g ON g.id = gg.groupid
+              WHERE gg.groupingid = :groupingid',
+            ['groupingid' => $groupingid]
+        );
+        $grouping = $DB->get_record('groupings', ['id' => $groupingid], '*', MUST_EXIST);
+        $deliverygrouping = str_starts_with((string) $grouping->idnumber, 'rtc-delivery-grouping:');
+        foreach ($groups as $group) {
+            self::detach_managed_child_group((int) $groupingid, $group, $deliverygrouping);
+        }
+    }
+
+    /** Detach one child group without deleting another grouping's roster. */
+    private static function detach_managed_child_group(
+        int $groupingid,
+        \stdClass $group,
+        bool $deliverygrouping
+    ): void {
+        global $DB;
+
+        $isclassgroup = str_starts_with((string) $group->idnumber, 'rtc-class-group:');
+        $isdeliverygroup = str_starts_with((string) $group->idnumber, 'rtc-delivery-class-group:');
+        if (!$isclassgroup && !$isdeliverygroup) {
+            groups_unassign_grouping($groupingid, (int) $group->id);
+            return;
+        }
+
+        $hasothergrouping = $DB->record_exists_select(
+            'groupings_groups',
+            'groupid = :groupid AND groupingid <> :groupingid',
+            ['groupid' => (int) $group->id, 'groupingid' => $groupingid]
+        );
+        groups_unassign_grouping($groupingid, (int) $group->id);
+
+        if ($deliverygrouping && $isdeliverygroup) {
+            // Scoped groups belong exclusively to this delivery. Empty them
+            // even if a stale class link exists, but retain the group object
+            // until no grouping or availability condition references it.
+            self::remove_child_group_members((int) $group->id);
+            if (!$hasothergrouping
+                    && !self::course_module_availability_references_group(
+                        (int) $group->courseid,
+                        (int) $group->id
+                    )) {
+                groups_delete_group($group);
+            }
+            return;
+        }
+
+        // A legacy class child group remains class-owned when a delivery is
+        // retired. A delivery-scoped child likewise survives accidental
+        // membership in a class grouping; class sync never owns its roster.
+        if (($deliverygrouping && $isclassgroup)
+                || (!$deliverygrouping && $isdeliverygroup)
+                || $hasothergrouping) {
+            return;
+        }
+
+        self::remove_child_group_members((int) $group->id);
+        if (!self::course_module_availability_references_group((int) $group->courseid, (int) $group->id)) {
+            groups_delete_group($group);
+        }
+    }
+
+    /** Remove every user from a managed child group. */
+    private static function remove_child_group_members(int $groupid): void
+    {
+        global $DB;
+
+        $members = $DB->get_fieldset_select(
+            'groups_members',
+            'userid',
+            'groupid = :groupid',
+            ['groupid' => $groupid]
+        );
+        foreach ($members as $userid) {
+            groups_remove_member($groupid, (int) $userid);
+        }
+    }
+
+    /** Whether a module's availability tree refers to this exact course group. */
+    private static function course_module_availability_references_group(int $courseid, int $groupid): bool
+    {
+        global $DB;
+
+        $availabilities = $DB->get_fieldset_select(
+            'course_modules',
+            'availability',
+            'course = :courseid AND availability IS NOT NULL',
+            ['courseid' => $courseid]
+        );
+        foreach ($availabilities as $availability) {
+            $tree = json_decode((string) $availability);
+            if (is_object($tree) && self::availability_tree_references_group($tree, $groupid)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Recursively find a standard group availability condition. */
+    private static function availability_tree_references_group(\stdClass $node, int $groupid): bool
+    {
+        if (($node->type ?? null) === 'group'
+                && isset($node->id)
+                && is_int($node->id)
+                && $node->id === $groupid) {
+            return true;
+        }
+        if (!isset($node->c) || !is_array($node->c)) {
+            return false;
+        }
+        foreach ($node->c as $child) {
+            if (is_object($child) && self::availability_tree_references_group($child, $groupid)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static function reconcile_class_grouping_course(
@@ -561,6 +803,7 @@ trait local_rtcsync_credit_class_external
             'courseid' => $courseid,
             'idnumber' => $groupingidnumber,
         ], '*', IGNORE_MISSING);
+        $deliverygrouping = str_starts_with($groupingidnumber, 'rtc-delivery-grouping:');
         $record = (object) [
             'courseid' => $courseid,
             'name' => $groupingname,
@@ -578,7 +821,7 @@ trait local_rtcsync_credit_class_external
 
         $desiredids = [];
         foreach ($groups as $group) {
-            $desiredids[] = self::upsert_class_group($courseid, $groupingid, $group);
+            $desiredids[] = self::upsert_class_group($courseid, $groupingid, $group, $deliverygrouping);
         }
 
         $assigned = $DB->get_records_sql(
@@ -589,9 +832,10 @@ trait local_rtcsync_credit_class_external
             ['groupingid' => $groupingid]
         );
         foreach ($assigned as $existing) {
-            if (str_starts_with((string) $existing->idnumber, 'rtc-class-group:')
+            if ((str_starts_with((string) $existing->idnumber, 'rtc-class-group:')
+                    || str_starts_with((string) $existing->idnumber, 'rtc-delivery-class-group:'))
                     && !in_array((int) $existing->id, $desiredids, true)) {
-                groups_delete_group($existing);
+                self::detach_managed_child_group($groupingid, $existing, $deliverygrouping);
             }
         }
 
@@ -791,14 +1035,36 @@ trait local_rtcsync_credit_class_external
         }
     }
 
-    private static function upsert_class_group(int $courseid, int $groupingid, array $group): int
+    private static function upsert_class_group(
+        int $courseid,
+        int $groupingid,
+        array $group,
+        bool $deliverygrouping
+    ): int
     {
         global $DB;
 
         $idnumber = trim((string) ($group['idnumber'] ?? ''));
-        if ($idnumber === '' || !str_starts_with($idnumber, 'rtc-class-group:')) {
+        $legacyclassgroup = str_starts_with($idnumber, 'rtc-class-group:')
+            && strlen($idnumber) > strlen('rtc-class-group:');
+        $deliverychildmatch = [];
+        $isdeliverychild = preg_match(
+            '/^rtc-delivery-class-group:([1-9][0-9]*):([^:]+)$/',
+            $idnumber,
+            $deliverychildmatch
+        ) === 1;
+        $validchildid = $deliverygrouping
+            ? ($legacyclassgroup
+                || ($isdeliverychild
+                    && preg_match('/^rtc-delivery-grouping:([1-9][0-9]*)$/',
+                        (string) $DB->get_field('groupings', 'idnumber', ['id' => $groupingid]), $parentmatch) === 1
+                    && $deliverychildmatch[1] === $parentmatch[1]))
+            : $legacyclassgroup;
+        if (!$validchildid) {
             throw new invalid_parameter_exception(
-                'Class group idnumber must use the rtc-class-group: prefix.'
+                $deliverygrouping
+                    ? 'Delivery child group idnumber must match its delivery grouping.'
+                    : 'Class group idnumber must use the rtc-class-group: prefix.'
             );
         }
 
@@ -806,6 +1072,13 @@ trait local_rtcsync_credit_class_external
             'courseid' => $courseid,
             'idnumber' => $idnumber,
         ], '*', IGNORE_MISSING);
+        if ($deliverygrouping
+                && $existing
+                && self::group_has_other_delivery_grouping_assignment((int) $existing->id, $groupingid)) {
+            throw new invalid_parameter_exception(
+                'A Moodle child group cannot be shared by multiple delivery groupings; use a delivery-scoped child-group idnumber.'
+            );
+        }
         $record = (object) [
             'courseid' => $courseid,
             'name' => trim((string) ($group['name'] ?? '')),
@@ -828,15 +1101,21 @@ trait local_rtcsync_credit_class_external
             groups_assign_grouping($groupingid, $groupid);
         }
 
-        $desired = self::valid_userids($group['userids'] ?? [], 'classgroupuser');
-        $existingmembers = array_map('intval', array_keys($DB->get_records(
-            'groups_members', ['groupid' => $groupid], '', 'userid'
-        )));
-        foreach (array_diff($desired, $existingmembers) as $userid) {
-            groups_add_member($groupid, $userid);
-        }
-        foreach (array_diff($existingmembers, $desired) as $userid) {
-            groups_remove_member($groupid, $userid);
+        // Old payloads reused class child groups for delivery rosters. Until
+        // those mappings are migrated, a class sync must never overwrite a
+        // group already assigned to a delivery grouping. New deliveries use
+        // delivery-scoped child IDs and are reconciled by their own sync.
+        if ($deliverygrouping || !self::group_has_delivery_grouping_assignment($groupid)) {
+            $desired = self::valid_userids($group['userids'] ?? [], 'classgroupuser');
+            $existingmembers = array_map('intval', array_keys($DB->get_records(
+                'groups_members', ['groupid' => $groupid], '', 'userid'
+            )));
+            foreach (array_diff($desired, $existingmembers) as $userid) {
+                groups_add_member($groupid, $userid);
+            }
+            foreach (array_diff($existingmembers, $desired) as $userid) {
+                groups_remove_member($groupid, $userid);
+            }
         }
 
         return $groupid;
@@ -846,6 +1125,12 @@ trait local_rtcsync_credit_class_external
     {
         global $DB;
 
+        $grouping = $DB->get_record('groupings', ['id' => $groupingid], '*', IGNORE_MISSING);
+        if (!$grouping) {
+            return;
+        }
+        $deliverygrouping = str_starts_with((string) $grouping->idnumber, 'rtc-delivery-grouping:');
+
         $groups = $DB->get_records_sql(
             'SELECT g.*
                FROM {groupings_groups} gg
@@ -854,11 +1139,35 @@ trait local_rtcsync_credit_class_external
             ['groupingid' => $groupingid]
         );
         foreach ($groups as $group) {
-            if (str_starts_with((string) $group->idnumber, 'rtc-class-group:')) {
-                groups_delete_group($group);
-            }
+            self::detach_managed_child_group($groupingid, $group, $deliverygrouping);
         }
         groups_delete_grouping($groupingid);
+    }
+
+    /** Whether a child group is currently assigned to any delivery grouping. */
+    private static function group_has_delivery_grouping_assignment(int $groupid): bool
+    {
+        return self::group_has_other_delivery_grouping_assignment($groupid, 0);
+    }
+
+    /** Whether another delivery grouping already owns this child group. */
+    private static function group_has_other_delivery_grouping_assignment(int $groupid, int $groupingid): bool
+    {
+        global $DB;
+
+        return $DB->record_exists_sql(
+            'SELECT 1
+               FROM {groupings_groups} gg
+               JOIN {groupings} g ON g.id = gg.groupingid
+              WHERE gg.groupid = :groupid
+                AND gg.groupingid <> :groupingid
+                AND g.idnumber LIKE :deliverypattern',
+            [
+                'groupid' => $groupid,
+                'groupingid' => $groupingid,
+                'deliverypattern' => 'rtc-delivery-grouping:%',
+            ]
+        );
     }
 
     private static function reconcile_credit_role(int $courseid, string $roleshortname, array $desired): void

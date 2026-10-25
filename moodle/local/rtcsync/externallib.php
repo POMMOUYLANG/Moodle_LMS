@@ -96,10 +96,17 @@ class local_rtcsync_external extends external_api
             require_capability('moodle/course:update', $coursecontext);
 
             $data->id = $existing->id;
-            update_course($data);
-            $saved = $DB->get_record('course', ['id' => $existing->id], '*', MUST_EXIST);
+            $saved = \local_rtcsync\local\delivery_activity_access::synchronize_course_metadata(
+                (int) $existing->id,
+                static function() use ($data): void {
+                    update_course($data);
+                },
+                (int) $data->visible
+            );
         } else {
             $saved = create_course($data);
+            \local_rtcsync\local\delivery_activity_access::ensure_grouping_ui_enabled((int) $saved->id);
+            $saved = $DB->get_record('course', ['id' => (int) $saved->id], '*', MUST_EXIST);
         }
 
         return [
@@ -499,6 +506,7 @@ class local_rtcsync_external extends external_api
                 'historyaccess' => new external_value(PARAM_INT, 'Retain read-only history marker.', VALUE_DEFAULT, 0),
                 'historysourcetype' => new external_value(PARAM_ALPHANUMEXT, 'History source type.', VALUE_DEFAULT, ''),
                 'historysourceid' => new external_value(PARAM_INT, 'History source ID.', VALUE_DEFAULT, 0),
+                'deliveryid' => new external_value(PARAM_INT, 'Delivery scope for retained history; 0 for user-program history.', VALUE_DEFAULT, 0),
             ]),
         ]);
     }
@@ -523,28 +531,94 @@ class local_rtcsync_external extends external_api
         $historyaccess = (int) $enrolment['historyaccess'];
         $historysourcetype = trim((string) $enrolment['historysourcetype']);
         $historysourceid = (int) $enrolment['historysourceid'];
+        $deliveryid = (int) $enrolment['deliveryid'];
 
-        self::validate_history_source($historyaccess, $historysourcetype, $historysourceid);
+        self::validate_history_source($historyaccess, $historysourcetype, $historysourceid, $deliveryid);
         $hashistorysource = $historyaccess === 1 || $historysourcetype !== '' || $historysourceid !== 0;
         if ($hashistorysource && $role->shortname !== 'student') {
             throw new invalid_parameter_exception('Read-only history markers are only valid for student enrolments.');
         }
-        if ($historyaccess === 1 && $status !== ENROL_USER_SUSPENDED) {
-            throw new invalid_parameter_exception('Read-only history markers require a suspended enrolment.');
+        if ($historyaccess === 1
+                && (($historysourcetype === 'user_program' && $status !== ENROL_USER_SUSPENDED)
+                    || ($historysourcetype === 'delivery_participation' && $deliveryid <= 0))) {
+            throw new invalid_parameter_exception('User-program history requires a suspended enrolment; delivery history requires a positive delivery ID.');
         }
 
-        $transaction = $DB->start_delegated_transaction();
-        $plugin->enrol_user($instance, (int) $enrolment['userid'], (int) $role->id, 0, 0, $status);
-        if ($historyaccess === 1 || $historysourcetype !== '' || $historysourceid > 0) {
-            \local_rtcsync\local\student_history::sync_marker(
+        $subjectCourseEnrolment = str_starts_with((string) $course->idnumber, 'rtc-subject:');
+        $activeSubjectEnrolment = $subjectCourseEnrolment && $status === ENROL_USER_ACTIVE;
+        $hasHistoryMarker = $historyaccess === 1 || $historysourcetype !== '' || $historysourceid > 0;
+
+        $writeenrolment = static function(bool $accesslockheld) use (
+            $DB,
+            $plugin,
+            $instance,
+            $enrolment,
+            $role,
+            $status,
+            $hasHistoryMarker,
+            $course,
+            $historyaccess,
+            $historysourcetype,
+            $historysourceid,
+            $deliveryid
+        ): void {
+            // Open the transaction only after acquiring the course lock, so a
+            // grouping sync cannot hold the lock while waiting on this write.
+            $transaction = $DB->start_delegated_transaction();
+            $plugin->enrol_user(
+                $instance,
                 (int) $enrolment['userid'],
-                (int) $course->id,
-                $historyaccess,
-                $historysourcetype,
-                $historysourceid
+                (int) $role->id,
+                0,
+                0,
+                $status
             );
+            if ($hasHistoryMarker) {
+                if ($accesslockheld) {
+                    \local_rtcsync\local\student_history::sync_marker_locked(
+                        (int) $enrolment['userid'],
+                        (int) $course->id,
+                        $historyaccess,
+                        $historysourcetype,
+                        $historysourceid,
+                        $deliveryid
+                    );
+                } else {
+                    \local_rtcsync\local\student_history::sync_marker(
+                        (int) $enrolment['userid'],
+                        (int) $course->id,
+                        $historyaccess,
+                        $historysourcetype,
+                        $historysourceid,
+                        $deliveryid
+                    );
+                }
+            }
+            $transaction->allow_commit();
+        };
+
+        if ($activeSubjectEnrolment) {
+            // Readiness and the active enrolment write share one lock. A
+            // concurrent delivery regrouping or availability lockdown cannot
+            // suspend/reconcile the course between these two operations and
+            // then be undone by this enrolment. Commit before releasing that
+            // lock so a concurrent sync also sees and can suspend the row.
+            // This applies to every active subject-course enrolment because
+            // manual enrolment status is shared across the user's course roles.
+            \local_rtcsync\local\delivery_activity_access::with_ready_course(
+                (int) $course->id,
+                static fn() => $writeenrolment(true)
+            );
+        } else if ($subjectCourseEnrolment) {
+            // Suspended subject-course writes also serialize with regrouping
+            // and lockdown, but do not require a ready course.
+            \local_rtcsync\local\delivery_activity_access::with_course_access_lock(
+                (int) $course->id,
+                static fn() => $writeenrolment(true)
+            );
+        } else {
+            $writeenrolment(false);
         }
-        $transaction->allow_commit();
 
         return [
             'courseid' => (int) $course->id,
@@ -574,6 +648,7 @@ class local_rtcsync_external extends external_api
                 'historyaccess' => new external_value(PARAM_INT, 'History access flag; unenrolment cannot retain access.', VALUE_DEFAULT, 0),
                 'historysourcetype' => new external_value(PARAM_ALPHANUMEXT, 'History source type to clear.', VALUE_DEFAULT, ''),
                 'historysourceid' => new external_value(PARAM_INT, 'History source ID to clear.', VALUE_DEFAULT, 0),
+                'deliveryid' => new external_value(PARAM_INT, 'Delivery scope for delivery history; 0 for user-program history.', VALUE_DEFAULT, 0),
             ]),
         ]);
     }
@@ -595,7 +670,8 @@ class local_rtcsync_external extends external_api
         $historyaccess = (int) $enrolment['historyaccess'];
         $historysourcetype = trim((string) $enrolment['historysourcetype']);
         $historysourceid = (int) $enrolment['historysourceid'];
-        self::validate_history_source($historyaccess, $historysourcetype, $historysourceid);
+        $deliveryid = (int) $enrolment['deliveryid'];
+        self::validate_history_source($historyaccess, $historysourcetype, $historysourceid, $deliveryid);
         if ($historyaccess === 1) {
             throw new invalid_parameter_exception('Unenrolment cannot retain read-only history access.');
         }
@@ -603,29 +679,62 @@ class local_rtcsync_external extends external_api
             throw new invalid_parameter_exception('Only student enrolments can clear a history marker.');
         }
 
-        $transaction = $DB->start_delegated_transaction();
-        role_unassign((int) $role->id, (int) $enrolment['userid'], $context->id);
+        // Manual enrolment status is shared across a user's course roles. A
+        // teacher-role unassign can therefore remove the shared enrolment if
+        // it races an active Student write, so serialize every subject-course
+        // role unassign with the same per-course lock.
+        $subjectCourse = str_starts_with((string) $course->idnumber, 'rtc-subject:');
+        $hasHistorySource = $historysourcetype !== '' || $historysourceid > 0;
+        $writeunenrolment = static function(bool $accesslockheld) use (
+            $DB,
+            $role,
+            $enrolment,
+            $context,
+            $course,
+            $hasHistorySource,
+            $historysourcetype,
+            $historysourceid,
+            $deliveryid
+        ): void {
+            // Acquire the course lock before opening the transaction, matching
+            // active/suspended enrolment writes and preventing lock inversion.
+            $transaction = $DB->start_delegated_transaction();
+            role_unassign((int) $role->id, (int) $enrolment['userid'], $context->id);
 
-        $remainingroles = $DB->record_exists('role_assignments', [
-            'userid' => (int) $enrolment['userid'],
-            'contextid' => $context->id,
-        ]);
-        if (!$remainingroles) {
-            $instance = $DB->get_record('enrol', ['courseid' => $course->id, 'enrol' => 'manual'], '*', IGNORE_MISSING);
-            if ($instance) {
-                enrol_get_plugin('manual')->unenrol_user($instance, (int) $enrolment['userid']);
+            $remainingroles = $DB->record_exists('role_assignments', [
+                'userid' => (int) $enrolment['userid'],
+                'contextid' => $context->id,
+            ]);
+            if (!$remainingroles) {
+                $instance = $DB->get_record('enrol', ['courseid' => $course->id, 'enrol' => 'manual'], '*', IGNORE_MISSING);
+                if ($instance) {
+                    enrol_get_plugin('manual')->unenrol_user($instance, (int) $enrolment['userid']);
+                }
             }
-        }
-        if ($historysourcetype !== '' || $historysourceid > 0) {
-            \local_rtcsync\local\student_history::sync_marker(
-                (int) $enrolment['userid'],
+            if ($hasHistorySource) {
+                $syncmarker = $accesslockheld
+                    ? [\local_rtcsync\local\student_history::class, 'sync_marker_locked']
+                    : [\local_rtcsync\local\student_history::class, 'sync_marker'];
+                $syncmarker(
+                    (int) $enrolment['userid'],
+                    (int) $course->id,
+                    0,
+                    $historysourcetype,
+                    $historysourceid,
+                    $deliveryid
+                );
+            }
+            $transaction->allow_commit();
+        };
+
+        if ($subjectCourse) {
+            \local_rtcsync\local\delivery_activity_access::with_course_access_lock(
                 (int) $course->id,
-                0,
-                $historysourcetype,
-                $historysourceid
+                static fn() => $writeunenrolment(true)
             );
+        } else {
+            $writeunenrolment(false);
         }
-        $transaction->allow_commit();
 
         return [
             'courseid' => (int) $course->id,
@@ -654,6 +763,7 @@ class local_rtcsync_external extends external_api
                 'historyaccess' => new external_value(PARAM_INT, '1 to retain history; 0 to clear this source marker.'),
                 'historysourcetype' => new external_value(PARAM_ALPHANUMEXT, 'History source type.'),
                 'historysourceid' => new external_value(PARAM_INT, 'Positive history source ID.'),
+                'deliveryid' => new external_value(PARAM_INT, 'Positive delivery ID for delivery participation; 0 for user-program history.', VALUE_DEFAULT, 0),
             ]),
         ]);
     }
@@ -667,7 +777,8 @@ class local_rtcsync_external extends external_api
         $historyaccess = (int) $history['historyaccess'];
         $historysourcetype = trim((string) $history['historysourcetype']);
         $historysourceid = (int) $history['historysourceid'];
-        self::validate_history_source($historyaccess, $historysourcetype, $historysourceid);
+        $deliveryid = (int) $history['deliveryid'];
+        self::validate_history_source($historyaccess, $historysourcetype, $historysourceid, $deliveryid);
         if ($historysourcetype === '' || $historysourceid <= 0) {
             throw new invalid_parameter_exception('A valid history source type and positive source ID are required.');
         }
@@ -677,15 +788,29 @@ class local_rtcsync_external extends external_api
         self::validate_context($context);
         require_capability('enrol/manual:enrol', $context);
 
-        $transaction = $DB->start_delegated_transaction();
-        \local_rtcsync\local\student_history::sync_marker(
-            (int) $history['userid'],
+        \local_rtcsync\local\delivery_activity_access::with_course_access_lock(
             (int) $course->id,
-            $historyaccess,
-            $historysourcetype,
-            $historysourceid
+            static function() use (
+                $DB,
+                $history,
+                $course,
+                $historyaccess,
+                $historysourcetype,
+                $historysourceid,
+                $deliveryid
+            ): void {
+                $transaction = $DB->start_delegated_transaction();
+                \local_rtcsync\local\student_history::sync_marker_locked(
+                    (int) $history['userid'],
+                    (int) $course->id,
+                    $historyaccess,
+                    $historysourcetype,
+                    $historysourceid,
+                    $deliveryid
+                );
+                $transaction->allow_commit();
+            }
         );
-        $transaction->allow_commit();
 
         return [
             'courseid' => (int) $course->id,
@@ -693,6 +818,7 @@ class local_rtcsync_external extends external_api
             'historyaccess' => $historyaccess,
             'historysourcetype' => $historysourcetype,
             'historysourceid' => $historysourceid,
+            'deliveryid' => $deliveryid,
         ];
     }
 
@@ -704,6 +830,50 @@ class local_rtcsync_external extends external_api
             'historyaccess' => new external_value(PARAM_INT, 'History access flag.'),
             'historysourcetype' => new external_value(PARAM_ALPHANUMEXT, 'History source type.'),
             'historysourceid' => new external_value(PARAM_INT, 'History source ID.'),
+            'deliveryid' => new external_value(PARAM_INT, 'Delivery scope for history.'),
+        ]);
+    }
+
+    /**
+     * Mark a subject course as delivery-managed and run one bounded access pass.
+     *
+     * Laravel must require `ready === true` before syncing active student
+     * enrolments. Incomplete courses remain hidden and active RTC Student
+     * enrolments remain suspended until Moodle's scheduled backfill completes.
+     */
+    public static function prepare_delivery_course_parameters(): external_function_parameters
+    {
+        return new external_function_parameters([
+            'courseid' => new external_value(PARAM_INT, 'RTC-managed subject Moodle course ID.'),
+        ]);
+    }
+
+    public static function prepare_delivery_course(int $courseid): array
+    {
+        $params = self::validate_parameters(
+            self::prepare_delivery_course_parameters(),
+            ['courseid' => $courseid]
+        );
+        $course = local_rtcsync_require_managed_course((int) $params['courseid'], ['rtc-subject:']);
+        $context = context_course::instance((int) $course->id);
+        self::validate_context($context);
+        require_capability('moodle/course:update', $context);
+        require_capability('moodle/course:managegroups', $context);
+        require_capability('enrol/manual:enrol', $context);
+
+        return [
+            'courseid' => (int) $course->id,
+            'plugin_version' => (string) get_config('local_rtcsync', 'version'),
+            'ready' => \local_rtcsync\local\delivery_activity_access::prepare_course((int) $course->id),
+        ];
+    }
+
+    public static function prepare_delivery_course_returns(): external_single_structure
+    {
+        return new external_single_structure([
+            'courseid' => new external_value(PARAM_INT, 'RTC-managed subject Moodle course ID.'),
+            'plugin_version' => new external_value(PARAM_TEXT, 'Installed RTC-Sync plugin database version.'),
+            'ready' => new external_value(PARAM_BOOL, 'True only when all current course modules are delivery-guarded.'),
         ]);
     }
 
@@ -715,6 +885,7 @@ class local_rtcsync_external extends external_api
                 'userid' => new external_value(PARAM_INT, 'Moodle user id.'),
                 'itemname' => new external_value(PARAM_TEXT, 'RTC grade item name.'),
                 'idnumber' => new external_value(PARAM_RAW, 'Stable RTC grade item idnumber.'),
+                'deliveryid' => new external_value(PARAM_INT, 'Delivery scope for this synced score; 0 for legacy/non-delivery scores.', VALUE_DEFAULT, 0),
                 'grade' => new external_value(PARAM_FLOAT, 'Grade value.', VALUE_DEFAULT, null, NULL_ALLOWED),
                 'grademax' => new external_value(PARAM_FLOAT, 'Maximum grade.', VALUE_DEFAULT, 100),
                 'feedback' => new external_value(PARAM_RAW, 'Feedback text.', VALUE_DEFAULT, ''),
@@ -726,6 +897,8 @@ class local_rtcsync_external extends external_api
 
     public static function upsert_grade(array $grade): array
     {
+        global $DB;
+
         $params = self::validate_parameters(self::upsert_grade_parameters(), ['grade' => $grade]);
         $grade = $params['grade'];
 
@@ -739,9 +912,38 @@ class local_rtcsync_external extends external_api
         require_capability('moodle/grade:manage', $context);
         require_capability('moodle/grade:edit', $context);
 
+        return \local_rtcsync\local\delivery_activity_access::with_course_access_lock(
+            (int) $course->id,
+            static function() use ($course, $grade): array {
+        global $DB;
+
+        $deliveryid = (int) $grade['deliveryid'];
+        $idnumber = trim($grade['idnumber']);
+        if ($deliveryid < 0) {
+            throw new invalid_parameter_exception('Delivery ID must be 0 for legacy scores or a positive delivery ID.');
+        }
+        if ($deliveryid > 0) {
+            if (!preg_match('/^rtc-subject:([1-9][0-9]*)$/', (string) $course->idnumber, $subjectmatches)) {
+                throw new invalid_parameter_exception('Delivery-scoped scores require a numeric RTC subject course idnumber.');
+            }
+            $expectedidnumber = 'rtc-subject-score:'.$subjectmatches[1].':delivery:'.$deliveryid;
+            if ($idnumber !== $expectedidnumber) {
+                throw new invalid_parameter_exception('Delivery score idnumber must include the matching subject and delivery IDs.');
+            }
+            if (!$DB->record_exists('groupings', [
+                'courseid' => (int) $course->id,
+                'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
+            ])) {
+                throw new invalid_parameter_exception('Delivery-scoped scores require a matching RTC delivery grouping in the subject course.');
+            }
+        } else if (preg_match('/^rtc-subject-score:[1-9][0-9]*:delivery:[1-9][0-9]*$/', $idnumber)) {
+            throw new invalid_parameter_exception('A delivery-scoped score requires a positive delivery ID.');
+        }
+
+        $transaction = $DB->start_delegated_transaction();
         $item = self::ensure_grade_item(
             (int) $course->id,
-            trim($grade['idnumber']),
+            $idnumber,
             trim($grade['itemname']) ?: 'RTC Final Score',
             (float) $grade['grademax'],
             (int) $grade['hidden'] === 1
@@ -756,13 +958,22 @@ class local_rtcsync_external extends external_api
             FORMAT_PLAIN
         );
 
+        if ($deliveryid > 0) {
+            self::upsert_delivery_grade_mapping((int) $item->id, (int) $course->id, $deliveryid);
+        }
+
+        $transaction->allow_commit();
+
         return [
             'itemid' => (int) $item->id,
             'courseid' => (int) $course->id,
             'userid' => (int) $grade['userid'],
             'grade' => $value,
             'cleared' => (int) $grade['clear'],
+            'deliveryid' => $deliveryid,
         ];
+            }
+        );
     }
 
     public static function upsert_grade_returns(): external_single_structure
@@ -773,6 +984,7 @@ class local_rtcsync_external extends external_api
             'userid' => new external_value(PARAM_INT, 'Moodle user id.'),
             'grade' => new external_value(PARAM_FLOAT, 'Grade value.', VALUE_DEFAULT, null, NULL_ALLOWED),
             'cleared' => new external_value(PARAM_INT, 'Clear flag.'),
+            'deliveryid' => new external_value(PARAM_INT, 'Delivery scope for the score; 0 when unmapped.'),
         ]);
     }
 
@@ -1540,7 +1752,12 @@ class local_rtcsync_external extends external_api
     /**
      * Validate the optional source-scoped history payload before any enrolment write.
      */
-    private static function validate_history_source(int $historyaccess, string $sourcetype, int $sourceid): void
+    private static function validate_history_source(
+        int $historyaccess,
+        string $sourcetype,
+        int $sourceid,
+        int $deliveryid
+    ): void
     {
         if (!in_array($historyaccess, [0, 1], true)) {
             throw new invalid_parameter_exception('History access must be 0 or 1.');
@@ -1548,8 +1765,13 @@ class local_rtcsync_external extends external_api
 
         $hasmarker = $historyaccess === 1 || $sourcetype !== '' || $sourceid !== 0;
         if ($hasmarker && (!in_array($sourcetype, ['user_program', 'delivery_participation'], true)
-                || $sourceid <= 0)) {
+                || $sourceid <= 0
+                || ($sourcetype === 'user_program' && $deliveryid !== 0)
+                || ($sourcetype === 'delivery_participation' && $deliveryid <= 0))) {
             throw new invalid_parameter_exception('A valid history source type and positive source ID are required.');
+        }
+        if (!$hasmarker && $deliveryid !== 0) {
+            throw new invalid_parameter_exception('A delivery ID requires a history source.');
         }
     }
 
@@ -1606,5 +1828,36 @@ class local_rtcsync_external extends external_api
         $item->set_hidden($hidden ? 1 : 0, false);
 
         return $item;
+    }
+
+    /**
+     * Persist an explicit delivery association for one RTC-synced manual grade item.
+     *
+     * @param int $gradeitemid Moodle grade item ID.
+     * @param int $courseid Moodle course ID.
+     * @param int $deliveryid SMS delivery ID.
+     */
+    private static function upsert_delivery_grade_mapping(int $gradeitemid, int $courseid, int $deliveryid): void
+    {
+        global $DB;
+
+        $existing = $DB->get_record('local_rtcsync_deliverygrade', ['gradeitemid' => $gradeitemid], '*', IGNORE_MISSING);
+        if ($existing) {
+            if ((int) $existing->courseid !== $courseid || (int) $existing->deliveryid !== $deliveryid) {
+                throw new invalid_parameter_exception('A synced grade item cannot be reassigned to another delivery.');
+            }
+            $existing->timemodified = time();
+            $DB->update_record('local_rtcsync_deliverygrade', $existing);
+            return;
+        }
+
+        $now = time();
+        $DB->insert_record('local_rtcsync_deliverygrade', (object) [
+            'gradeitemid' => $gradeitemid,
+            'courseid' => $courseid,
+            'deliveryid' => $deliveryid,
+            'timecreated' => $now,
+            'timemodified' => $now,
+        ]);
     }
 }

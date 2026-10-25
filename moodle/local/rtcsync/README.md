@@ -29,9 +29,67 @@ scheduler runs `moodle:import-grades --apply` every five minutes.
 
 Student profile fields include RTC user program ID, program ID/name/Khmer/code/degree/department, generation ID/label/year range, academic year ID/label, study year, user-program promotion, enrollment status/type, previous enrollment ID, and a JSON snapshot of all RTC enrollments for that student.
 
-Soft-deleted RTC subjects are hidden in Moodle and their RTC-managed enrolments are removed. Completed, completed-program, and failed RTC enrolments remain suspended under the existing sync policy. For withdrawn and transferred students, Moodle can retain a suspended enrolment with a source-scoped history marker. Students can open **Released results** from site navigation to view visible, non-null activity or manual grades in courses with grade display enabled. The history view omits hidden-category descendants, category/course aggregate totals, and hidden or not-yet-visible grade rows before pagination. It revalidates the RTC token and active Student identity on each request and sends no-store response headers; it does not reactivate enrolments or expose course activities, submissions, files, or answers. Suspended course enrolments keep activities blocked. Inactive or mismatched RTC accounts are denied. Soft-deleted mapped RTC users are suspended in Moodle. Unpublished or deleted RTC scores clear the synced Moodle grade.
+Soft-deleted RTC subjects are hidden in Moodle and their RTC-managed enrolments are removed. Completed, completed-program, and failed RTC enrolments remain suspended under the existing sync policy. For withdrawn and transferred students, Moodle retains source-scoped markers for released delivery history. Students can open **Released results** from site navigation while their manual enrolment is active or suspended, even when the course is hidden; course visibility and suspended enrolment still block course activities. A course module stays bound to its original delivery once it has been assigned there. If a teacher changes it to another delivery, the plugin preserves its old delivery mapping for released-grade history and places the reused module behind an impossible grouping. Create a separate Moodle activity instance for the new delivery; do not copy learner attempts or submissions. This keeps the prior activity state private while the learner can use the new delivery's activities. The page revalidates the RTC token and active Student identity on each request, sends no-store headers, and does not expose activities, submissions, files, or answers. Delivery-participation history only returns visible, non-null activity grades tied to a module assigned to the matching `rtc-delivery-grouping`, or explicitly synchronized delivery-scoped SMS score items. User-program history remains limited to suspended enrolments. Manual or legacy grade items without a delivery mapping are omitted from delivery history. Hidden-category descendants, category/course aggregate totals, and hidden or not-yet-visible grade rows are excluded before pagination. Inactive or mismatched RTC accounts are denied. Soft-deleted mapped RTC users are suspended in Moodle. Unpublished or deleted RTC scores clear the synced Moodle grade.
 
-History marker writes use `historyaccess` (`0` or `1`), `historysourcetype` (`user_program` or `delivery_participation`), and a positive `historysourceid`. The marker key is Moodle user + course + source type + source ID. `historyaccess=1` requires a suspended manual student enrolment. `historyaccess=0` clears only that source marker. The `local_rtcsync_sync_history_marker` service function records delivery-participation history without changing enrolment; `enrol_user` accepts the same optional fields for user-program history.
+Delivery-aware courses use Moodle's standard availability grouping condition on every activity module. Modules assigned to an exact `rtc-delivery-grouping:<deliveryid>` receive that grouping condition. Untagged modules receive an impossible grouping condition and are inaccessible to students. The first delivery preflight hides the course and suspends active managed Student enrolments while a bounded backfill guards existing modules; the `local_rtcsync_prepare_delivery_course` service returns `ready=false` until the guard is complete. A successful fresh Laravel `syncSubject` reactivates only users in its current authoritative roster; Moodle readiness or a stale grouping snapshot never reactivates users. If the queued sync exhausts its retries, the users remain suspended until the failed Moodle sync is retried from the monitored recovery path. Moodle's scheduled task continues pending backfills. Availability restrictions must be enabled on the Moodle site; otherwise preflight remains fail-closed.
+
+For course-module-scoped `require_login()` requests, the plugin also checks the
+live module row against its persisted delivery mapping and guarded availability.
+This denies Student activity, module-file, and module-context web-service
+requests while an edited or new module is waiting for its observer guard. Staff
+with activity-management or availability-override permissions keep their
+existing access. For course-context requests without a module object, active
+Students in a delivery-managed course are allowed through only when
+every live module has a matching persisted guard and the cached course modinfo
+agrees with the live availability and grouping fields. This protects
+course-content and search routes that filter results using module visibility.
+The global forum post report checks all managed courses for active and suspended
+manual Student enrolments, even though it calls `require_login()` without a
+course. Suspended Students stay on the separate Released results surface and
+cannot use cached forum visibility to read course posts. Managed status comes
+from the plugin's persisted course state or delivery grouping, so changing a
+course's editable `idnumber` cannot disable the runtime guard. Moodle's core
+course-contents web service filters delivery modules before returning metadata
+or descriptions, activity intro attachments check the current delivery, and
+SCORM AICC runtime requests revalidate the exact module for the authenticated
+learner. Feedback item attachments require a module-aware login. Course-context
+APIs that return activity data without a module context and do not apply modinfo
+visibility need their own access check. The standalone Released results page
+does not require course login and remains available under its separate
+identity/history checks.
+
+The User and Overview grade reports, their mobile web services, and the course
+profile grade view are not the retained-history surface; a current RTC Student
+is sent to Released results instead. The site-level or course-level completion
+report is also redirected for the Student's own managed-course history.
+Calendar web services, HTML month/day/upcoming views and blocks, and iCal feeds
+preserve personal, site, and unmanaged-course events, but filter managed-course
+events to current delivery modules. Event-description attachments use the same
+current-delivery check. A module-less group event is shown only when its group
+is the active Student's explicit member of a matching delivery-scoped grouping;
+this depends on the last successful delivery roster sync, so transfer sync-lag
+acceptance remains open. Course events and malformed or unmapped groups stay
+hidden. H5P content-file requests trace the core content ID back to its
+`mod_h5pactivity` package and require the same current module access check;
+H5P statements, state reads/writes/deletes, state-ID listings and bulk state
+deletes also enforce current delivery access for managed H5P activities.
+Package exports use the same guard. H5P content-bank items and unrelated xAPI
+components keep Moodle's normal handling.
+
+Grade-feedback and grade-history-feedback files follow current module access.
+Students can fetch only non-null final marks that are visible now; grade display
+must be enabled, the module item must be visible, and no grade-category ancestor
+may be hidden. `grade:viewall` staff retain gradebook access, while active manual
+Student enrolments still require current module access. Suspended learners use
+Released results for retained marks; that page does not serve feedback files.
+
+Delivery rosters use delivery-scoped child group idnumbers in the form `rtc-delivery-class-group:<deliveryid>:<childgroupid>`. Ordinary class rosters keep `rtc-class-group:<childgroupid>`. This gives each delivery its own Moodle group even when SMS uses the same child group in multiple deliveries; legacy shared class groups are detached safely as new scoped groups arrive.
+
+History marker writes use `historyaccess` (`0` or `1`), `historysourcetype` (`user_program` or `delivery_participation`), a positive `historysourceid`, and `deliveryid` (`0` for suspended user-program history, positive for delivery participation). The marker key is Moodle user + course + source type + source ID; a valid delivery marker also stores its delivery ID. `historyaccess=0` clears only that source marker. `local_rtcsync_sync_history_marker` can retain delivery history for an active or suspended manual Student enrolment; `enrol_user` keeps user-program markers tied to suspended enrolments.
+
+The `local_rtcsync_upsert_grade` payload accepts `deliveryid`. Positive IDs require the exact item idnumber `rtc-subject-score:<subjectid>:delivery:<deliveryid>` and create an idempotent delivery-grade association. `deliveryid=0` preserves legacy subject-wide score sync but does not make that grade visible in delivery history.
+
+The student Released results page uses bidirectional keyset pagination with a maximum of 50 grade rows per request. This keeps deep history pages reachable without increasing SQL offset work; cursor values only choose the page position and every query remains scoped to the signed-in Moodle user.
 
 ## Moodle Setup
 

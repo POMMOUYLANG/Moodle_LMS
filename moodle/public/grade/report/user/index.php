@@ -75,6 +75,15 @@ if (!$access) {
     throw new \moodle_exception('nopermissiontoviewgrades', 'error',  $CFG->wwwroot.'/course/view.php?id='.$courseid);
 }
 
+if (class_exists('\local_rtcsync\local\delivery_activity_access')
+        && ($userid === null || $userid === (int) $USER->id)
+        && \local_rtcsync\local\delivery_activity_access::should_restrict_grade_report(
+            (int) $USER->id,
+            (int) $course->id
+        )) {
+    redirect(new moodle_url('/local/rtcsync/student_history.php'));
+}
+
 // Initialise the grade tracking object.
 $gpr = new grade_plugin_return(['type' => 'report', 'plugin' => 'user', 'courseid' => $courseid, 'userid' => $userid]);
 
