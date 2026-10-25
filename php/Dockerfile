@@ -1,4 +1,6 @@
-FROM php:8.2-fpm
+FROM php:8.2.35-fpm
+
+RUN printf 'session.upload_progress.enabled=0\n' > /usr/local/etc/php/conf.d/zz-rtc-security.ini
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
