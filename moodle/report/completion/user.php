@@ -45,6 +45,19 @@ if ($USER->id != $user->id and has_capability('moodle/user:viewuseractivitiesrep
     require_login($course);
 }
 
+if ($USER->id == $user->id
+        && class_exists('\\local_rtcsync\\local\\delivery_activity_access')
+        && ((int) $course->id === SITEID
+            ? \local_rtcsync\local\delivery_activity_access::has_managed_student_course_membership(
+                (int) $USER->id
+            )
+            : \local_rtcsync\local\delivery_activity_access::is_managed_student_course_member(
+                (int) $course->id,
+                (int) $USER->id
+            ))) {
+    redirect(new moodle_url('/local/rtcsync/student_history.php'));
+}
+
 if (!report_completion_can_access_user_report($user, $course)) {
     // this should never happen
     throw new \moodle_exception('nocapability', 'report_completion');

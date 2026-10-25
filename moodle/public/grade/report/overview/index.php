@@ -78,6 +78,13 @@ if (!$access) {
     throw new \moodle_exception('nopermissiontoviewgrades', 'error',  $CFG->wwwroot.'/course/view.php?id='.$courseid);
 }
 
+// Managed Students use the released-history page instead of cross-course grade totals.
+if ((int) $userid === (int) $USER->id
+        && class_exists('\local_rtcsync\local\delivery_activity_access')
+        && \local_rtcsync\local\delivery_activity_access::should_restrict_grade_report((int) $USER->id)) {
+    redirect(new moodle_url('/local/rtcsync/student_history.php'));
+}
+
 /// return tracking object
 $gpr = new grade_plugin_return(array('type'=>'report', 'plugin'=>'overview', 'courseid'=>$course->id, 'userid'=>$userid));
 

@@ -186,7 +186,21 @@ function feedback_update_instance($feedback) {
  * @return bool false if file not found, does not return if found - justsend the file
  */
 function feedback_pluginfile($course, $cm, $context, $filearea, $args, $forcedownload, array $options=array()) {
-    global $CFG, $DB;
+    global $CFG, $DB, $USER;
+
+    // Apply the delivery guard to authenticated Students without changing the
+    // anonymous front-page feedback path or public course/system templates.
+    if ($context->contextlevel == CONTEXT_MODULE
+            && ($filearea === 'item' || $filearea === 'page_after_submit')
+            && isloggedin() && !isguestuser()
+            && class_exists(\local_rtcsync\local\delivery_activity_access::class)
+            && \local_rtcsync\local\delivery_activity_access::is_enabled((int) $course->id)) {
+        \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+            (int) $course->id,
+            (int) $cm->id,
+            (int) $USER->id
+        );
+    }
 
     if ($filearea === 'item' or $filearea === 'template') {
         $itemid = (int)array_shift($args);

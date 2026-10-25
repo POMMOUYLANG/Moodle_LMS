@@ -97,6 +97,7 @@ class get_states extends external_api {
         }
 
         $activityid = iri::extract($activityiri, 'activity');
+        self::require_managed_h5p_activity_access($component, $activityid, (int) $user->id);
         $createdsince = self::convert_since_param_to_timestamp($since);
         $store = $handler->get_state_store();
 

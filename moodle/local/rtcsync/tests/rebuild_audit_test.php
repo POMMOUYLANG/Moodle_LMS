@@ -57,8 +57,8 @@ final class rebuild_audit_test extends \advanced_testcase
         $this->assertArrayHasKey('rest_protocol_enabled', $acceptance['checks']);
         $this->assertFalse($acceptance['checks']['rest_protocol_enabled']);
         $this->assertIsBool($acceptance['passed']);
-        $this->assertSame('2026100303', $acceptance['required_plugin_version']);
-        $this->assertSame('2026100303', $acceptance['plugin_version']);
+        $this->assertSame('2026102503', $acceptance['required_plugin_version']);
+        $this->assertSame('2026102503', $acceptance['plugin_version']);
         $this->assertTrue($acceptance['checks']['plugin_version_supported']);
         $this->assertTrue($acceptance['checks']['required_profile_fields_present']);
         $this->assertTrue($acceptance['checks']['profile_fields_match_contract']);
@@ -98,11 +98,11 @@ final class rebuild_audit_test extends \advanced_testcase
     public function test_acceptance_rejects_an_older_plugin_contract(): void
     {
         $this->resetAfterTest();
-        set_config('version', '2026100103', 'local_rtcsync');
+        set_config('version', '2026102502', 'local_rtcsync');
 
         $acceptance = rebuild_audit::acceptance();
 
-        $this->assertSame('2026100103', $acceptance['plugin_version']);
+        $this->assertSame('2026102502', $acceptance['plugin_version']);
         $this->assertFalse($acceptance['checks']['plugin_version_supported']);
         $this->assertFalse($acceptance['passed']);
     }

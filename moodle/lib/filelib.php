@@ -4546,7 +4546,35 @@ function file_pluginfile($relativepath, $forcedownload, $preview = null, $offlin
                 send_file_not_found();
             }
 
-            require_login($course, false);
+            $coursecontext = context_course::instance($course->id);
+            $hasgradeviewall = has_capability('moodle/grade:viewall', $coursecontext);
+            $isactivemanualstudent = $DB->record_exists_sql(
+                'SELECT 1
+                   FROM {role_assignments} ra
+                   JOIN {role} r ON r.id = ra.roleid AND r.shortname = :student
+                   JOIN {context} ctx ON ctx.id = ra.contextid
+                   JOIN {enrol} e ON e.courseid = ctx.instanceid AND e.enrol = :manual
+                   JOIN {user_enrolments} ue
+                     ON ue.enrolid = e.id
+                    AND ue.userid = ra.userid
+                    AND ue.status = :active
+                  WHERE ctx.contextlevel = :coursecontext
+                    AND ctx.instanceid = :courseid
+                    AND ra.userid = :userid',
+                [
+                    'student' => 'student',
+                    'manual' => 'manual',
+                    'active' => ENROL_USER_ACTIVE,
+                    'coursecontext' => CONTEXT_COURSE,
+                    'courseid' => $course->id,
+                    'userid' => $USER->id,
+                ]
+            );
+
+            // A gradebook-only staff role historically did not need activity
+            // availability to serve feedback files. Active Students must pass
+            // the exact module so the delivery guard can check current access.
+            require_login($course, false, $hasgradeviewall && !$isactivemanualstudent ? null : $cm);
 
             $gradeid = (int) array_shift($args);
             $filename = array_pop($args);
@@ -4562,9 +4590,57 @@ function file_pluginfile($relativepath, $forcedownload, $preview = null, $offlin
 
             $iscurrentuser = $USER->id == $grade->userid;
 
-            if (!$iscurrentuser) {
-                $coursecontext = context_course::instance($course->id);
-                if (!has_capability('moodle/grade:viewall', $coursecontext)) {
+            if (!$iscurrentuser && !$hasgradeviewall) {
+                send_file_not_found();
+            }
+
+            if ($iscurrentuser && !$hasgradeviewall) {
+                if (empty($cm->id)) {
+                    send_file_not_found();
+                }
+                $now = time();
+                $hiddenCategoryPathPrefix = $DB->sql_concat('hiddencategory.path', "'%'");
+                $visibleitem = $DB->record_exists_sql(
+                    "SELECT 1
+                       FROM {grade_items} gi
+                       JOIN {course} c ON c.id = gi.courseid
+                       JOIN {modules} m ON m.name = gi.itemmodule
+                       JOIN {course_modules} cm
+                         ON cm.course = gi.courseid
+                        AND cm.module = m.id
+                        AND cm.instance = gi.iteminstance
+                       JOIN {grade_categories} itemcategory
+                         ON itemcategory.id = gi.categoryid
+                        AND itemcategory.courseid = gi.courseid
+                      WHERE gi.id = :itemid
+                        AND gi.courseid = :courseid
+                        AND gi.itemtype = :moduleitemtype
+                        AND gi.gradetype IN (:valuegradetype, :scalegradetype)
+                        AND cm.id = :cmid
+                        AND c.showgrades = 1
+                        AND (gi.hidden = 0 OR (gi.hidden <> 1 AND gi.hidden <= :itemvisibleat))
+                        AND NOT EXISTS (
+                            SELECT 1
+                              FROM {grade_categories} hiddencategory
+                             WHERE hiddencategory.courseid = c.id
+                               AND itemcategory.path LIKE {$hiddenCategoryPathPrefix}
+                               AND (hiddencategory.hidden = 1 OR hiddencategory.hidden > :categoryvisibleat)
+                        )",
+                    [
+                        'itemid' => $grade->itemid,
+                        'courseid' => $course->id,
+                        'moduleitemtype' => 'mod',
+                        'valuegradetype' => GRADE_TYPE_VALUE,
+                        'scalegradetype' => GRADE_TYPE_SCALE,
+                        'cmid' => $cm->id,
+                        'itemvisibleat' => $now,
+                        'categoryvisibleat' => $now,
+                    ]
+                );
+                $gradehidden = (int) $grade->hidden;
+                $visiblegrade = $grade->finalgrade !== null
+                    && ($gradehidden === 0 || ($gradehidden !== 1 && $gradehidden <= $now));
+                if (!$visibleitem || !$visiblegrade) {
                     send_file_not_found();
                 }
             }
@@ -4736,6 +4812,15 @@ function file_pluginfile($relativepath, $forcedownload, $preview = null, $offlin
             // b) a group event
             // Group events use the course context (there is no group context)
             if (!$event = $DB->get_record('event', array('id'=>(int)$eventid, 'courseid'=>$course->id))) {
+                send_file_not_found();
+            }
+
+            // Event descriptions can contain attachments with metadata from
+            // an earlier RTC delivery, even when the learner still belongs to
+            // the course or group.
+            if (class_exists(\local_rtcsync\local\delivery_activity_access::class)
+                    && !\local_rtcsync\local\delivery_activity_access::calendar_event_is_in_current_delivery(
+                        $event, (int) $USER->id)) {
                 send_file_not_found();
             }
 
@@ -5285,6 +5370,26 @@ function file_pluginfile($relativepath, $forcedownload, $preview = null, $offlin
 
             // Now check if module is available OR it is restricted but the intro is shown on the course page.
             $cminfo = cm_info::create($cm);
+
+            // Delivery-managed Students may only fetch this intro attachment
+            // when they belong to the activity's current delivery grouping.
+            // Moodle normally allows page-visible intros for unavailable
+            // activities, so keep that behaviour for other courses and for
+            // Students in the activity's own delivery.
+            if (class_exists(\local_rtcsync\local\delivery_activity_access::class)
+                    && isloggedin() && !isguestuser()
+                    && \local_rtcsync\local\delivery_activity_access::is_enabled((int) $course->id)
+                    && \local_rtcsync\local\delivery_activity_access::is_active_manual_student(
+                        (int) $course->id,
+                        (int) $USER->id
+                    )) {
+                \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+                    (int) $course->id,
+                    (int) $cminfo->id,
+                    (int) $USER->id
+                );
+            }
+
             if (!$cminfo->uservisible) {
                 if (!$cm->showdescription || !$cminfo->is_visible_on_course_page()) {
                     // Module intro is not visible on the course page and module is not available, show access error.

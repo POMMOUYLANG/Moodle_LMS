@@ -477,6 +477,23 @@ class user extends grade_report {
      * @return bool
      */
     public function fill_table(): bool {
+        global $USER;
+
+        // This report class is also used by course/user.php and its web services.
+        // Keep the restriction self-only so staff can still view authorized learners.
+        if ((int) $this->user->id === (int) $USER->id
+                && class_exists('\local_rtcsync\local\delivery_activity_access')
+                && \local_rtcsync\local\delivery_activity_access::should_restrict_grade_report(
+                    (int) $USER->id,
+                    (int) $this->courseid
+                )) {
+            throw new \moodle_exception(
+                'studenthistoryreportonly',
+                'local_rtcsync',
+                new \moodle_url('/local/rtcsync/student_history.php')
+            );
+        }
+
         $this->fill_table_recursive($this->gtree->top_element);
         return true;
     }

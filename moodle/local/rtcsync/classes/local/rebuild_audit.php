@@ -10,7 +10,7 @@ defined('MOODLE_INTERNAL') || die();
 final class rebuild_audit
 {
     /** Minimum plugin DB version required by the current backend contract. */
-    private const MINIMUM_SUPPORTED_PLUGIN_VERSION = 2026100303;
+    private const MINIMUM_SUPPORTED_PLUGIN_VERSION = 2026102503;
 
     /**
      * Capabilities that must remain attached to each RTC external function.
@@ -28,6 +28,8 @@ final class rebuild_audit
         'local_rtcsync_sync_category_roles' => 'moodle/role:assign,moodle/category:manage',
         'local_rtcsync_enrol_user' => 'enrol/manual:enrol',
         'local_rtcsync_unenrol_user' => 'enrol/manual:unenrol',
+        'local_rtcsync_sync_history_marker' => 'enrol/manual:enrol',
+        'local_rtcsync_prepare_delivery_course' => 'moodle/course:update,moodle/course:managegroups,enrol/manual:enrol',
         'local_rtcsync_upsert_credit' =>
             'moodle/course:create,moodle/course:update,moodle/course:managegroups,enrol/manual:enrol,enrol/manual:unenrol',
         'local_rtcsync_delete_credit' =>
@@ -101,6 +103,8 @@ final class rebuild_audit
             'local_rtcsync_sync_category_roles',
             'local_rtcsync_enrol_user',
             'local_rtcsync_unenrol_user',
+            'local_rtcsync_sync_history_marker',
+            'local_rtcsync_prepare_delivery_course',
             'local_rtcsync_upsert_credit',
             'local_rtcsync_delete_credit',
             'local_rtcsync_upsert_class',

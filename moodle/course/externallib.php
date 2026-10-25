@@ -155,6 +155,11 @@ class core_course_external extends external_api {
         }
 
         $canupdatecourse = has_capability('moodle/course:update', $context);
+        $filterdeliverymodulecontent = class_exists('\\local_rtcsync\\local\\delivery_activity_access')
+            && \local_rtcsync\local\delivery_activity_access::should_filter_student_course_contents(
+                (int) $course->id,
+                (int) $USER->id
+            );
 
         //create return value
         $coursecontents = array();
@@ -226,6 +231,14 @@ class core_course_external extends external_api {
                     foreach ($modinfosections[$section->section] as $cmid) {
                         $cm = $modinfo->cms[$cmid];
                         $cminfo = cm_info::create($cm);
+                        if ($filterdeliverymodulecontent
+                                && !\local_rtcsync\local\delivery_activity_access::student_module_content_is_in_current_delivery(
+                                    (int) $course->id,
+                                    (int) $cm->id,
+                                    (int) $USER->id
+                                )) {
+                            continue;
+                        }
                         $activitydates = \core\activity_dates::get_dates_for_module($cminfo, $USER->id);
 
                         // Stop here if the module is not visible to the user on the course main page:

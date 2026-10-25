@@ -40,6 +40,26 @@ require_once($CFG->dirroot.'/mod/h5pactivity/lib.php');
  */
 class handler extends handler_base {
 
+    /** Enforce RTC delivery access for a managed H5P activity. */
+    private static function require_managed_delivery_access(\stdClass $cm, int $userid): void {
+        global $DB;
+
+        if (!class_exists('\\local_rtcsync\\local\\delivery_activity_access')
+                || !$DB->get_manager()->table_exists('local_rtcsync_deliverycourse')
+                || !$DB->get_manager()->table_exists('local_rtcsync_deliverycm')) {
+            return;
+        }
+
+        $courseid = (int) $cm->course;
+        if (\local_rtcsync\local\delivery_activity_access::is_enabled($courseid)) {
+            \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+                $courseid,
+                (int) $cm->id,
+                $userid
+            );
+        }
+    }
+
     /**
      * Convert a statement object into a Moodle xAPI Event.
      *
@@ -96,6 +116,8 @@ class handler extends handler_base {
         if (!$cm) {
             return null;
         }
+
+        self::require_managed_delivery_access($cm, (int) $user->id);
 
         $manager = manager::create_from_coursemodule($cm);
 
@@ -173,6 +195,8 @@ class handler extends handler_base {
         if (!$cm) {
             return false;
         }
+
+        self::require_managed_delivery_access($cm, (int) $state->get_user()->id);
 
         // If tracking is not enabled or the user can't submit, the state won't be considered valid.
         $manager = manager::create_from_coursemodule($cm);

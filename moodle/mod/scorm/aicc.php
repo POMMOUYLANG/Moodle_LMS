@@ -77,7 +77,6 @@ if (!empty($command)) {
     } else {
         $attempt = 1;
     }
-    $attemptobject = scorm_get_attempt($aiccuser->id, $scormsession->scormid, $attempt);
     if ($sco = scorm_get_sco($scoid, SCO_ONLY)) {
         if (!$scorm = $DB->get_record('scorm', array('id' => $sco->scorm))) {
             throw new \moodle_exception('cannotcallscript');
@@ -85,6 +84,21 @@ if (!empty($command)) {
     } else {
         throw new \moodle_exception('cannotcallscript');
     }
+    if (!empty($cfgscorm->allowaicchacp)
+            && (empty($scormsession->scormid) || (int) $scormsession->scormid !== (int) $scorm->id)) {
+        throw new \moodle_exception('invalidhacpsession', 'scorm');
+    }
+    [$course, $cm] = get_course_and_cm_from_instance($scorm, 'scorm');
+    if (empty($cfgscorm->allowaicchacp)) {
+        require_login($course, false, $cm);
+    } else if (class_exists('\\local_rtcsync\\local\\delivery_activity_access')) {
+        \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+            (int) $course->id,
+            (int) $cm->id,
+            (int) $aiccuser->id
+        );
+    }
+    $attemptobject = scorm_get_attempt($aiccuser->id, $scorm->id, $attempt);
     $aiccrequest = "MOODLE scoid: $scoid"
                  . "\r\nMOODLE mode: $mode"
                  . "\r\nMOODLE status: $status"

@@ -61,6 +61,16 @@ final class externallib_test extends \advanced_testcase
         return $this->getDataGenerator()->create_course($options);
     }
 
+    /** Create an explicitly named RTC delivery grouping in one subject course. */
+    private function createDeliveryGrouping(\stdClass $course, int $deliveryid): \stdClass
+    {
+        return $this->getDataGenerator()->create_grouping([
+            'courseid' => (int) $course->id,
+            'name' => 'Delivery ' . $deliveryid,
+            'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
+        ]);
+    }
+
     public function test_user_read_returns_only_explicit_idnumbers(): void
     {
         $this->resetAfterTest();
@@ -644,6 +654,746 @@ final class externallib_test extends \advanced_testcase
         ]);
     }
 
+    public function test_standalone_history_marker_writes_are_source_scoped_and_do_not_change_enrolment(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 77);
+        $user = $this->createManagedUser();
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+        $instance = $DB->get_record('enrol', [
+            'courseid' => (int) $course->id,
+            'enrol' => 'manual',
+        ], '*', MUST_EXIST);
+        $context = \context_course::instance((int) $course->id);
+        $enrolmentbefore = $DB->get_record('user_enrolments', [
+            'enrolid' => (int) $instance->id,
+            'userid' => (int) $user->id,
+        ], '*', MUST_EXIST);
+        $rolesbefore = $DB->get_records('role_assignments', [
+            'contextid' => (int) $context->id,
+            'userid' => (int) $user->id,
+        ], 'id ASC');
+
+        $first = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'user_program',
+            'historysourceid' => 101,
+        ]);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 202,
+            'deliveryid' => 77,
+        ]);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 202,
+            'deliveryid' => 77,
+        ]);
+
+        $enrolmentafter = $DB->get_record('user_enrolments', [
+            'enrolid' => (int) $instance->id,
+            'userid' => (int) $user->id,
+        ], '*', MUST_EXIST);
+        $rolesafter = $DB->get_records('role_assignments', [
+            'contextid' => (int) $context->id,
+            'userid' => (int) $user->id,
+        ], 'id ASC');
+
+        $this->assertSame(1, $first['historyaccess']);
+        $this->assertSame(ENROL_USER_SUSPENDED, (int) $enrolmentafter->status);
+        $this->assertEquals($enrolmentbefore, $enrolmentafter);
+        $this->assertEquals($rolesbefore, $rolesafter);
+        $this->assertTrue($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'user_program',
+            'sourceid' => 101,
+        ]));
+        $this->assertFalse($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 202,
+        ]));
+    }
+
+    public function test_history_marker_rejects_invalid_source_type(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse();
+        $user = $this->createManagedUser();
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'unsupported_source',
+            'historysourceid' => 303,
+        ]);
+    }
+
+    public function test_history_marker_rejects_invalid_access_flag(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse();
+        $user = $this->createManagedUser();
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 2,
+            'historysourcetype' => 'user_program',
+            'historysourceid' => 304,
+        ]);
+    }
+
+    public function test_history_marker_cannot_be_set_for_an_active_student_enrolment(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse();
+        $user = $this->createManagedUser();
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
+
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'user_program',
+            'historysourceid' => 305,
+        ]);
+    }
+
+    public function test_delivery_history_marker_is_allowed_for_active_student_enrolment(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 77);
+        $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
+
+        $result = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9201,
+            'deliveryid' => 77,
+        ]);
+
+        $marker = $DB->get_record('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9201,
+        ], '*', MUST_EXIST);
+        $this->assertSame(77, (int) $marker->deliveryid);
+        $this->assertSame(77, (int) $result['deliveryid']);
+    }
+
+    public function test_student_delivery_scope_is_complete_versioned_and_order_independent(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 77);
+        $this->createDeliveryGrouping($course, 78);
+        $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+
+        $dayonefloor = 20261025000000000;
+        $nextdayfloor = 20261026000000000;
+        $access = [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'deliveryids' => [78, 77, 77],
+            'revision' => $dayonefloor,
+        ];
+        $first = \local_rtcsync_external::sync_student_delivery_scope($access);
+        $this->assertSame([77, 78], $first['deliveryids']);
+        $this->assertSame(1, $first['applied']);
+        $this->assertSame('[77,78]', $DB->get_field('local_rtcsync_studentscope', 'deliveryids', [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+        ]));
+
+        $replay = \local_rtcsync_external::sync_student_delivery_scope($access);
+        $this->assertSame(0, $replay['applied']);
+        $this->assertSame([77, 78], $replay['deliveryids']);
+
+        $stale = \local_rtcsync_external::sync_student_delivery_scope([
+            ...$access,
+            'deliveryids' => [77],
+            'revision' => $dayonefloor - 1,
+        ]);
+        $this->assertSame(0, $stale['applied']);
+        $this->assertSame($dayonefloor, $stale['revision']);
+        $this->assertSame([77, 78], $stale['deliveryids']);
+
+        try {
+            \local_rtcsync_external::sync_student_delivery_scope([
+                ...$access,
+                'deliveryids' => [77],
+            ]);
+            $this->fail('A scope revision cannot be reused for a different delivery set.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('revision', $exception->getMessage());
+        }
+
+        $replacement = \local_rtcsync_external::sync_student_delivery_scope([
+            ...$access,
+            'deliveryids' => [78],
+            'revision' => $dayonefloor + 1,
+        ]);
+        $this->assertSame(1, $replacement['applied']);
+        $this->assertSame([78], $replacement['deliveryids']);
+
+        $boundaryreplay = \local_rtcsync_external::sync_student_delivery_scope([
+            ...$access,
+            'deliveryids' => [78],
+            'revision' => $nextdayfloor,
+        ]);
+        $this->assertSame(1, $boundaryreplay['applied']);
+        $this->assertSame([78], $boundaryreplay['deliveryids']);
+
+        $cleared = \local_rtcsync_external::sync_student_delivery_scope([
+            ...$access,
+            'deliveryids' => [],
+            'revision' => $nextdayfloor + 1,
+        ]);
+        $this->assertSame(1, $cleared['applied']);
+        $this->assertSame([], $cleared['deliveryids']);
+        $this->assertSame($nextdayfloor + 1, (int) $DB->get_field('local_rtcsync_studentscope', 'revision', [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+        ]));
+    }
+
+    public function test_subject_role_enrol_and_unenrol_marker_updates_do_not_nest_the_course_access_lock(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 801);
+        $user = $this->createManagedUser();
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9801,
+            'deliveryid' => 801,
+        ]);
+
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+            'historyaccess' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9801,
+            'deliveryid' => 801,
+        ]);
+
+        $this->assertSame(ENROL_USER_ACTIVE, (int) $DB->get_field('user_enrolments', 'status', [
+            'userid' => (int) $user->id,
+        ]));
+        $this->assertFalse($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9801,
+        ]));
+
+        // Teacher unassigns share the same manual enrolment row. Removing a
+        // teacher role must not remove the Student's active course enrolment.
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'editingteacher',
+            'suspend' => 0,
+        ]);
+        \local_rtcsync_external::unenrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'editingteacher',
+        ]);
+        $this->assertTrue($DB->record_exists('user_enrolments', [
+            'userid' => (int) $user->id,
+            'enrolid' => (int) $DB->get_field('enrol', 'id', [
+                'courseid' => (int) $course->id,
+                'enrol' => 'manual',
+            ], MUST_EXIST),
+        ]));
+
+        \local_rtcsync\local\student_history::sync_marker(
+            (int) $user->id,
+            (int) $course->id,
+            1,
+            'delivery_participation',
+            9802,
+            801
+        );
+        \local_rtcsync_external::unenrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9802,
+            'deliveryid' => 801,
+        ]);
+        $this->assertFalse($DB->record_exists('user_enrolments', [
+            'userid' => (int) $user->id,
+            'enrolid' => (int) $DB->get_field('enrol', 'id', [
+                'courseid' => (int) $course->id,
+                'enrol' => 'manual',
+            ], MUST_EXIST),
+        ]));
+        $this->assertFalse($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9802,
+        ]));
+    }
+
+    public function test_teacher_unenrolment_waits_for_the_subject_course_access_lock(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:cross-role-unenrol']);
+        $user = $this->createManagedUser();
+        foreach (['student', 'editingteacher'] as $role) {
+            \local_rtcsync_external::enrol_user([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'role_shortname' => $role,
+                'suspend' => 0,
+            ]);
+        }
+
+        $lockfactory = \core\lock\lock_config::get_lock_factory('local_rtcsync_delivery_access');
+        $lock = $lockfactory->get_lock('course:' . (int) $course->id, 0);
+        $this->assertNotFalse($lock);
+        $timedout = false;
+        try {
+            \local_rtcsync_external::unenrol_user([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'role_shortname' => 'editingteacher',
+            ]);
+        } catch (\moodle_exception $exception) {
+            $timedout = $exception->errorcode === 'locktimeout';
+        } finally {
+            $lock->release();
+        }
+
+        $this->assertTrue($timedout, 'Teacher unassign must wait for the same course lock as active Student writes.');
+        $context = \context_course::instance((int) $course->id);
+        $teacherrole = $DB->get_record('role', ['shortname' => 'editingteacher'], '*', MUST_EXIST);
+        $this->assertTrue($DB->record_exists('role_assignments', [
+            'contextid' => (int) $context->id,
+            'roleid' => (int) $teacherrole->id,
+            'userid' => (int) $user->id,
+        ]));
+        $this->assertTrue($DB->record_exists('user_enrolments', [
+            'userid' => (int) $user->id,
+            'status' => ENROL_USER_ACTIVE,
+        ]));
+    }
+
+    public function test_delivery_score_items_are_idempotent_and_scoped_to_subject_and_delivery(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:314']);
+        $this->createDeliveryGrouping($course, 710);
+        $this->createDeliveryGrouping($course, 711);
+        $user = $this->createManagedUser();
+
+        $first = \local_rtcsync_external::upsert_grade([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Delivery score',
+            'idnumber' => 'rtc-subject-score:314:delivery:710',
+            'deliveryid' => 710,
+            'grade' => 75.0,
+        ]);
+        $updated = \local_rtcsync_external::upsert_grade([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Delivery score',
+            'idnumber' => 'rtc-subject-score:314:delivery:710',
+            'deliveryid' => 710,
+            'grade' => 81.0,
+        ]);
+        $second = \local_rtcsync_external::upsert_grade([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Delivery score',
+            'idnumber' => 'rtc-subject-score:314:delivery:711',
+            'deliveryid' => 711,
+            'grade' => 83.0,
+        ]);
+
+        $this->assertSame($first['itemid'], $updated['itemid']);
+        $this->assertNotSame($first['itemid'], $second['itemid']);
+        $this->assertSame(1, $DB->count_records('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $first['itemid'],
+            'courseid' => (int) $course->id,
+            'deliveryid' => 710,
+        ]));
+        $this->assertSame(1, $DB->count_records('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $second['itemid'],
+            'courseid' => (int) $course->id,
+            'deliveryid' => 711,
+        ]));
+    }
+
+    public function test_delivery_score_rejects_an_idnumber_for_another_delivery(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:315']);
+        $user = $this->createManagedUser();
+
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::upsert_grade([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Delivery score',
+            'idnumber' => 'rtc-subject-score:315:delivery:712',
+            'deliveryid' => 713,
+            'grade' => 75.0,
+        ]);
+    }
+
+    public function test_delivery_score_rejects_missing_or_negative_delivery_grouping(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:316']);
+        $user = $this->createManagedUser();
+
+        try {
+            \local_rtcsync_external::upsert_grade([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'itemname' => 'Missing delivery mapping',
+                'idnumber' => 'rtc-subject-score:316:delivery:714',
+                'deliveryid' => 714,
+                'grade' => 75.0,
+            ]);
+            $this->fail('A delivery score without a matching course grouping must fail closed.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('matching RTC delivery grouping', $exception->getMessage());
+        }
+
+        $this->createDeliveryGrouping($course, 714);
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::upsert_grade([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Negative delivery mapping',
+            'idnumber' => 'rtc-subject-score:316',
+            'deliveryid' => -1,
+            'grade' => 75.0,
+        ]);
+    }
+
+    public function test_delivery_history_marker_requires_matching_course_grouping(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse();
+        $user = $this->createManagedUser();
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9301,
+            'deliveryid' => 799,
+        ]);
+    }
+
+    public function test_delivery_preflight_returns_ready_only_after_course_guard(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('version', '2026102506', 'local_rtcsync');
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:preflight']);
+
+        $result = \local_rtcsync_external::prepare_delivery_course((int) $course->id);
+
+        $this->assertSame('2026102506', $result['plugin_version']);
+        $this->assertTrue($result['ready']);
+        $this->assertTrue($DB->record_exists('local_rtcsync_deliverycourse', [
+            'courseid' => (int) $course->id,
+            'ready' => 1,
+        ]));
+    }
+
+    public function test_archived_delivery_grouping_keeps_history_scope_but_removes_group_membership(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:archive-delivery']);
+        $student = $this->createManagedUser();
+        $payload = [
+            'idnumber' => 'rtc-delivery:901',
+            'name' => '[Delivery] Archive Guard',
+            'delivery_id' => 901,
+            'userids' => [(int) $student->id],
+            'courseids' => [(int) $course->id],
+            'grouping_idnumber' => 'rtc-delivery-grouping:901',
+            'grouping_name' => '[Delivery] Archive Guard',
+            'groups' => [[
+                'idnumber' => 'rtc-class-group:901',
+                'name' => '[Group] Archive Guard',
+                'userids' => [(int) $student->id],
+            ]],
+        ];
+        \local_rtcsync_external::upsert_class($payload + ['visible' => 1]);
+        $grouping = $DB->get_record('groupings', [
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-delivery-grouping:901',
+        ], '*', MUST_EXIST);
+        $this->assertSame(1, $DB->count_records('groupings_groups', ['groupingid' => (int) $grouping->id]));
+
+        \local_rtcsync_external::upsert_class($payload + ['visible' => 0, 'groups' => []]);
+
+        $archivedgrouping = $DB->get_record('groupings', [
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-delivery-grouping:901',
+        ], '*', MUST_EXIST);
+        $this->assertSame((int) $grouping->id, (int) $archivedgrouping->id);
+        $this->assertSame(0, $DB->count_records('groupings_groups', ['groupingid' => (int) $archivedgrouping->id]));
+    }
+
+    public function test_dropped_course_keeps_grouping_shell_for_retained_module_grade_history(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse([
+            'idnumber' => 'rtc-subject:retained-module-history',
+            'showgrades' => 1,
+        ]);
+        $student = $this->createManagedUser();
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $student->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+        $payload = [
+            'idnumber' => 'rtc-delivery:991',
+            'name' => '[Delivery] Retained module history',
+            'delivery_id' => 991,
+            'userids' => [(int) $student->id],
+            'courseids' => [(int) $course->id],
+            'grouping_idnumber' => 'rtc-delivery-grouping:991',
+            'grouping_name' => '[Delivery] Retained module history',
+            'groups' => [[
+                'idnumber' => 'rtc-delivery-class-group:991:991',
+                'name' => '[Group] Retained module history',
+                'userids' => [(int) $student->id],
+            ]],
+        ];
+        \local_rtcsync_external::upsert_class($payload + ['visible' => 1]);
+        $grouping = $DB->get_record('groupings', [
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-delivery-grouping:991',
+        ], '*', MUST_EXIST);
+        $managedgroup = $DB->get_record('groups', [
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-delivery-class-group:991:991',
+        ], '*', MUST_EXIST);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $student->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
+        $this->assertTrue(groups_add_member((int) $managedgroup->id, (int) $student->id));
+        $manualinstance = $DB->get_record('enrol', [
+            'courseid' => (int) $course->id,
+            'enrol' => 'manual',
+        ], '*', MUST_EXIST);
+        enrol_get_plugin('manual')->update_user_enrol(
+            $manualinstance,
+            (int) $student->id,
+            ENROL_USER_SUSPENDED
+        );
+        $groupavailability = json_encode(\core_availability\tree::get_root_json([
+            \availability_group\condition::get_json((int) $managedgroup->id),
+        ]));
+        $quiz = $this->getDataGenerator()->create_module('quiz', [
+            'course' => (int) $course->id,
+            'name' => 'Retained delivery result',
+            'grade' => 100,
+        ], ['availability' => $groupavailability]);
+        $DB->set_field('course_modules', 'groupingid', (int) $grouping->id, ['id' => (int) $quiz->cmid]);
+        \local_rtcsync\local\delivery_activity_access::protect_course_module((int) $quiz->cmid);
+        $mapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $quiz->cmid], '*', MUST_EXIST);
+        $this->assertSame(991, (int) $mapping->deliveryid);
+        $this->assertSame((int) $grouping->id, (int) $mapping->groupingid);
+
+        $gradeitem = \grade_item::fetch([
+            'courseid' => (int) $course->id,
+            'itemtype' => 'mod',
+            'itemmodule' => 'quiz',
+            'iteminstance' => (int) $quiz->id,
+            'itemnumber' => 0,
+        ]);
+        $this->assertNotFalse($gradeitem);
+        $gradeitem->itemname = 'Retained delivery result';
+        $gradeitem->grademax = 100;
+        $gradeitem->update();
+        $gradeitem->update_final_grade((int) $student->id, 88.0, 'retained-delivery-test');
+        \local_rtcsync\local\student_history::sync_marker(
+            (int) $student->id,
+            (int) $course->id,
+            1,
+            'delivery_participation',
+            9802,
+            991
+        );
+
+        \local_rtcsync_external::upsert_class(array_merge($payload, [
+            'visible' => 1,
+            'courseids' => [],
+            'groups' => [],
+        ]));
+
+        $retainedgrouping = $DB->get_record('groupings', [
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-delivery-grouping:991',
+        ], '*', MUST_EXIST);
+        $this->assertSame((int) $grouping->id, (int) $retainedgrouping->id);
+        $this->assertSame(0, $DB->count_records('groupings_groups', ['groupingid' => (int) $retainedgrouping->id]));
+        $this->assertTrue($DB->record_exists('groups', ['id' => (int) $managedgroup->id]));
+        $this->assertStringContainsString('"id":' . (int) $managedgroup->id, (string) $DB->get_field(
+            'course_modules',
+            'availability',
+            ['id' => (int) $quiz->cmid]
+        ));
+        // This delivery-owned child group is emptied but kept because the
+        // teacher's availability condition still references its ID.
+        $this->assertFalse($DB->record_exists('groups_members', ['groupid' => (int) $managedgroup->id]));
+        $this->assertSame(991, (int) $DB->get_field('local_rtcsync_deliverycm', 'deliveryid', ['cmid' => (int) $quiz->cmid]));
+
+        $this->setUser($student);
+        $history = new \local_rtcsync\local\student_history();
+        $results = $history->visible_results();
+        $this->assertSame(['Retained delivery result'], array_column($results['results'], 'item'));
+        $this->assertSame(88.0, $results['results'][0]['grade']);
+    }
+
+    public function test_delivery_history_requires_positive_delivery_scope(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse();
+        $user = $this->createManagedUser();
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9202,
+        ]);
+    }
+
     public function test_system_role_sync_manages_only_approved_component_assignments(): void
     {
         global $DB;
@@ -1105,6 +1855,175 @@ final class externallib_test extends \advanced_testcase
             'grouping_name' => '[Class] Valid grouping',
             'groups' => [],
         ]);
+    }
+
+    public function test_delivery_owned_child_group_has_scoped_identity_and_survives_class_cleanup(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:delivery-roster-ownership']);
+        $classuser = $this->createManagedUser();
+        $deliveryuser = $this->createManagedUser();
+        $staleclassuser = $this->createManagedUser();
+        foreach ([$classuser, $deliveryuser, $staleclassuser] as $user) {
+            \local_rtcsync_external::enrol_user([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'role_shortname' => 'student',
+                'suspend' => 0,
+            ]);
+        }
+
+        $classpayload = [
+            'idnumber' => 'rtc-class:roster-owner',
+            'name' => '[Class] Roster Owner',
+            'visible' => 1,
+            'userids' => [(int) $classuser->id, (int) $deliveryuser->id, (int) $staleclassuser->id],
+            'courseids' => [(int) $course->id],
+            'grouping_idnumber' => 'rtc-class-grouping:roster-owner',
+            'grouping_name' => '[Class] Roster Owner',
+            'groups' => [[
+                'idnumber' => 'rtc-class-group:37',
+                'name' => '[Group] 37',
+                'userids' => [(int) $classuser->id],
+            ]],
+        ];
+        \local_rtcsync_external::upsert_class($classpayload);
+
+        $deliverypayload = [
+            'idnumber' => 'rtc-delivery:7037',
+            'name' => '[Delivery] Roster Owner',
+            'delivery_id' => 7037,
+            'visible' => 1,
+            'userids' => [(int) $classuser->id, (int) $deliveryuser->id, (int) $staleclassuser->id],
+            'courseids' => [(int) $course->id],
+            'grouping_idnumber' => 'rtc-delivery-grouping:7037',
+            'grouping_name' => '[Delivery] Roster Owner',
+            'groups' => [[
+                'idnumber' => 'rtc-delivery-class-group:7037:37',
+                'name' => '[Delivery Group] 37',
+                'userids' => [(int) $deliveryuser->id],
+            ]],
+        ];
+        \local_rtcsync_external::upsert_class($deliverypayload);
+
+        // A later class sync with an old/stale cohort roster must not rewrite
+        // the delivery-owned child roster. The shared SMS child ID maps to a
+        // separate Moodle group for each owner.
+        \local_rtcsync_external::upsert_class(array_merge($classpayload, [
+            'groups' => [[
+                'idnumber' => 'rtc-class-group:37',
+                'name' => '[Group] 37',
+                'userids' => [(int) $staleclassuser->id],
+            ]],
+        ]));
+
+        $classgroup = $DB->get_record('groups', [
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-class-group:37',
+        ], '*', MUST_EXIST);
+        $deliverygroup = $DB->get_record('groups', [
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-delivery-class-group:7037:37',
+        ], '*', MUST_EXIST);
+        $this->assertSame([(int) $staleclassuser->id], array_map('intval', array_keys($DB->get_records(
+            'groups_members', ['groupid' => (int) $classgroup->id], '', 'userid'
+        ))));
+        $this->assertSame([(int) $deliveryuser->id], array_map('intval', array_keys($DB->get_records(
+            'groups_members', ['groupid' => (int) $deliverygroup->id], '', 'userid'
+        ))));
+
+        // Exercise a legacy shared class-group ID during migration. Delivery
+        // sync owns its roster while linked; a subsequent class payload with
+        // a stale roster must leave that delivery roster untouched.
+        $legacypayload = array_merge($deliverypayload, [
+            'idnumber' => 'rtc-delivery:7038',
+            'delivery_id' => 7038,
+            'grouping_idnumber' => 'rtc-delivery-grouping:7038',
+            'grouping_name' => '[Delivery] Legacy roster owner',
+            'groups' => [[
+                'idnumber' => 'rtc-class-group:37',
+                'name' => '[Group] 37',
+                'userids' => [(int) $deliveryuser->id],
+            ]],
+        ]);
+        \local_rtcsync_external::upsert_class($legacypayload);
+        \local_rtcsync_external::upsert_class(array_merge($classpayload, [
+            'groups' => [[
+                'idnumber' => 'rtc-class-group:37',
+                'name' => '[Group] 37',
+                'userids' => [(int) $staleclassuser->id],
+            ]],
+        ]));
+        $this->assertSame([(int) $deliveryuser->id], array_map('intval', array_keys($DB->get_records(
+            'groups_members', ['groupid' => (int) $classgroup->id], '', 'userid'
+        ))));
+        $sharedlegacygrouprejected = false;
+        try {
+            \local_rtcsync_external::upsert_class(array_merge($legacypayload, [
+                'idnumber' => 'rtc-delivery:7039',
+                'delivery_id' => 7039,
+                'grouping_idnumber' => 'rtc-delivery-grouping:7039',
+                'grouping_name' => '[Delivery] Must use a scoped group',
+            ]));
+        } catch (\invalid_parameter_exception $exception) {
+            $sharedlegacygrouprejected = str_contains($exception->getMessage(), 'cannot be shared by multiple delivery groupings');
+        }
+        $this->assertTrue($sharedlegacygrouprejected);
+
+        // Retiring the legacy delivery detaches its link without deleting or
+        // clearing the class-owned child group and its preserved roster.
+        \local_rtcsync_external::upsert_class(array_merge($legacypayload, [
+            'courseids' => [],
+            'groups' => [],
+        ]));
+        $classgrouping = $DB->get_record('groupings', [
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-class-grouping:roster-owner',
+        ], '*', MUST_EXIST);
+        $this->assertTrue($DB->record_exists('groupings_groups', [
+            'groupingid' => (int) $classgrouping->id,
+            'groupid' => (int) $classgroup->id,
+        ]));
+        $this->assertTrue($DB->record_exists('groups_members', [
+            'groupid' => (int) $classgroup->id,
+            'userid' => (int) $deliveryuser->id,
+        ]));
+
+        // Even a stale cross-link from a legacy class grouping must not let
+        // class cleanup delete a delivery-owned group or its roster.
+        $deliverygrouping = $DB->get_record('groupings', [
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-delivery-grouping:7037',
+        ], '*', MUST_EXIST);
+        groups_assign_grouping((int) $classgrouping->id, (int) $deliverygroup->id);
+        \local_rtcsync_external::upsert_class(array_merge($classpayload, [
+            'courseids' => [],
+            'groups' => [],
+        ]));
+
+        $this->assertTrue($DB->record_exists('groups', ['id' => (int) $deliverygroup->id]));
+        $this->assertTrue($DB->record_exists('groupings_groups', [
+            'groupingid' => (int) $deliverygrouping->id,
+            'groupid' => (int) $deliverygroup->id,
+        ]));
+        $this->assertTrue($DB->record_exists('groups_members', [
+            'groupid' => (int) $deliverygroup->id,
+            'userid' => (int) $deliveryuser->id,
+        ]));
+
+        // Archiving the delivery now empties its scoped roster but keeps the
+        // delivery grouping shell; the group object is deleted because no
+        // module availability condition references it.
+        \local_rtcsync_external::upsert_class(array_merge($deliverypayload, ['visible' => 0]));
+        $this->assertFalse($DB->record_exists('groups', ['id' => (int) $deliverygroup->id]));
+        $this->assertTrue($DB->record_exists('groupings', [
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-delivery-grouping:7037',
+        ]));
     }
 
     public function test_class_payload_accepts_delivery_identity_metadata(): void

@@ -1364,7 +1364,7 @@ class calendar_information {
  */
 function calendar_get_events($tstart, $tend, $users, $groups, $courses,
         $withduration = true, $ignorehidden = true, $categories = []) {
-    global $DB;
+    global $DB, $USER;
 
     $whereclause = '';
     $params = array();
@@ -1464,6 +1464,19 @@ function calendar_get_events($tstart, $tend, $users, $groups, $courses,
     if ($events === false) {
         $events = array();
     }
+
+    // Legacy callers can read events directly from the database without the
+    // calendar API's current-delivery visibility callback.
+    if (class_exists(\local_rtcsync\local\delivery_activity_access::class)) {
+        $userid = (int) ($USER->id ?? 0);
+        foreach ($events as $eventid => $event) {
+            if (!\local_rtcsync\local\delivery_activity_access::calendar_event_is_in_current_delivery(
+                    $event, $userid)) {
+                unset($events[$eventid]);
+            }
+        }
+    }
+
     return $events;
 }
 
@@ -2772,6 +2785,8 @@ function core_calendar_user_preferences() {
  */
 function calendar_get_legacy_events($tstart, $tend, $users, $groups, $courses,
         $withduration = true, $ignorehidden = true, $categories = [], $limitnum = 0) {
+    global $USER;
+
     // Normalise the users, groups and courses parameters so that they are compliant with \core_calendar\local\api::get_events().
     // Existing functions that were using the old calendar_get_events() were passing a mixture of array, int, boolean for these
     // parameters, but with the new API method, only null and arrays are accepted.
@@ -2818,9 +2833,23 @@ function calendar_get_legacy_events($tstart, $tend, $users, $groups, $courses,
         $ignorehidden
     );
 
-    return array_reduce($events, function($carry, $event) use ($mapper) {
+    $legacyevents = array_reduce($events, function($carry, $event) use ($mapper) {
         return $carry + [$event->get_id() => $mapper->from_event_to_stdclass($event)];
     }, []);
+
+    // iCal export and other legacy consumers use this representation, which
+    // otherwise bypasses calendar_get_view()'s event visibility callback.
+    if (class_exists(\local_rtcsync\local\delivery_activity_access::class)) {
+        $userid = (int) ($USER->id ?? 0);
+        foreach ($legacyevents as $eventid => $event) {
+            if (!\local_rtcsync\local\delivery_activity_access::calendar_event_is_in_current_delivery(
+                    $event, $userid)) {
+                unset($legacyevents[$eventid]);
+            }
+        }
+    }
+
+    return $legacyevents;
 }
 
 
@@ -2836,7 +2865,7 @@ function calendar_get_legacy_events($tstart, $tend, $users, $groups, $courses,
  */
 function calendar_get_view(\calendar_information $calendar, $view, $includenavigation = true, bool $skipevents = false,
         ?int $lookahead = null) {
-    global $PAGE, $CFG;
+    global $PAGE, $CFG, $USER;
 
     $renderer = $PAGE->get_renderer('core_calendar');
     $type = \core_calendar\type_factory::get_calendar_instance();
@@ -2913,6 +2942,8 @@ function calendar_get_view(\calendar_information $calendar, $view, $includenavig
     if ($skipevents) {
         $events = [];
     } else {
+        $mapper = \core_calendar\local\event\container::get_event_mapper();
+        $userid = (int) ($USER->id ?? 0);
         $events = \core_calendar\local\api::get_events(
             $tstart,
             $tend,
@@ -2928,7 +2959,13 @@ function calendar_get_view(\calendar_information $calendar, $view, $includenavig
             $categoryparam,
             true,
             true,
-            function ($event) {
+            function ($event) use ($mapper, $userid) {
+                if (class_exists(\local_rtcsync\local\delivery_activity_access::class)
+                        && !\local_rtcsync\local\delivery_activity_access::calendar_event_is_in_current_delivery(
+                            $mapper->from_event_to_stdclass($event), $userid)) {
+                    return false;
+                }
+
                 if ($proxy = $event->get_course_module()) {
                     $cminfo = $proxy->get_proxied_instance();
                     return $cminfo->uservisible;
