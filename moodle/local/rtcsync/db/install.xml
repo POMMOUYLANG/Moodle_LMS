@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<XMLDB PATH="local/rtcsync/db" VERSION="2026102502" COMMENT="XMLDB file for RTC Sync">
+<XMLDB PATH="local/rtcsync/db" VERSION="2026102506" COMMENT="XMLDB file for RTC Sync">
   <TABLES>
     <TABLE NAME="local_rtcsync_formcfg" COMMENT="Per-course SMS formative sync configuration">
       <FIELDS>
@@ -147,6 +147,25 @@
       <INDEXES>
         <INDEX NAME="course_uix" UNIQUE="true" FIELDS="courseid"/>
         <INDEX NAME="ready_ix" UNIQUE="false" FIELDS="ready,courseid"/>
+      </INDEXES>
+    </TABLE>
+    <TABLE NAME="local_rtcsync_studentscope" COMMENT="Current active delivery scope for each managed Student in a subject course">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="userid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="deliveryids" TYPE="text" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="revision" TYPE="int" LENGTH="18" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+        <KEY NAME="course_fk" TYPE="foreign" FIELDS="courseid" REFTABLE="course" REFFIELDS="id"/>
+        <KEY NAME="user_fk" TYPE="foreign" FIELDS="userid" REFTABLE="user" REFFIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="courseuser_uix" UNIQUE="true" FIELDS="courseid,userid"/>
       </INDEXES>
     </TABLE>
   </TABLES>

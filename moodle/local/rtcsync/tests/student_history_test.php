@@ -7,7 +7,7 @@ use PHPUnit\Framework\Attributes\CoversClass;
 defined('MOODLE_INTERNAL') || die();
 
 /**
- * Tests for the read-only student released-history page data boundary.
+ * Tests for the read-only student released-history page and activity boundary.
  */
 #[CoversClass(\local_rtcsync\local\student_history::class)]
 final class student_history_test extends \advanced_testcase
@@ -639,6 +639,169 @@ final class student_history_test extends \advanced_testcase
         $this->assertFalse($moduleinfo->get_cm($cmid)->uservisible);
         $this->assertTrue($moduleinfo->get_cm((int) $newquiz->cmid)->uservisible);
         $this->assertTrue(is_enrolled(\context_course::instance((int) $course->id), $student['user'], '', true));
+    }
+
+    public function test_delivery_scope_denies_stale_activity_but_keeps_old_released_result(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $student = $this->createHistoryStudent('delivery-scope-switch');
+        $course = $student['course'];
+        $DB->delete_records('local_rtcsync_history', [
+            'userid' => (int) $student['user']->id,
+            'courseid' => (int) $course->id,
+        ]);
+        $previousgrouping = $this->getDataGenerator()->create_grouping([
+            'courseid' => (int) $course->id,
+            'name' => 'Previous delivery',
+            'idnumber' => 'rtc-delivery-grouping:771',
+        ]);
+        $currentgrouping = $this->getDataGenerator()->create_grouping([
+            'courseid' => (int) $course->id,
+            'name' => 'Current delivery',
+            'idnumber' => 'rtc-delivery-grouping:772',
+        ]);
+        $previousgroup = $this->getDataGenerator()->create_group([
+            'courseid' => (int) $course->id,
+            'name' => 'Previous delivery group',
+            'idnumber' => 'rtc-delivery-class-group:771:1',
+        ]);
+        $currentgroup = $this->getDataGenerator()->create_group([
+            'courseid' => (int) $course->id,
+            'name' => 'Current delivery group',
+            'idnumber' => 'rtc-delivery-class-group:772:1',
+        ]);
+        groups_assign_grouping((int) $previousgrouping->id, (int) $previousgroup->id);
+        groups_assign_grouping((int) $currentgrouping->id, (int) $currentgroup->id);
+        $this->assertTrue(groups_add_member((int) $previousgroup->id, (int) $student['user']->id));
+        $this->assertTrue(groups_add_member((int) $currentgroup->id, (int) $student['user']->id));
+
+        $previousquiz = $this->getDataGenerator()->create_module('quiz', [
+            'course' => (int) $course->id,
+            'name' => 'Previous delivery activity',
+            'grade' => 100,
+        ], ['availability' => $this->groupingAvailability([(int) $previousgrouping->id])]);
+        $currentquiz = $this->getDataGenerator()->create_module('quiz', [
+            'course' => (int) $course->id,
+            'name' => 'Current delivery activity',
+            'grade' => 100,
+        ], ['availability' => $this->groupingAvailability([(int) $currentgrouping->id])]);
+        $this->assertTrue(\local_rtcsync\local\delivery_activity_access::prepare_course((int) $course->id));
+
+        $manualinstance = $DB->get_record('enrol', [
+            'courseid' => (int) $course->id,
+            'enrol' => 'manual',
+        ], '*', MUST_EXIST);
+        enrol_get_plugin('manual')->update_user_enrol(
+            $manualinstance,
+            (int) $student['user']->id,
+            ENROL_USER_ACTIVE
+        );
+
+        $previousgrade = \grade_item::fetch([
+            'courseid' => (int) $course->id,
+            'itemtype' => 'mod',
+            'itemmodule' => 'quiz',
+            'iteminstance' => (int) $previousquiz->id,
+            'itemnumber' => 0,
+        ]);
+        $this->assertNotFalse($previousgrade);
+        $previousgrade->itemname = 'Previous delivery released result';
+        $previousgrade->update();
+        $previousgrade->update_final_grade((int) $student['user']->id, 81.0, 'student-history-test');
+        \local_rtcsync\local\student_history::sync_marker(
+            (int) $student['user']->id,
+            (int) $course->id,
+            1,
+            'delivery_participation',
+            9711,
+            771
+        );
+
+        $initial = \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $student['user']->id,
+            'deliveryids' => [771],
+            'revision' => 20261025000000000,
+        ]);
+        $this->assertSame([771], $initial['deliveryids']);
+        $this->assertSame(1, $initial['applied']);
+        $this->assertSame(771, (int) $DB->get_field('local_rtcsync_deliverycm', 'deliveryid', ['cmid' => (int) $previousquiz->cmid]));
+        $this->assertSame(772, (int) $DB->get_field('local_rtcsync_deliverycm', 'deliveryid', ['cmid' => (int) $currentquiz->cmid]));
+        $this->assertTrue($DB->record_exists('groups_members', [
+            'groupid' => (int) $previousgroup->id,
+            'userid' => (int) $student['user']->id,
+        ]));
+        $this->assertTrue($DB->record_exists('groups_members', [
+            'groupid' => (int) $currentgroup->id,
+            'userid' => (int) $student['user']->id,
+        ]));
+
+        \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+            (int) $course->id,
+            (int) $previousquiz->cmid,
+            (int) $student['user']->id
+        );
+        \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $student['user']->id,
+            'deliveryids' => [772],
+            'revision' => 20261025000000001,
+        ]);
+
+        try {
+            \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+                (int) $course->id,
+                (int) $previousquiz->cmid,
+                (int) $student['user']->id
+            );
+            $this->fail('A stale grouping membership must not keep the previous delivery activity open.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('activityiscurrentlyhidden', $exception->errorcode);
+        }
+        \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+            (int) $course->id,
+            (int) $currentquiz->cmid,
+            (int) $student['user']->id
+        );
+        $this->assertFalse(\local_rtcsync\local\delivery_activity_access::student_module_content_is_in_current_delivery(
+            (int) $course->id,
+            (int) $previousquiz->cmid,
+            (int) $student['user']->id
+        ));
+        $this->assertTrue(\local_rtcsync\local\delivery_activity_access::student_module_content_is_in_current_delivery(
+            (int) $course->id,
+            (int) $currentquiz->cmid,
+            (int) $student['user']->id
+        ));
+        $this->assertFalse(\local_rtcsync\local\delivery_activity_access::calendar_event_is_in_current_delivery((object) [
+            'courseid' => (int) $course->id,
+            'eventtype' => 'group',
+            'groupid' => (int) $previousgroup->id,
+        ], (int) $student['user']->id));
+        $this->assertTrue(\local_rtcsync\local\delivery_activity_access::calendar_event_is_in_current_delivery((object) [
+            'courseid' => (int) $course->id,
+            'eventtype' => 'group',
+            'groupid' => (int) $currentgroup->id,
+        ], (int) $student['user']->id));
+        try {
+            \local_rtcsync\local\delivery_activity_access::require_student_course_module_guards(
+                (int) $course->id,
+                (int) $student['user']->id
+            );
+            $this->fail('Course-wide search must fail closed while a stale previous-delivery module remains visible.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('activityiscurrentlyhidden', $exception->errorcode);
+        }
+
+        $this->setUser($student['user']);
+        $history = new \local_rtcsync\local\student_history();
+        $results = $history->visible_results();
+        $this->assertSame(['Previous delivery released result'], array_column($results['results'], 'item'));
+        $this->assertSame(81.0, $results['results'][0]['grade']);
     }
 
     public function test_delivery_course_stays_locked_until_bounded_module_backfill_finishes(): void

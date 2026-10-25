@@ -15,6 +15,8 @@ defined('MOODLE_INTERNAL') || die();
 final class delivery_activity_access
 {
     public const MODULE_PAGE_SIZE = 100;
+    /** Minimum versioned contract revision accepted from SMS. */
+    private const MIN_STUDENT_SCOPE_REVISION = 2026102505;
     private const LOCK_TYPE = 'local_rtcsync_delivery_access';
     private const LOCK_WAIT_SECONDS = 1;
 
@@ -206,6 +208,13 @@ final class delivery_activity_access
         if (!$module || !self::has_current_module_guard($module, false)) {
             $deny();
         }
+        if (!self::student_delivery_scope_allows(
+            $courseid,
+            $userid,
+            (int) $module->deliveryid
+        )) {
+            $deny();
+        }
 
         // The direct membership query avoids any group-visibility filtering:
         // Moodle's grouping availability condition also checks actual membership.
@@ -349,6 +358,7 @@ final class delivery_activity_access
         if (count($modules) !== count($cachedmodules)) {
             $deny();
         }
+        $currentdeliveryids = self::student_current_delivery_scope($courseid, $userid);
 
         foreach ($modules as $module) {
             $cmid = (int) $module->id;
@@ -357,6 +367,16 @@ final class delivery_activity_access
                     || !$cachedmodule
                     || $cachedmodule->availability !== $module->liveavailability
                     || (int) $cachedmodule->groupingid !== (int) $module->livegroupingid) {
+                $deny();
+            }
+
+            $deliveryid = (int) $module->deliveryid;
+            if ($deliveryid > 0
+                    && ($currentdeliveryids === null || !in_array($deliveryid, $currentdeliveryids, true))
+                    && $cachedmodule->uservisible) {
+                // A stale Moodle grouping can still make the module visible in
+                // modinfo. Fail closed for course-wide search until roster sync
+                // removes that stale membership.
                 $deny();
             }
 
@@ -656,6 +676,10 @@ final class delivery_activity_access
                 return false;
             }
 
+            if (!self::student_delivery_scope_allows($courseid, $userid, (int) $groupingmatch[1])) {
+                return false;
+            }
+
             $matched = true;
         }
 
@@ -929,7 +953,8 @@ final class delivery_activity_access
         );
         if (!$module
                 || (int) $module->deliveryid <= 0
-                || !self::has_current_module_guard($module, false)) {
+                || !self::has_current_module_guard($module, false)
+                || !self::student_delivery_scope_allows($courseid, $userid, (int) $module->deliveryid)) {
             return false;
         }
 
@@ -989,6 +1014,176 @@ final class delivery_activity_access
             && $deliveryid === 0
             && $groupingid < 0
             && $module->groupingidnumber === null;
+    }
+
+    /**
+     * Apply one complete SMS-authoritative delivery scope for a managed Student.
+     * The caller must hold the course access lock and a delegated transaction.
+     *
+     * @param array<int, int> $deliveryids Complete set of active delivery IDs.
+     * @return array{courseid:int,userid:int,revision:int,applied:int,deliveryids:array<int,int>}
+     */
+    public static function sync_student_delivery_scope_locked(
+        int $courseid,
+        int $userid,
+        array $deliveryids,
+        int $revision
+    ): array {
+        global $DB;
+
+        if ($courseid <= 1 || $userid <= 1 || $revision < self::MIN_STUDENT_SCOPE_REVISION) {
+            throw new \invalid_parameter_exception('A valid course, user, and supported scope revision are required.');
+        }
+        if (!$DB->get_manager()->table_exists('local_rtcsync_studentscope')) {
+            throw new \moodle_exception('Delivery access scope storage is not ready.');
+        }
+
+        $state = $DB->get_record(
+            'local_rtcsync_deliverycourse',
+            ['courseid' => $courseid],
+            'ready',
+            IGNORE_MISSING
+        );
+        if (!$state || (int) $state->ready !== 1) {
+            throw new \invalid_parameter_exception('The delivery-managed course is not ready for access scopes.');
+        }
+
+        $normalizedids = [];
+        foreach ($deliveryids as $deliveryid) {
+            $deliveryid = (int) $deliveryid;
+            if ($deliveryid <= 0) {
+                throw new \invalid_parameter_exception('Delivery IDs must be positive integers.');
+            }
+            $normalizedids[$deliveryid] = $deliveryid;
+        }
+        $normalizedids = array_values($normalizedids);
+        sort($normalizedids, SORT_NUMERIC);
+
+        $existing = $DB->get_record('local_rtcsync_studentscope', [
+            'courseid' => $courseid,
+            'userid' => $userid,
+        ], '*', IGNORE_MISSING);
+        if ($existing && $revision < (int) $existing->revision) {
+            $currentids = self::decode_student_delivery_scope((string) $existing->deliveryids);
+            if ($currentids === null) {
+                throw new \moodle_exception('The stored student delivery scope is invalid.');
+            }
+
+            return [
+                'courseid' => $courseid,
+                'userid' => $userid,
+                'revision' => (int) $existing->revision,
+                'applied' => 0,
+                'deliveryids' => $currentids,
+            ];
+        }
+
+        if ($existing && $revision === (int) $existing->revision) {
+            $currentids = self::decode_student_delivery_scope((string) $existing->deliveryids);
+            if ($currentids === null || $currentids !== $normalizedids) {
+                throw new \invalid_parameter_exception('A scope revision cannot be reused for a different delivery set.');
+            }
+
+            return [
+                'courseid' => $courseid,
+                'userid' => $userid,
+                'revision' => $revision,
+                'applied' => 0,
+                'deliveryids' => $currentids,
+            ];
+        }
+
+        foreach ($normalizedids as $deliveryid) {
+            $groupingidnumber = 'rtc-delivery-grouping:' . $deliveryid;
+            if (!$DB->record_exists('groupings', [
+                'courseid' => $courseid,
+                'idnumber' => $groupingidnumber,
+            ])) {
+                throw new \invalid_parameter_exception('Every active delivery must have a grouping in this course.');
+            }
+        }
+
+        $now = time();
+        $values = (object) [
+            'courseid' => $courseid,
+            'userid' => $userid,
+            'deliveryids' => json_encode($normalizedids, JSON_THROW_ON_ERROR),
+            'revision' => $revision,
+            'timemodified' => $now,
+        ];
+        if ($existing) {
+            $values->id = (int) $existing->id;
+            $DB->update_record('local_rtcsync_studentscope', $values);
+        } else {
+            $values->timecreated = $now;
+            $DB->insert_record('local_rtcsync_studentscope', $values);
+        }
+
+        return [
+            'courseid' => $courseid,
+            'userid' => $userid,
+            'revision' => $revision,
+            'applied' => 1,
+            'deliveryids' => $normalizedids,
+        ];
+    }
+
+    /** Whether one delivery is in the current complete scope from SMS. */
+    private static function student_delivery_scope_allows(int $courseid, int $userid, int $deliveryid): bool
+    {
+        if ($deliveryid <= 0) {
+            return false;
+        }
+
+        $deliveryids = self::student_current_delivery_scope($courseid, $userid);
+
+        return $deliveryids !== null && in_array($deliveryid, $deliveryids, true);
+    }
+
+    /**
+     * Read the current complete scope, or null when no trustworthy scope exists.
+     *
+     * @return array<int, int>|null
+     */
+    private static function student_current_delivery_scope(int $courseid, int $userid): ?array
+    {
+        global $DB;
+
+        if ($courseid <= 1 || $userid <= 1
+                || !$DB->get_manager()->table_exists('local_rtcsync_studentscope')) {
+            return null;
+        }
+
+        $scope = $DB->get_record('local_rtcsync_studentscope', [
+            'courseid' => $courseid,
+            'userid' => $userid,
+        ], 'deliveryids', IGNORE_MISSING);
+        if (!$scope) {
+            return null;
+        }
+
+        return self::decode_student_delivery_scope((string) $scope->deliveryids);
+    }
+
+    /** @return array<int, int>|null */
+    private static function decode_student_delivery_scope(string $encoded): ?array
+    {
+        $deliveryids = json_decode($encoded, true);
+        if (!is_array($deliveryids) || !array_is_list($deliveryids)) {
+            return null;
+        }
+
+        $normalizedids = [];
+        foreach ($deliveryids as $deliveryid) {
+            if (!is_int($deliveryid) || $deliveryid <= 0) {
+                return null;
+            }
+            $normalizedids[$deliveryid] = $deliveryid;
+        }
+        $normalizedids = array_values($normalizedids);
+        sort($normalizedids, SORT_NUMERIC);
+
+        return $normalizedids;
     }
 
     /** Ensure the availability tree's top-level AND requires this exact grouping. */

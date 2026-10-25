@@ -834,6 +834,67 @@ class local_rtcsync_external extends external_api
         ]);
     }
 
+    public static function sync_student_delivery_scope_parameters(): external_function_parameters
+    {
+        return new external_function_parameters([
+            'access' => new external_single_structure([
+                'courseid' => new external_value(PARAM_INT, 'RTC-managed subject course ID.'),
+                'userid' => new external_value(PARAM_INT, 'RTC-managed Moodle user ID.'),
+                'deliveryids' => new external_multiple_structure(
+                    new external_value(PARAM_INT, 'Currently eligible SMS delivery ID.'),
+                    'Complete set of currently eligible deliveries for this learner and subject.'
+                ),
+                'revision' => new external_value(PARAM_INT, 'Monotonic SMS delivery-scope revision.'),
+            ]),
+        ]);
+    }
+
+    public static function sync_student_delivery_scope(array $access): array
+    {
+        global $DB;
+
+        $params = self::validate_parameters(
+            self::sync_student_delivery_scope_parameters(),
+            ['access' => $access]
+        );
+        $access = $params['access'];
+        $course = local_rtcsync_require_managed_course((int) $access['courseid'], ['rtc-subject:']);
+        local_rtcsync_require_managed_user((int) $access['userid']);
+        $context = context_course::instance((int) $course->id);
+        self::validate_context($context);
+        require_capability('enrol/manual:enrol', $context);
+
+        return \local_rtcsync\local\delivery_activity_access::with_course_access_lock(
+            (int) $course->id,
+            static function() use ($DB, $access, $course): array {
+                $transaction = $DB->start_delegated_transaction();
+                $result = \local_rtcsync\local\delivery_activity_access::sync_student_delivery_scope_locked(
+                    (int) $course->id,
+                    (int) $access['userid'],
+                    $access['deliveryids'],
+                    (int) $access['revision']
+                );
+                $transaction->allow_commit();
+
+                return $result;
+            }
+        );
+    }
+
+    public static function sync_student_delivery_scope_returns(): external_single_structure
+    {
+        return new external_single_structure([
+            'courseid' => new external_value(PARAM_INT, 'RTC-managed subject course ID.'),
+            'userid' => new external_value(PARAM_INT, 'RTC-managed Moodle user ID.'),
+            'revision' => new external_value(PARAM_INT, 'Effective Moodle delivery-scope revision.'),
+            'applied' => new external_value(PARAM_INT, 'Whether this request replaced the stored scope.'),
+            'deliveryids' => new external_multiple_structure(
+                new external_value(PARAM_INT, 'Effective active delivery ID.'),
+                'Effective sorted active delivery IDs.'
+            ),
+        ]);
+    }
+
     /**
      * Mark a subject course as delivery-managed and run one bounded access pass.
      *

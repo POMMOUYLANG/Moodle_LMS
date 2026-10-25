@@ -841,6 +841,87 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame(77, (int) $result['deliveryid']);
     }
 
+    public function test_student_delivery_scope_is_complete_versioned_and_order_independent(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 77);
+        $this->createDeliveryGrouping($course, 78);
+        $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+
+        $dayonefloor = 20261025000000000;
+        $nextdayfloor = 20261026000000000;
+        $access = [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'deliveryids' => [78, 77, 77],
+            'revision' => $dayonefloor,
+        ];
+        $first = \local_rtcsync_external::sync_student_delivery_scope($access);
+        $this->assertSame([77, 78], $first['deliveryids']);
+        $this->assertSame(1, $first['applied']);
+        $this->assertSame('[77,78]', $DB->get_field('local_rtcsync_studentscope', 'deliveryids', [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+        ]));
+
+        $replay = \local_rtcsync_external::sync_student_delivery_scope($access);
+        $this->assertSame(0, $replay['applied']);
+        $this->assertSame([77, 78], $replay['deliveryids']);
+
+        $stale = \local_rtcsync_external::sync_student_delivery_scope([
+            ...$access,
+            'deliveryids' => [77],
+            'revision' => $dayonefloor - 1,
+        ]);
+        $this->assertSame(0, $stale['applied']);
+        $this->assertSame($dayonefloor, $stale['revision']);
+        $this->assertSame([77, 78], $stale['deliveryids']);
+
+        try {
+            \local_rtcsync_external::sync_student_delivery_scope([
+                ...$access,
+                'deliveryids' => [77],
+            ]);
+            $this->fail('A scope revision cannot be reused for a different delivery set.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('revision', $exception->getMessage());
+        }
+
+        $replacement = \local_rtcsync_external::sync_student_delivery_scope([
+            ...$access,
+            'deliveryids' => [78],
+            'revision' => $dayonefloor + 1,
+        ]);
+        $this->assertSame(1, $replacement['applied']);
+        $this->assertSame([78], $replacement['deliveryids']);
+
+        $boundaryreplay = \local_rtcsync_external::sync_student_delivery_scope([
+            ...$access,
+            'deliveryids' => [78],
+            'revision' => $nextdayfloor,
+        ]);
+        $this->assertSame(1, $boundaryreplay['applied']);
+        $this->assertSame([78], $boundaryreplay['deliveryids']);
+
+        $cleared = \local_rtcsync_external::sync_student_delivery_scope([
+            ...$access,
+            'deliveryids' => [],
+            'revision' => $nextdayfloor + 1,
+        ]);
+        $this->assertSame(1, $cleared['applied']);
+        $this->assertSame([], $cleared['deliveryids']);
+        $this->assertSame($nextdayfloor + 1, (int) $DB->get_field('local_rtcsync_studentscope', 'revision', [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+        ]));
+    }
+
     public function test_subject_role_enrol_and_unenrol_marker_updates_do_not_nest_the_course_access_lock(): void
     {
         global $DB;
@@ -1114,13 +1195,13 @@ final class externallib_test extends \advanced_testcase
 
         $this->resetAfterTest();
         $this->setAdminUser();
-        set_config('version', '2026102504', 'local_rtcsync');
+        set_config('version', '2026102506', 'local_rtcsync');
         set_config('enableavailability', 1);
         $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:preflight']);
 
         $result = \local_rtcsync_external::prepare_delivery_course((int) $course->id);
 
-        $this->assertSame('2026102504', $result['plugin_version']);
+        $this->assertSame('2026102506', $result['plugin_version']);
         $this->assertTrue($result['ready']);
         $this->assertTrue($DB->record_exists('local_rtcsync_deliverycourse', [
             'courseid' => (int) $course->id,

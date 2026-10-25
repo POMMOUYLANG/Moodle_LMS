@@ -379,5 +379,42 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         upgrade_plugin_savepoint(true, 2026102504, 'local', 'rtcsync');
     }
 
+    if ($oldversion < 2026102505) {
+        $dbman = $DB->get_manager();
+        $studentscope = new xmldb_table('local_rtcsync_studentscope');
+        $studentscope->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $studentscope->add_field('courseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $studentscope->add_field('userid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $studentscope->add_field('deliveryids', XMLDB_TYPE_TEXT, null, null, XMLDB_NOTNULL);
+        $studentscope->add_field('revision', XMLDB_TYPE_INTEGER, '18', null, XMLDB_NOTNULL, null, '0');
+        $studentscope->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $studentscope->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $studentscope->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $studentscope->add_key('course_fk', XMLDB_KEY_FOREIGN, ['courseid'], 'course', ['id']);
+        $studentscope->add_key('user_fk', XMLDB_KEY_FOREIGN, ['userid'], 'user', ['id']);
+        $studentscope->add_index('courseuser_uix', XMLDB_INDEX_UNIQUE, ['courseid', 'userid']);
+        if (!$dbman->table_exists($studentscope)) {
+            $dbman->create_table($studentscope);
+        }
+
+        // No scope rows are backfilled from Moodle memberships: those rows may
+        // still contain a learner's previous delivery. Missing scope therefore
+        // fails closed until SMS synchronizes the learner's current delivery set.
+        upgrade_plugin_savepoint(true, 2026102505, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026102506) {
+        $dbman = $DB->get_manager();
+        $studentscope = new xmldb_table('local_rtcsync_studentscope');
+        $revision = new xmldb_field('revision', XMLDB_TYPE_INTEGER, '18', null, XMLDB_NOTNULL, null, '0');
+        if ($dbman->field_exists($studentscope, $revision)) {
+            // The SMS date floor is YYYYMMDD * 1,000,000,000; a signed
+            // 64-bit column is required to retain that value and increments.
+            $dbman->change_field_precision($studentscope, $revision);
+        }
+
+        upgrade_plugin_savepoint(true, 2026102506, 'local', 'rtcsync');
+    }
+
     return true;
 }

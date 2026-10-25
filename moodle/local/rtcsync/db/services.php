@@ -59,6 +59,14 @@ $functions = [
         'type' => 'write',
         'capabilities' => 'enrol/manual:enrol',
     ],
+    'local_rtcsync_sync_student_delivery_scope' => [
+        'classname' => 'local_rtcsync_external',
+        'methodname' => 'sync_student_delivery_scope',
+        'classpath' => 'local/rtcsync/externallib.php',
+        'description' => 'Replace one managed Student course delivery-access scope using a monotonic source revision.',
+        'type' => 'write',
+        'capabilities' => 'enrol/manual:enrol',
+    ],
     'local_rtcsync_prepare_delivery_course' => [
         'classname' => 'local_rtcsync_external',
         'methodname' => 'prepare_delivery_course',
