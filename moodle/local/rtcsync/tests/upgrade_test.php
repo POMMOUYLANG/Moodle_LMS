@@ -57,17 +57,25 @@ final class upgrade_test extends \advanced_testcase
             XMLDB_INDEX_NOTUNIQUE,
             ['userid', 'courseid']
         );
+        $courseuserindex = new \xmldb_index(
+            'courseuser_uix',
+            XMLDB_INDEX_UNIQUE,
+            ['courseid', 'userid']
+        );
         $deliverymember = new \xmldb_table('local_rtcsync_deliverymember');
 
         $this->assertTrue($dbman->table_exists($studentscope));
         $this->assertTrue($dbman->table_exists($deliverymember));
 
-        // The current install schema already has these additions. Remove only those two
-        // artifacts to model a site upgrading from the immediately prior plugin version.
+        // Model the prior schema with only its course-first unique index. XMLDB drop_index()
+        // removes every index with the same column set, regardless of order or uniqueness.
         $dbman->drop_table($deliverymember);
         if ($dbman->index_exists($studentscope, $usercourseindex)) {
             $dbman->drop_index($studentscope, $usercourseindex);
         }
+        $dbman->add_index($studentscope, $courseuserindex);
+        $this->assertTrue($this->has_index_with_columns('local_rtcsync_studentscope', ['courseid', 'userid'], true));
+        $this->assertFalse($this->has_index_with_columns('local_rtcsync_studentscope', ['userid', 'courseid'], false));
 
         $oldversion = 2026102506;
         set_config('version', (string) $oldversion, 'local_rtcsync');
@@ -77,10 +85,8 @@ final class upgrade_test extends \advanced_testcase
         foreach (['id', 'courseid', 'groupid', 'userid', 'timecreated'] as $field) {
             $this->assertTrue($dbman->field_exists($deliverymember, $field), $field);
         }
-        $this->assertTrue($dbman->index_exists(
-            $studentscope,
-            new \xmldb_index('usercourse_ix', XMLDB_INDEX_NOTUNIQUE, ['userid', 'courseid'])
-        ));
+        $this->assertTrue($this->has_index_with_columns('local_rtcsync_studentscope', ['userid', 'courseid'], false));
+        $this->assertTrue($this->has_index_with_columns('local_rtcsync_studentscope', ['courseid', 'userid'], true));
         $this->assertTrue($dbman->index_exists(
             $deliverymember,
             new \xmldb_index('groupuser_uix', XMLDB_INDEX_UNIQUE, ['groupid', 'userid'])
@@ -111,5 +117,19 @@ final class upgrade_test extends \advanced_testcase
         set_config('version', (string) $oldversion, 'local_rtcsync');
         $this->assertTrue(xmldb_local_rtcsync_upgrade($oldversion));
         $this->assertSame('2026102700', (string) get_config('local_rtcsync', 'version'));
+    }
+
+    private function has_index_with_columns(string $table, array $columns, bool $unique): bool
+    {
+        global $DB;
+
+        foreach ($DB->get_indexes($table) as $index) {
+            if ((bool) ($index['unique'] ?? false) === $unique
+                && array_values($index['columns'] ?? []) === $columns) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

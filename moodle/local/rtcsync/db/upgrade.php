@@ -474,7 +474,7 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         // XMLDB index_exists()/add_index() match on the column set only, ignoring order and
         // uniqueness, so the unique (courseid, userid) index makes them treat the reverse
         // (userid, courseid) lookup index as present and skip it. Check the exact ordered
-        // columns and create that index directly under the name install.xml would generate.
+        // columns, then use the XMLDB generator directly to preserve database-specific SQL.
         $studentscope = new xmldb_table('local_rtcsync_studentscope');
         if ($dbman->table_exists($studentscope)) {
             $hasusercourseindex = false;
@@ -485,9 +485,10 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
                 }
             }
             if (!$hasusercourseindex) {
+                $usercourseindex = new xmldb_index('usercourse_ix', XMLDB_INDEX_NOTUNIQUE, ['userid', 'courseid']);
                 $DB->change_database_structure(
-                    'CREATE INDEX ' . $CFG->prefix . 'locartcsstud_usecou_ix ON '
-                    . $CFG->prefix . 'local_rtcsync_studentscope (userid, courseid)'
+                    $dbman->generator->getAddIndexSQL($studentscope, $usercourseindex),
+                    [$studentscope->getName()],
                 );
             }
         }
