@@ -152,7 +152,7 @@ final class student_history
         ]);
         $email = function_exists('rtc_sso_normalize_verified_email')
             ? rtc_sso_normalize_verified_email((string) ($rtcuser['email'] ?? ''))
-            : core_text::strtolower(trim((string) ($rtcuser['email'] ?? '')));
+            : \core_text::strtolower(trim((string) ($rtcuser['email'] ?? '')));
         $detail = is_array($rtcuser['user_detail'] ?? null) ? $rtcuser['user_detail'] : [];
         $idcard = trim((string) ($detail['id_card'] ?? ''));
         $expectedidnumber = $idcard !== '' ? $idcard : 'rtc-user:' . (int) $smsuserid;
@@ -168,7 +168,7 @@ final class student_history
             } else if (is_object($role)) {
                 $role = $role->role_key ?? $role->name ?? '';
             }
-            $role = core_text::strtolower(trim((string) $role));
+            $role = \core_text::strtolower(trim((string) $role));
             $role = preg_replace('/\s+/', ' ', str_replace(['-', '_'], ' ', $role));
             if ($role !== '') {
                 $normalizedroles[] = $role;
@@ -176,7 +176,7 @@ final class student_history
         }
 
         $manageduser = $DB->get_record('local_rtcsync_user', ['userid' => (int) $USER->id], '*', IGNORE_MISSING);
-        $moodleemail = core_text::strtolower(trim((string) ($USER->email ?? '')));
+        $moodleemail = \core_text::strtolower(trim((string) ($USER->email ?? '')));
         $moodleidnumber = trim((string) ($USER->idnumber ?? ''));
 
         if (!$smsuserid

@@ -43,8 +43,8 @@ MOODLE_STAGING_WEB_PORT=18081
         throw 'Compose project name is not rtc-moodle-staging.'
     }
 
-    $exampleEnv = Get-Content -LiteralPath (Join-Path $repoRoot 'docker-compose.staging.env.example') -Raw
-    $fixtureEnv = Get-Content -LiteralPath $fakeEnvPath -Raw
+    $exampleEnv = (Get-Content -LiteralPath (Join-Path $repoRoot 'docker-compose.staging.env.example') -Raw).Replace("`r`n", "`n")
+    $fixtureEnv = (Get-Content -LiteralPath $fakeEnvPath -Raw).Replace("`r`n", "`n")
     foreach ($originKey in @('RTC_STAGING_API_ORIGIN', 'RTC_STAGING_MOODLE_ORIGIN')) {
         $exampleOriginLine = [regex]::Match($exampleEnv, "(?m)^$([regex]::Escape($originKey))=.+$")
         $fixtureOriginLine = [regex]::Match($fixtureEnv, "(?m)^$([regex]::Escape($originKey))=.+$")

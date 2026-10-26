@@ -194,14 +194,14 @@ final class delivery_activity_access
                     delivery.deliveryid,
                     delivery.groupingid,
                     delivery.managedavailability,
-                    grouping.idnumber AS groupingidnumber
+                    deliverygrouping.idnumber AS groupingidnumber
                FROM {course_modules} cm
           LEFT JOIN {local_rtcsync_deliverycm} delivery
                  ON delivery.cmid = cm.id
                 AND delivery.courseid = cm.course
-          LEFT JOIN {groupings} grouping
-                 ON grouping.id = delivery.groupingid
-                AND grouping.courseid = cm.course
+          LEFT JOIN {groupings} deliverygrouping
+                 ON deliverygrouping.id = delivery.groupingid
+                AND deliverygrouping.courseid = cm.course
               WHERE cm.id = :cmid
                 AND cm.course = :courseid',
             ['cmid' => $cmid, 'courseid' => $courseid],
@@ -344,14 +344,14 @@ final class delivery_activity_access
                     delivery.deliveryid,
                     delivery.groupingid,
                     delivery.managedavailability,
-                    grouping.idnumber AS groupingidnumber
+                    deliverygrouping.idnumber AS groupingidnumber
                FROM {course_modules} cm
           LEFT JOIN {local_rtcsync_deliverycm} delivery
                  ON delivery.cmid = cm.id
                 AND delivery.courseid = cm.course
-          LEFT JOIN {groupings} grouping
-                 ON grouping.id = delivery.groupingid
-                AND grouping.courseid = cm.course
+          LEFT JOIN {groupings} deliverygrouping
+                 ON deliverygrouping.id = delivery.groupingid
+                AND deliverygrouping.courseid = cm.course
               WHERE cm.course = :courseid
            ORDER BY cm.id',
             ['courseid' => $courseid]
@@ -646,15 +646,15 @@ final class delivery_activity_access
         $memberships = $DB->get_records_sql(
             'SELECT gg.id AS membershipid,
                     g.idnumber AS groupidnumber,
-                    grouping.idnumber AS groupingidnumber
+                    deliverygrouping.idnumber AS groupingidnumber
                FROM {groups} g
                JOIN {groups_members} gm ON gm.groupid = g.id
                JOIN {groupings_groups} gg ON gg.groupid = g.id
-               JOIN {groupings} grouping ON grouping.id = gg.groupingid
+               JOIN {groupings} deliverygrouping ON deliverygrouping.id = gg.groupingid
               WHERE g.id = :groupid
                 AND g.courseid = :groupcourseid
                 AND gm.userid = :userid
-                AND grouping.courseid = :groupingcourseid',
+                AND deliverygrouping.courseid = :groupingcourseid',
             [
                 'groupid' => $groupid,
                 'groupcourseid' => $courseid,
@@ -797,9 +797,9 @@ final class delivery_activity_access
                     )
                     OR EXISTS (
                         SELECT 1
-                          FROM {groupings} grouping
-                         WHERE grouping.courseid = c.id
-                           AND grouping.idnumber LIKE :deliverypattern
+                          FROM {groupings} deliverygrouping
+                         WHERE deliverygrouping.courseid = c.id
+                           AND deliverygrouping.idnumber LIKE :deliverypattern
                     )
                 )',
             [
@@ -885,9 +885,9 @@ final class delivery_activity_access
                     )
                     OR EXISTS (
                         SELECT 1
-                          FROM {groupings} grouping
-                         WHERE grouping.courseid = c.id
-                           AND grouping.idnumber LIKE :deliverypattern
+                          FROM {groupings} deliverygrouping
+                         WHERE deliverygrouping.courseid = c.id
+                           AND deliverygrouping.idnumber LIKE :deliverypattern
                     )
                 )',
             [
@@ -950,14 +950,14 @@ final class delivery_activity_access
                     delivery.deliveryid,
                     delivery.groupingid,
                     delivery.managedavailability,
-                    grouping.idnumber AS groupingidnumber
+                    deliverygrouping.idnumber AS groupingidnumber
                FROM {course_modules} cm
           LEFT JOIN {local_rtcsync_deliverycm} delivery
                  ON delivery.cmid = cm.id
                 AND delivery.courseid = cm.course
-          LEFT JOIN {groupings} grouping
-                 ON grouping.id = delivery.groupingid
-                AND grouping.courseid = cm.course
+          LEFT JOIN {groupings} deliverygrouping
+                 ON deliverygrouping.id = delivery.groupingid
+                AND deliverygrouping.courseid = cm.course
               WHERE cm.id = :cmid
                 AND cm.course = :courseid',
             ['cmid' => $cmid, 'courseid' => $courseid],
@@ -1267,15 +1267,15 @@ final class delivery_activity_access
 
         $memberships = $DB->get_records_sql(
             "SELECT DISTINCT g.id, g.idnumber AS groupidnumber,
-                    grouping.idnumber AS groupingidnumber
+                    deliverygrouping.idnumber AS groupingidnumber
                FROM {groups_members} gm
                JOIN {groups} g ON g.id = gm.groupid AND g.courseid = :groupcourseid
                JOIN {groupings_groups} gg ON gg.groupid = g.id
-               JOIN {groupings} grouping
-                 ON grouping.id = gg.groupingid
-                AND grouping.courseid = g.courseid
+               JOIN {groupings} deliverygrouping
+                 ON deliverygrouping.id = gg.groupingid
+                AND deliverygrouping.courseid = g.courseid
               WHERE gm.userid = :userid
-                AND grouping.idnumber LIKE :deliverygrouping",
+                AND deliverygrouping.idnumber LIKE :deliverygrouping",
             [
                 'groupcourseid' => $courseid,
                 'userid' => $userid,
@@ -1381,19 +1381,19 @@ final class delivery_activity_access
 
         $memberships = $DB->get_records_sql(
             "SELECT desired.groupid,
-                    grouping.idnumber AS groupingidnumber,
+                    deliverygrouping.idnumber AS groupingidnumber,
                     g.idnumber AS groupidnumber
                FROM {local_rtcsync_deliverymember} desired
                JOIN {groups} g
                  ON g.id = desired.groupid
                 AND g.courseid = desired.courseid
                JOIN {groupings_groups} gg ON gg.groupid = g.id
-               JOIN {groupings} grouping
-                 ON grouping.id = gg.groupingid
-                AND grouping.courseid = g.courseid
+               JOIN {groupings} deliverygrouping
+                 ON deliverygrouping.id = gg.groupingid
+                AND deliverygrouping.courseid = g.courseid
               WHERE desired.courseid = :courseid
                 AND desired.userid = :userid
-                AND grouping.idnumber LIKE :deliverypattern",
+                AND deliverygrouping.idnumber LIKE :deliverypattern",
             [
                 'courseid' => $courseid,
                 'userid' => $userid,
