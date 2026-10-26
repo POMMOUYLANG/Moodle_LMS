@@ -1,5 +1,7 @@
 FROM php:8.2.35-fpm
 
+RUN php -r 'exit(PHP_VERSION_ID === 80235 ? 0 : 1);' && php-fpm -t
+
 RUN printf 'session.upload_progress.enabled=0\n' > /usr/local/etc/php/conf.d/zz-rtc-security.ini
 
 # Install system dependencies
@@ -11,7 +13,9 @@ RUN apt-get update && apt-get install -y \
     && locale-gen en_AU.UTF-8 \
     && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install gd mbstring mysqli pdo pdo_mysql zip intl opcache soap xsl exif curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && php -r 'exit(PHP_VERSION_ID === 80235 ? 0 : 1);' \
+    && php-fpm -t
 
 # Enable recommended PHP settings for Moodle
 RUN echo "zend.exception_ignore_args=1" >> /usr/local/etc/php/conf.d/moodle.ini \

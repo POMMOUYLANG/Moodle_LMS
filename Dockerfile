@@ -1,5 +1,7 @@
 FROM php:8.3.36-apache
 
+RUN php -r 'exit(PHP_VERSION_ID === 80336 ? 0 : 1);'
+
 # Install required packages and PHP extensions for Moodle
 RUN apt-get update && apt-get install -y \
     libpng-dev libjpeg-dev libfreetype6-dev \
@@ -27,7 +29,8 @@ RUN chmod +x /usr/local/bin/start-moodle.sh
 # Fix permissions for Moodle.
 RUN mkdir -p /var/moodledata && \
     chown -R www-data:www-data /var/www/html /var/moodledata && \
-    chmod -R 755 /var/www/html /var/moodledata
+    chmod -R 755 /var/www/html /var/moodledata && \
+    apachectl -t
 
 EXPOSE 80
 CMD ["/usr/local/bin/start-moodle.sh"]
