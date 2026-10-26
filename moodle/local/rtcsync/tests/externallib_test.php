@@ -1018,9 +1018,12 @@ final class externallib_test extends \advanced_testcase
 
     public function test_teacher_unenrolment_waits_for_the_subject_course_access_lock(): void
     {
-        global $DB;
+        global $CFG, $DB;
 
         $this->resetAfterTest();
+        // MySQL GET_LOCK stacks within one DB session, so a competing in-process lock
+        // only blocks with the file factory.
+        $CFG->lock_factory = '\core\lock\file_lock_factory';
         $this->setAdminUser();
         set_config('enableavailability', 1);
         $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:cross-role-unenrol']);
@@ -1920,6 +1923,22 @@ final class externallib_test extends \advanced_testcase
                 'userids' => [(int) $staleclassuser->id],
             ]],
         ]));
+
+        // Delivery rosters are staged and only applied for an active Student whose effective
+        // scope includes the delivery. Grouping syncs fail closed and suspend managed Students,
+        // so authorize the delivery scope and reactivate the delivery learner like the backend does.
+        \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $deliveryuser->id,
+            'deliveryids' => [7037],
+            'revision' => 20261025000000000,
+        ]);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $deliveryuser->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
 
         $classgroup = $DB->get_record('groups', [
             'courseid' => (int) $course->id,

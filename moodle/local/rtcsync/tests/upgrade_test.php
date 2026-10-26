@@ -15,6 +15,30 @@ defined('MOODLE_INTERNAL') || die();
 #[CoversNothing]
 final class upgrade_test extends \advanced_testcase
 {
+    public function test_install_schema_uses_noncolliding_foreign_unique_keys(): void
+    {
+        global $CFG;
+
+        $file = new \xmldb_file($CFG->dirroot . '/local/rtcsync/db/install.xml');
+        $this->assertTrue($file->loadXMLStructure());
+
+        $schema = $file->getStructure();
+        $expected = [
+            ['local_rtcsync_deliverycm', 'cm_fk', ['cmid'], 'cm_uix'],
+            ['local_rtcsync_deliverygrade', 'gradeitem_fk', ['gradeitemid'], 'gradeitem_uix'],
+            ['local_rtcsync_deliverycourse', 'course_fk', ['courseid'], 'course_uix'],
+        ];
+
+        foreach ($expected as [$tablename, $keyname, $fields, $legacyindex]) {
+            $table = $schema->getTable($tablename);
+            $key = $table->getKey($keyname);
+            $this->assertNotNull($key, $tablename);
+            $this->assertSame(XMLDB_KEY_FOREIGN_UNIQUE, $key->getType(), $tablename);
+            $this->assertSame($fields, $key->getFields(), $tablename);
+            $this->assertNull($table->getIndex($legacyindex), $tablename);
+        }
+    }
+
     public function test_upgrade_2026102600_creates_and_recreates_delivery_membership_schema(): void
     {
         global $CFG, $DB;
@@ -65,12 +89,27 @@ final class upgrade_test extends \advanced_testcase
             $deliverymember,
             new \xmldb_index('courseuser_ix', XMLDB_INDEX_NOTUNIQUE, ['courseid', 'userid'])
         ));
-        $this->assertSame('2026102600', (string) get_config('local_rtcsync', 'version'));
+        foreach ([
+            ['local_rtcsync_deliverycm', 'cmid'],
+            ['local_rtcsync_deliverygrade', 'gradeitemid'],
+            ['local_rtcsync_deliverycourse', 'courseid'],
+        ] as [$tablename, $field]) {
+            $this->assertTrue($dbman->index_exists(
+                new \xmldb_table($tablename),
+                new \xmldb_index('unique_scope_ix', XMLDB_INDEX_UNIQUE, [$field])
+            ));
+        }
+        $this->assertSame('2026102700', (string) get_config('local_rtcsync', 'version'));
+
+        // A site already at 2026102600 receives only the schema repair savepoint.
+        set_config('version', '2026102600', 'local_rtcsync');
+        $this->assertTrue(xmldb_local_rtcsync_upgrade(2026102600));
+        $this->assertSame('2026102700', (string) get_config('local_rtcsync', 'version'));
 
         // Re-running from the prior savepoint must recognize the completed DDL and leave the
         // disposable site at the latest schema without duplicate-table/index errors.
         set_config('version', (string) $oldversion, 'local_rtcsync');
         $this->assertTrue(xmldb_local_rtcsync_upgrade($oldversion));
-        $this->assertSame('2026102600', (string) get_config('local_rtcsync', 'version'));
+        $this->assertSame('2026102700', (string) get_config('local_rtcsync', 'version'));
     }
 }

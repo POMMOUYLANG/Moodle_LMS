@@ -212,9 +212,8 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         $deliverycm->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
         $deliverycm->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
         $deliverycm->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
-        $deliverycm->add_key('cm_fk', XMLDB_KEY_FOREIGN, ['cmid'], 'course_modules', ['id']);
+        $deliverycm->add_key('cm_fk', XMLDB_KEY_FOREIGN_UNIQUE, ['cmid'], 'course_modules', ['id']);
         $deliverycm->add_key('course_fk', XMLDB_KEY_FOREIGN, ['courseid'], 'course', ['id']);
-        $deliverycm->add_index('cm_uix', XMLDB_INDEX_UNIQUE, ['cmid']);
         $deliverycm->add_index('coursedeliv_ix', XMLDB_INDEX_NOTUNIQUE, ['courseid', 'deliveryid']);
         if (!$dbman->table_exists($deliverycm)) {
             $dbman->create_table($deliverycm);
@@ -241,9 +240,8 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         $deliverygrade->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
         $deliverygrade->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
         $deliverygrade->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
-        $deliverygrade->add_key('gradeitem_fk', XMLDB_KEY_FOREIGN, ['gradeitemid'], 'grade_items', ['id']);
+        $deliverygrade->add_key('gradeitem_fk', XMLDB_KEY_FOREIGN_UNIQUE, ['gradeitemid'], 'grade_items', ['id']);
         $deliverygrade->add_key('course_fk', XMLDB_KEY_FOREIGN, ['courseid'], 'course', ['id']);
-        $deliverygrade->add_index('gradeitem_uix', XMLDB_INDEX_UNIQUE, ['gradeitemid']);
         $deliverygrade->add_index('coursedeliv_ix', XMLDB_INDEX_NOTUNIQUE, ['courseid', 'deliveryid']);
         if (!$dbman->table_exists($deliverygrade)) {
             $dbman->create_table($deliverygrade);
@@ -258,8 +256,7 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         $deliverycourse->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
         $deliverycourse->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
         $deliverycourse->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
-        $deliverycourse->add_key('course_fk', XMLDB_KEY_FOREIGN, ['courseid'], 'course', ['id']);
-        $deliverycourse->add_index('course_uix', XMLDB_INDEX_UNIQUE, ['courseid']);
+        $deliverycourse->add_key('course_fk', XMLDB_KEY_FOREIGN_UNIQUE, ['courseid'], 'course', ['id']);
         $deliverycourse->add_index('ready_ix', XMLDB_INDEX_NOTUNIQUE, ['ready', 'courseid']);
         if (!$dbman->table_exists($deliverycourse)) {
             $dbman->create_table($deliverycourse);
@@ -452,6 +449,50 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         // memberships so suspended users and out-of-scope syncs cannot expose
         // previous-delivery calendar events.
         upgrade_plugin_savepoint(true, 2026102600, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026102700) {
+        $dbman = $DB->get_manager();
+
+        // Keep the unique delivery mappings idempotent for both upgraded and fresh installs.
+        // XMLDB_KEY_FOREIGN_UNIQUE creates the unique index when the engine does not enforce
+        // foreign keys, and add_key skips the index when an equivalent one already exists.
+        $deliverykeys = [
+            ['local_rtcsync_deliverycm', 'cm_fk', ['cmid'], 'course_modules', ['id']],
+            ['local_rtcsync_deliverygrade', 'gradeitem_fk', ['gradeitemid'], 'grade_items', ['id']],
+            ['local_rtcsync_deliverycourse', 'course_fk', ['courseid'], 'course', ['id']],
+        ];
+
+        foreach ($deliverykeys as [$tablename, $keyname, $fields, $reftable, $reffields]) {
+            $table = new xmldb_table($tablename);
+            if ($dbman->table_exists($table)) {
+                $key = new xmldb_key($keyname, XMLDB_KEY_FOREIGN_UNIQUE, $fields, $reftable, $reffields);
+                $dbman->add_key($table, $key);
+            }
+        }
+
+        // XMLDB index_exists()/add_index() match on the column set only, ignoring order and
+        // uniqueness, so the unique (courseid, userid) index makes them treat the reverse
+        // (userid, courseid) lookup index as present and skip it. Check the exact ordered
+        // columns and create that index directly under the name install.xml would generate.
+        $studentscope = new xmldb_table('local_rtcsync_studentscope');
+        if ($dbman->table_exists($studentscope)) {
+            $hasusercourseindex = false;
+            foreach ($DB->get_indexes('local_rtcsync_studentscope') as $existingindex) {
+                if (!$existingindex['unique'] && array_values($existingindex['columns']) === ['userid', 'courseid']) {
+                    $hasusercourseindex = true;
+                    break;
+                }
+            }
+            if (!$hasusercourseindex) {
+                $DB->change_database_structure(
+                    'CREATE INDEX ' . $CFG->prefix . 'locartcsstud_usecou_ix ON '
+                    . $CFG->prefix . 'local_rtcsync_studentscope (userid, courseid)'
+                );
+            }
+        }
+
+        upgrade_plugin_savepoint(true, 2026102700, 'local', 'rtcsync');
     }
 
     return true;

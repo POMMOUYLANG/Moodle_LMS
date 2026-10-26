@@ -3,6 +3,8 @@
 namespace local_rtcsync;
 
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 
 defined('MOODLE_INTERNAL') || die();
 
@@ -581,10 +583,14 @@ final class student_history_test extends \advanced_testcase
         $this->assertFalse(is_enrolled(\context_course::instance((int) $student['course']->id), $student['user'], '', true));
     }
 
+    // local_rtcsync_external loads core externallib, which Moodle only allows in an isolated process.
+    #[PreserveGlobalState(false)]
+    #[RunInSeparateProcess]
     public function test_reenrolment_keeps_mapped_withdrawn_results_without_delivery_scope_leakage(): void
     {
-        global $DB;
+        global $CFG, $DB;
 
+        require_once($CFG->dirroot . '/local/rtcsync/externallib.php');
         $this->resetAfterTest();
         set_config('enableavailability', 1);
         $student = $this->createHistoryStudent('reactivated-program');
@@ -648,6 +654,9 @@ final class student_history_test extends \advanced_testcase
         $currentgrade->update();
         $currentgrade->update_final_grade((int) $user->id, 94.0, 'student-history-test');
 
+        // The direct groupingid write above bypasses Moodle's module-updated event, and
+        // prepare_course only scans modules newer than its cursor; replay the edit guard.
+        \local_rtcsync\local\delivery_activity_access::handle_module_event($oldcmid);
         $this->assertTrue(\local_rtcsync\local\delivery_activity_access::prepare_course((int) $course->id));
         $currentcmid = (int) $DB->get_field('course_modules', 'id', [
             'course' => (int) $course->id,
@@ -798,6 +807,15 @@ final class student_history_test extends \advanced_testcase
             'module' => $quizmoduleid,
             'instance' => (int) $otheritem->iteminstance,
         ]);
+        // The direct groupingid writes above bypass Moodle's module-updated event. prepare_course
+        // only scans modules newer than its cursor, so replay the per-module guard an edit triggers.
+        foreach ([$previousitem, $otheritem] as $item) {
+            \local_rtcsync\local\delivery_activity_access::handle_module_event((int) $DB->get_field('course_modules', 'id', [
+                'course' => (int) $student['course']->id,
+                'module' => $quizmoduleid,
+                'instance' => (int) $item->iteminstance,
+            ], MUST_EXIST));
+        }
 
         $this->assertTrue(\local_rtcsync\local\delivery_activity_access::prepare_course((int) $student['course']->id));
         $previouscmid = (int) $DB->get_field('course_modules', 'id', [
@@ -916,7 +934,7 @@ final class student_history_test extends \advanced_testcase
 
         $cmid = (int) $quiz->cmid;
         $this->setUser($student['user']);
-        $beforeaccess = get_fast_modinfo($course, $student['user'])->get_cm($cmid);
+        $beforeaccess = get_fast_modinfo($course, (int) $student['user']->id)->get_cm($cmid);
         $this->assertTrue($beforeaccess->uservisible);
         $before = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => $cmid], '*', MUST_EXIST);
         $this->assertSame(771, (int) $before->deliveryid);
@@ -959,7 +977,7 @@ final class student_history_test extends \advanced_testcase
         $results = $history->visible_results();
         $this->assertSame(['Previous delivery released result'], array_column($results['results'], 'item'));
         $this->assertSame(81.0, $results['results'][0]['grade']);
-        $moduleinfo = get_fast_modinfo($course, $student['user']);
+        $moduleinfo = get_fast_modinfo($course, (int) $student['user']->id);
         $this->assertFalse($moduleinfo->get_cm($cmid)->uservisible);
         $this->assertTrue($moduleinfo->get_cm((int) $newquiz->cmid)->uservisible);
         $this->assertTrue(is_enrolled(\context_course::instance((int) $course->id), $student['user'], '', true));
@@ -984,10 +1002,14 @@ final class student_history_test extends \advanced_testcase
         $this->assertStringNotContainsString('/mod/quiz/view.php', $rendered);
     }
 
+    // local_rtcsync_external loads core externallib, which Moodle only allows in an isolated process.
+    #[PreserveGlobalState(false)]
+    #[RunInSeparateProcess]
     public function test_delivery_scope_denies_stale_activity_but_keeps_old_released_result(): void
     {
-        global $DB;
+        global $CFG, $DB;
 
+        require_once($CFG->dirroot . '/local/rtcsync/externallib.php');
         $this->resetAfterTest();
         $this->setAdminUser();
         set_config('enableavailability', 1);
@@ -1106,6 +1128,22 @@ final class student_history_test extends \advanced_testcase
             'userid' => (int) $student['user']->id,
         ]), 'A future delivery roster must stay inactive until its scope is authoritative.');
 
+        // Syncing a delivery grouping fails closed and suspends managed Students until the
+        // backend's active enrolment sync reactivates them; model that step explicitly.
+        $this->assertSame(ENROL_USER_SUSPENDED, (int) $DB->get_field_sql(
+            'SELECT ue.status
+               FROM {user_enrolments} ue
+               JOIN {enrol} e ON e.id = ue.enrolid
+              WHERE e.courseid = :courseid AND e.enrol = :enrol AND ue.userid = :userid',
+            ['courseid' => (int) $course->id, 'enrol' => 'manual', 'userid' => (int) $student['user']->id]
+        ));
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $student['user']->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
+
         \local_rtcsync\local\delivery_activity_access::require_student_module_access(
             (int) $course->id,
             (int) $previousquiz->cmid,
@@ -1177,6 +1215,13 @@ final class student_history_test extends \advanced_testcase
             'userid' => (int) $student['user']->id,
         ]));
 
+        // The late roster sync fails closed again; the backend's active enrolment sync reopens it.
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $student['user']->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
         try {
             \local_rtcsync\local\delivery_activity_access::require_student_module_access(
                 (int) $course->id,
@@ -1472,6 +1517,8 @@ final class student_history_test extends \advanced_testcase
             'course' => (int) $course->id,
             'name' => 'Delivery page',
         ], ['availability' => $this->groupingAvailability([(int) $pagegrouping->id])]);
+        // The resource generator needs a real current user to create its default file.
+        $this->setAdminUser();
         $resource = $this->getDataGenerator()->create_module('resource', [
             'course' => (int) $course->id,
             'name' => 'Delivery resource',
@@ -1546,6 +1593,8 @@ final class student_history_test extends \advanced_testcase
             'course' => (int) $course->id,
             'name' => 'Unmapped page',
         ]);
+        // The resource generator needs a real current user to create its default file.
+        $this->setAdminUser();
         $resource = $this->getDataGenerator()->create_module('resource', [
             'course' => (int) $course->id,
             'name' => 'Ambiguous resource',
@@ -1713,7 +1762,12 @@ final class student_history_test extends \advanced_testcase
 
     public function test_ready_course_callback_keeps_the_access_lock_held(): void
     {
+        global $CFG;
+
         $this->resetAfterTest();
+        // MySQL GET_LOCK stacks within one DB session, so a competing in-process lock
+        // only blocks with the file factory.
+        $CFG->lock_factory = '\core\lock\file_lock_factory';
         set_config('enableavailability', 1);
         $course = $this->getDataGenerator()->create_course([
             'idnumber' => 'rtc-subject:atomic-active-enrolment',
@@ -1741,9 +1795,12 @@ final class student_history_test extends \advanced_testcase
 
     public function test_module_event_lock_timeout_fails_closed_after_the_module_row_is_already_written(): void
     {
-        global $DB;
+        global $CFG, $DB;
 
         $this->resetAfterTest();
+        // MySQL GET_LOCK stacks within one DB session, so a competing in-process lock
+        // only blocks with the file factory.
+        $CFG->lock_factory = '\core\lock\file_lock_factory';
         set_config('enableavailability', 1);
         $course = $this->getDataGenerator()->create_course([
             'idnumber' => 'rtc-subject:module-lock-timeout',
