@@ -18,7 +18,7 @@ $CFG->dboptions = [
     'dbcollation' => 'utf8mb4_unicode_ci',
 ];
 
-$CFG->wwwroot = 'https://' . @@MOODLE_HOSTNAME@@;
+$CFG->wwwroot = @@MOODLE_ORIGIN@@;
 $CFG->sslproxy = true;
 $CFG->reverseproxy = false;
 $CFG->dataroot = '/var/moodledata';
@@ -27,10 +27,11 @@ $CFG->admin = 'admin';
 $CFG->directorypermissions = 02770;
 $CFG->passwordsaltmain = @@PASSWORD_SALT@@;
 
-// Pin SSO requests to the explicitly configured staging API. The ordinary
-// RTC SSO fallback hostname is not attached to this isolated Compose network.
+// Pin all SSO requests to this exact staging API origin, including its port.
+// Do not try legacy gateway or backend hostnames if the configured API fails.
 putenv('RTC_API_BASE_URL=' . @@RTC_API_BASE_URL@@);
-putenv('GATEWAY_API_DOMAIN=' . @@RTC_API_HOSTNAME@@);
+putenv('RTC_SSO_STRICT_API_BASE_URLS=true');
+putenv('GATEWAY_API_DOMAIN=' . @@RTC_API_BASE_URL@@);
 putenv('GATEWAY_MOODLE_DOMAIN=' . @@MOODLE_HOSTNAME@@);
 putenv('RTC_SSO_SITE_REGISTRY=');
 putenv('CONTAINER_PREFIX=');

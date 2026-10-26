@@ -242,6 +242,8 @@ final class student_history
             "'rtc-delivery-grouping:'",
             $DB->sql_cast_to_char('history.deliveryid')
         );
+        // user_program markers have no authoritative grade-item mapping. Only
+        // delivery markers can authorize grade rows through exact item mappings.
         // Course visibility and enrolment status continue to block activities;
         // this global page exposes only Moodle-visible released grade items.
         $records = $DB->get_records_sql(
@@ -293,23 +295,16 @@ final class student_history
               WHERE history.userid = :userid
                 {$cursorcondition}
                 AND history.sourceid > 0
-                AND history.sourcetype IN (:userprogram, :participation)
+                AND history.sourcetype = :participationscope
+                AND history.deliveryid > 0
                 AND (
-                    (history.sourcetype = :userprogramscope
-                     AND history.deliveryid = 0
-                     AND ue.status = :programsuspended)
+                    (gi.itemtype = :manualitemtype
+                     AND deliverygrade.deliveryid = history.deliveryid)
                     OR
-                    (history.sourcetype = :participationscope
-                     AND history.deliveryid > 0
-                     AND (
-                        (gi.itemtype = :manualitemtype
-                         AND deliverygrade.deliveryid = history.deliveryid)
-                        OR
-                        (gi.itemtype = :moduleitemtype
-                         AND (deliverymodule.deliveryid = history.deliveryid
-                              OR deliverymodulehistory.id IS NOT NULL)
-                         AND deliverygrouping.id IS NOT NULL)
-                     ))
+                    (gi.itemtype = :moduleitemtype
+                     AND (deliverymodule.deliveryid = history.deliveryid
+                          OR deliverymodulehistory.id IS NOT NULL)
+                     AND deliverygrouping.id IS NOT NULL)
                 )
                 AND (
                     c.idnumber LIKE :subjectcourse
@@ -346,10 +341,6 @@ final class student_history
                 'coursecontext' => CONTEXT_COURSE,
                 'student' => 'student',
                 'userid' => (int) $USER->id,
-                'userprogram' => 'user_program',
-                'participation' => 'delivery_participation',
-                'userprogramscope' => 'user_program',
-                'programsuspended' => ENROL_USER_SUSPENDED,
                 'participationscope' => 'delivery_participation',
                 'manualitemtype' => 'manual',
                 'moduleitemtype' => 'mod',
@@ -580,6 +571,8 @@ final class student_history
     {
         global $DB;
 
+        // A retained source marker keeps the Results page available after re-enrolment;
+        // visible grade rows still require an exact delivery-to-item mapping.
         return (bool) $DB->get_field_sql(
             "SELECT 1
                FROM {local_rtcsync_history} history
@@ -601,8 +594,7 @@ final class student_history
                 AND history.sourcetype IN (:userprogram, :participation)
                 AND (
                     (history.sourcetype = :userprogramscope
-                     AND history.deliveryid = 0
-                     AND ue.status = :programsuspended)
+                      AND history.deliveryid = 0)
                     OR
                     (history.sourcetype = :participationscope
                      AND history.deliveryid > 0)
@@ -631,7 +623,6 @@ final class student_history
                 'userprogram' => 'user_program',
                 'participation' => 'delivery_participation',
                 'userprogramscope' => 'user_program',
-                'programsuspended' => ENROL_USER_SUSPENDED,
                 'participationscope' => 'delivery_participation',
                 'subjectcourse' => 'rtc-subject:%',
                 'deliverygrouping' => 'rtc-delivery-grouping:%',

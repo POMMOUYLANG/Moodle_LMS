@@ -63,6 +63,9 @@ function staging_required(array $values, string $key): string
 function staging_hostname(string $value, string $key): string
 {
     $value = strtolower(trim($value));
+    if (str_ends_with($value, '.')) {
+        $value = substr($value, 0, -1);
+    }
     if (
         strlen($value) > 253 ||
         str_contains($value, '://') ||
@@ -85,24 +88,31 @@ function staging_hostname(string $value, string $key): string
     return $value;
 }
 
-function staging_https_api_url(string $value): array
+function staging_https_origin(string $value, string $key): array
 {
     $parts = parse_url(trim($value));
+    $scheme = is_array($parts) ? strtolower((string) ($parts['scheme'] ?? '')) : '';
     $host = is_array($parts) ? strtolower((string) ($parts['host'] ?? '')) : '';
+    $port = is_array($parts) ? ($parts['port'] ?? null) : null;
     if (
         !is_array($parts) ||
-        ($parts['scheme'] ?? '') !== 'https' ||
+        $scheme !== 'https' ||
         $host === '' ||
         isset($parts['user']) ||
         isset($parts['pass']) ||
+        (isset($parts['path']) && $parts['path'] !== '') ||
         isset($parts['query']) ||
         isset($parts['fragment'])
     ) {
-        staging_fail('RTC_STAGING_API_BASE_URL must be an HTTPS staging URL without credentials, query, or fragment');
+        staging_fail("{$key} must be an origin-only HTTPS staging URL without credentials, path, query, or fragment");
     }
-    staging_hostname($host, 'RTC_STAGING_API_BASE_URL hostname');
+    if ($port !== null && ($port < 1 || $port > 65535)) {
+        staging_fail("{$key} must use a valid HTTPS port");
+    }
+    $host = staging_hostname($host, "{$key} hostname");
+    $origin = 'https://' . $host . ($port !== null && $port !== 443 ? ':' . $port : '');
 
-    return [$host, rtrim(trim($value), '/')];
+    return [$host, $origin];
 }
 
 function staging_secret(array $values, string $key): string
@@ -121,22 +131,44 @@ function staging_port(array $values, string $key): int
         staging_fail("{$key} must be a TCP port number");
     }
     $port = (int) $value;
+    if ($port === 3310) {
+        staging_fail("{$key} must not use the reserved production backend MySQL host port 3310");
+    }
     if ($port < 1024 || $port > 65535 || in_array($port, [3311, 8080], true)) {
         staging_fail("{$key} must be an unprivileged port different from the ordinary stack ports 3311 and 8080");
     }
     return $port;
 }
 
+function staging_backend_mysql_port(array $values): int
+{
+    $value = staging_required($values, 'LMS_DB_HOST_PORT');
+    if (!preg_match('/^[1-9][0-9]{0,4}$/', $value)) {
+        staging_fail('LMS_DB_HOST_PORT must be a canonical numeric TCP port');
+    }
+    $port = (int) $value;
+    if ($port < 1024 || $port > 65535 || $port === 3310) {
+        staging_fail('LMS_DB_HOST_PORT must be an unprivileged staging backend MySQL port different from production port 3310');
+    }
+    return $port;
+}
+
 $envPath = null;
 $replace = false;
+$validateOnly = false;
 foreach (array_slice($argv, 1) as $argument) {
     if ($argument === '--replace') {
         $replace = true;
+    } elseif ($argument === '--validate-only') {
+        $validateOnly = true;
     } elseif (str_starts_with($argument, '--env-file=')) {
         $envPath = substr($argument, strlen('--env-file='));
     } else {
-        staging_fail('usage: php docker/prepare-moodle-staging-config.php --env-file=docker-compose.staging.env [--replace]');
+        staging_fail('usage: php docker/prepare-moodle-staging-config.php --env-file=docker-compose.staging.env [--replace] [--validate-only]');
     }
+}
+if ($validateOnly && $replace) {
+    staging_fail('--validate-only cannot be combined with --replace');
 }
 if ($envPath === null || trim($envPath) === '') {
     staging_fail('an explicit --env-file is required; ordinary Compose or Moodle config is never read');
@@ -144,7 +176,24 @@ if ($envPath === null || trim($envPath) === '') {
 
 $values = staging_parse_env($envPath);
 $moodleHost = staging_hostname(staging_required($values, 'MOODLE_STAGING_HOSTNAME'), 'MOODLE_STAGING_HOSTNAME');
-[$apiHost, $apiUrl] = staging_https_api_url(staging_required($values, 'RTC_STAGING_API_BASE_URL'));
+[$canonicalMoodleHost, $moodleOrigin] = staging_https_origin(
+    staging_required($values, 'RTC_STAGING_MOODLE_ORIGIN'),
+    'RTC_STAGING_MOODLE_ORIGIN',
+);
+if ($canonicalMoodleHost !== $moodleHost) {
+    staging_fail('RTC_STAGING_MOODLE_ORIGIN hostname must match MOODLE_STAGING_HOSTNAME');
+}
+[, $canonicalApiOrigin] = staging_https_origin(
+    staging_required($values, 'RTC_STAGING_API_ORIGIN'),
+    'RTC_STAGING_API_ORIGIN',
+);
+[, $apiUrl] = staging_https_origin(
+    staging_required($values, 'RTC_STAGING_API_BASE_URL'),
+    'RTC_STAGING_API_BASE_URL',
+);
+if ($apiUrl !== $canonicalApiOrigin) {
+    staging_fail('RTC_STAGING_API_BASE_URL must match RTC_STAGING_API_ORIGIN, including its hostname and HTTPS port');
+}
 $dbName = staging_required($values, 'MOODLE_STAGING_DB_NAME');
 $dbUser = staging_required($values, 'MOODLE_STAGING_DB_USER');
 if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,63}$/', $dbName) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $dbUser)) {
@@ -156,10 +205,14 @@ $passwordSalt = staging_secret($values, 'MOODLE_STAGING_PASSWORD_SALT');
 if (count(array_unique([$dbPassword, $rootPassword, $passwordSalt])) !== 3) {
     staging_fail('database passwords and Moodle password salt must be distinct');
 }
+$backendDbPort = staging_backend_mysql_port($values);
 $webPort = staging_port($values, 'MOODLE_STAGING_WEB_PORT');
 $dbPort = staging_port($values, 'MOODLE_STAGING_DB_PORT');
 if ($webPort === $dbPort) {
     staging_fail('web and database host ports must differ');
+}
+if ($backendDbPort === $webPort || $backendDbPort === $dbPort) {
+    staging_fail('Moodle staging host ports must differ from LMS_DB_HOST_PORT, the backend staging MySQL host port');
 }
 
 $templatePath = __DIR__ . '/moodle-staging-config.template.php';
@@ -175,13 +228,20 @@ $replacements = [
     '@@DB_USER@@' => var_export($dbUser, true),
     '@@DB_PASSWORD@@' => var_export($dbPassword, true),
     '@@MOODLE_HOSTNAME@@' => var_export($moodleHost, true),
+    '@@MOODLE_ORIGIN@@' => var_export($moodleOrigin, true),
     '@@PASSWORD_SALT@@' => var_export($passwordSalt, true),
     '@@RTC_API_BASE_URL@@' => var_export($apiUrl, true),
-    '@@RTC_API_HOSTNAME@@' => var_export($apiHost, true),
 ];
 $config = strtr($template, $replacements);
 if (preg_match('/@@[A-Z0-9_]+@@/', $config)) {
     staging_fail('the staging config template contains an unresolved value');
+}
+if (!str_contains($config, '$CFG->wwwroot = ' . var_export($moodleOrigin, true) . ';')) {
+    staging_fail('the generated Moodle wwwroot must match RTC_STAGING_MOODLE_ORIGIN, including its HTTPS port');
+}
+if ($validateOnly) {
+    fwrite(STDOUT, "Staging config inputs validated; no files were written.\n");
+    exit(0);
 }
 $config = "<?php // " . RTC_MOODLE_STAGING_GENERATED_MARKER . "; local-only generated file.\n" . substr($config, strlen('<?php'));
 

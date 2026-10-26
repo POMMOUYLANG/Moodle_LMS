@@ -25,6 +25,11 @@ function rtc_sso_add_api_base_url(array &$urls, string $url): void
     }
 }
 
+function rtc_sso_uses_only_configured_api_origin(): bool
+{
+    return strtolower(trim(rtc_sso_env('RTC_SSO_STRICT_API_BASE_URLS', ''))) === 'true';
+}
+
 function rtc_sso_site_registry(): array
 {
     $sites = [];
@@ -59,6 +64,12 @@ function rtc_sso_api_base_urls(): array
 {
     $urls = [];
     rtc_sso_add_api_base_url($urls, rtc_sso_env('RTC_API_BASE_URL', ''));
+
+    // Staging pins all identity requests to its explicit API origin. This also
+    // preserves a configured non-default HTTPS port and disables legacy hosts.
+    if (rtc_sso_uses_only_configured_api_origin()) {
+        return array_values(array_unique($urls));
+    }
 
     $sites = rtc_sso_site_registry();
     $prefixes = [rtc_sso_env('CONTAINER_PREFIX', '')];
@@ -95,6 +106,10 @@ function rtc_sso_primary_api_base_urls(): array
     $urls = [];
     rtc_sso_add_api_base_url($urls, rtc_sso_env('RTC_API_BASE_URL', ''));
 
+    if (rtc_sso_uses_only_configured_api_origin()) {
+        return array_values(array_unique($urls));
+    }
+
     $prefix = rtc_sso_env('CONTAINER_PREFIX', '');
     if ($prefix !== '') {
         rtc_sso_add_api_base_url($urls, 'http://' . $prefix . '-backend-webserver');
@@ -113,6 +128,25 @@ function rtc_sso_primary_api_base_urls(): array
     return array_values(array_unique($urls));
 }
 
+/**
+ * Apply the non-overridable cURL TLS and redirect policy used for RTC SSO.
+ *
+ * Keeping these options in one place prevents bearer-token and credential
+ * requests from silently accepting untrusted certificates or forwarding
+ * authorization data to a redirect target.
+ *
+ * @param array<int, mixed> $options Request-specific cURL options.
+ * @return array<int, mixed>
+ */
+function rtc_sso_secure_curl_options(array $options): array
+{
+    return [
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_FOLLOWLOCATION => false,
+    ] + $options;
+}
+
 function rtc_sso_fetch_user_detail(string $token): ?array
 {
     if (!function_exists('curl_init')) {
@@ -123,13 +157,12 @@ function rtc_sso_fetch_user_detail(string $token): ?array
             rtc_sso_log_debug("RTC API URL: {$url}");
 
             $ch = curl_init($url);
-            curl_setopt_array($ch, [
+            curl_setopt_array($ch, rtc_sso_secure_curl_options([
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_HTTPHEADER => ["Authorization: Bearer {$token}"],
-                CURLOPT_SSL_VERIFYPEER => false,
                 CURLOPT_CONNECTTIMEOUT => 5,
                 CURLOPT_TIMEOUT => 10,
-            ]);
+            ]));
 
             $response = curl_exec($ch);
             $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -175,7 +208,7 @@ function rtc_sso_fetch_login_token(string $email, string $password): ?string
         rtc_sso_log_debug("RTC credential login URL: {$url}");
 
         $ch = curl_init($url);
-        curl_setopt_array($ch, [
+        curl_setopt_array($ch, rtc_sso_secure_curl_options([
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode([
@@ -186,10 +219,9 @@ function rtc_sso_fetch_login_token(string $email, string $password): ?string
                 'Accept: application/json',
                 'Content-Type: application/json',
             ],
-            CURLOPT_SSL_VERIFYPEER => false,
             CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_TIMEOUT => 10,
-        ]);
+        ]));
 
         $response = curl_exec($ch);
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -270,7 +302,7 @@ function rtc_sso_revoke_token(string $token): bool
         rtc_sso_log_debug("RTC logout API URL: {$url}");
 
         $ch = curl_init($url);
-        curl_setopt_array($ch, [
+        curl_setopt_array($ch, rtc_sso_secure_curl_options([
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
             CURLOPT_HTTPHEADER => [
@@ -279,7 +311,7 @@ function rtc_sso_revoke_token(string $token): bool
             ],
             CURLOPT_CONNECTTIMEOUT => 2,
             CURLOPT_TIMEOUT => 4,
-        ]);
+        ]));
 
         curl_exec($ch);
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);

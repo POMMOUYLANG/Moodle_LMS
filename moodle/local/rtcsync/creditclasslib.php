@@ -736,6 +736,10 @@ trait local_rtcsync_credit_class_external
     {
         global $DB;
 
+        if ($DB->get_manager()->table_exists('local_rtcsync_deliverymember')) {
+            $DB->delete_records('local_rtcsync_deliverymember', ['groupid' => $groupid]);
+        }
+
         $members = $DB->get_fieldset_select(
             'groups_members',
             'userid',
@@ -1107,6 +1111,14 @@ trait local_rtcsync_credit_class_external
         // delivery-scoped child IDs and are reconciled by their own sync.
         if ($deliverygrouping || !self::group_has_delivery_grouping_assignment($groupid)) {
             $desired = self::valid_userids($group['userids'] ?? [], 'classgroupuser');
+            if ($deliverygrouping && $isdeliverychild) {
+                $desired = \local_rtcsync\local\delivery_activity_access::stage_delivery_group_roster(
+                    $courseid,
+                    $groupid,
+                    (int) $deliverychildmatch[1],
+                    $desired
+                );
+            }
             $existingmembers = array_map('intval', array_keys($DB->get_records(
                 'groups_members', ['groupid' => $groupid], '', 'userid'
             )));

@@ -51,6 +51,30 @@ function local_rtcsync_after_require_login(
         return;
     }
 
+    \local_rtcsync\local\delivery_activity_access::reconcile_user_delivery_group_memberships(
+        (int) $USER->id
+    );
+
+    // Keep self-only core grade reports from exposing unreleased gradebook
+    // details outside the Released results surface. This also covers the
+    // course profile's mode=grade route, which does not pass through a report
+    // plugin index file.
+    if (!empty($PAGE->url)
+            && \local_rtcsync\local\grade_report_redirect::should_redirect(
+                $PAGE->url->get_path(),
+                $PAGE->url->params(),
+                (int) $USER->id,
+                static function (int $courseid) use ($USER): bool {
+                    return \local_rtcsync\local\delivery_activity_access::should_restrict_grade_report(
+                        (int) $USER->id,
+                        $courseid
+                    );
+                }
+            )) {
+        redirect(new moodle_url('/local/rtcsync/student_history.php'));
+        return;
+    }
+
     if (is_object($cm) && !empty($cm->id) && !empty($cm->course)) {
         \local_rtcsync\local\delivery_activity_access::require_student_module_access(
             (int) $cm->course,

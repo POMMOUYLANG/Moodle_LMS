@@ -141,6 +141,8 @@ final class delivery_activity_access
             return;
         }
 
+        self::require_active_managed_user($userid);
+
         // Moodle teaching and administration roles need to manage or review
         // activities across delivery groupings; keep those existing privileges.
         foreach ([
@@ -288,6 +290,8 @@ final class delivery_activity_access
         ])) {
             return;
         }
+
+        self::require_active_managed_user($userid);
 
         // Moodle teaching and administration roles need to manage or review
         // activities across delivery groupings; keep those existing privileges.
@@ -537,6 +541,10 @@ final class delivery_activity_access
     public static function calendar_event_is_in_current_delivery(object $event, int $userid): bool
     {
         global $DB;
+
+        if (self::is_inactive_managed_user($userid)) {
+            return false;
+        }
 
         $courseid = (int) ($event->courseid ?? 0);
         $modulename = trim((string) ($event->modulename ?? ''));
@@ -806,6 +814,10 @@ final class delivery_activity_access
             ]
         );
 
+        if ($courses && self::is_inactive_managed_user($userid)) {
+            throw new \moodle_exception('activityiscurrentlyhidden', 'moodle');
+        }
+
         foreach ($courses as $course) {
             if (self::is_managed_student_course_member((int) $course->id, $userid)) {
                 return true;
@@ -1069,6 +1081,8 @@ final class delivery_activity_access
                 throw new \moodle_exception('The stored student delivery scope is invalid.');
             }
 
+            self::reconcile_staged_delivery_group_memberships($courseid, $userid, $currentids);
+
             return [
                 'courseid' => $courseid,
                 'userid' => $userid,
@@ -1083,6 +1097,8 @@ final class delivery_activity_access
             if ($currentids === null || $currentids !== $normalizedids) {
                 throw new \invalid_parameter_exception('A scope revision cannot be reused for a different delivery set.');
             }
+
+            self::reconcile_staged_delivery_group_memberships($courseid, $userid, $currentids);
 
             return [
                 'courseid' => $courseid,
@@ -1119,6 +1135,8 @@ final class delivery_activity_access
             $DB->insert_record('local_rtcsync_studentscope', $values);
         }
 
+        self::reconcile_staged_delivery_group_memberships($courseid, $userid, $normalizedids);
+
         return [
             'courseid' => $courseid,
             'userid' => $userid,
@@ -1128,16 +1146,297 @@ final class delivery_activity_access
         ];
     }
 
-    /** Whether one delivery is in the current complete scope from SMS. */
-    private static function student_delivery_scope_allows(int $courseid, int $userid, int $deliveryid): bool
+    /**
+     * Reconcile stale delivery-scoped group memberships for an active RTC
+     * Student before user-facing pages render. Moodle uses those memberships
+     * to select group calendar events, so activity guards alone cannot prevent
+     * a previous delivery's event metadata from appearing after a transfer.
+     */
+    public static function reconcile_user_delivery_group_memberships(int $userid): void
     {
-        if ($deliveryid <= 0) {
+        global $DB;
+
+        if ($userid <= 1 || !$DB->get_manager()->table_exists('local_rtcsync_studentscope')) {
+            return;
+        }
+
+        $courseids = $DB->get_fieldset('local_rtcsync_studentscope', 'courseid', ['userid' => $userid]);
+        foreach ($courseids as $courseid) {
+            $courseid = (int) $courseid;
+            self::with_course_access_lock(
+                $courseid,
+                static function() use ($courseid, $userid): void {
+                    self::reconcile_course_delivery_group_memberships_locked($courseid, $userid);
+                }
+            );
+        }
+    }
+
+    /**
+     * Reconcile one course's staged roster against the authoritative scope.
+     * The caller must hold this course's access lock so scope reads cannot go
+     * stale while applying or pruning real group membership.
+     */
+    public static function reconcile_course_delivery_group_memberships_locked(int $courseid, int $userid): void
+    {
+        global $DB;
+
+        if ($courseid <= 1 || $userid <= 1
+                || !$DB->get_manager()->table_exists('local_rtcsync_studentscope')) {
+            return;
+        }
+
+        $scope = $DB->get_record('local_rtcsync_studentscope', [
+            'courseid' => $courseid,
+            'userid' => $userid,
+        ], 'deliveryids', IGNORE_MISSING);
+        if (!$scope) {
+            return;
+        }
+
+        self::reconcile_delivery_group_memberships_for_scope(
+            $courseid,
+            $userid,
+            (string) $scope->deliveryids
+        );
+    }
+
+    /** Reconcile one already-read complete scope without an extra database lookup. */
+    private static function reconcile_delivery_group_memberships_for_scope(
+        int $courseid,
+        int $userid,
+        string $encodedscope
+    ): void {
+
+        $inactiveaccount = self::is_inactive_managed_user($userid);
+        if (!$inactiveaccount && self::has_delivery_calendar_bypass($courseid, $userid)) {
+            return;
+        }
+
+        $deliveryids = self::decode_student_delivery_scope($encodedscope);
+        if ($inactiveaccount) {
+            $deliveryids = [];
+        }
+
+        // The scope write can precede re-enrolment, so groups_add_member()
+        // may have been unable to apply the staged roster at that time.
+        self::reconcile_staged_delivery_group_memberships(
+            $courseid,
+            $userid,
+            $deliveryids ?? []
+        );
+    }
+
+    /** Deny a stale authenticated session for an inactive RTC-managed account. */
+    private static function require_active_managed_user(int $userid): void
+    {
+        if (self::is_inactive_managed_user($userid)) {
+            throw new \moodle_exception('activityiscurrentlyhidden', 'moodle');
+        }
+    }
+
+    /** Whether the locally synchronized Moodle account is deleted or suspended. */
+    private static function is_inactive_managed_user(int $userid): bool
+    {
+        global $DB;
+
+        if ($userid <= 1
+                || !$DB->get_manager()->table_exists('local_rtcsync_user')
+                || !$DB->record_exists('local_rtcsync_user', ['userid' => $userid])) {
+            return false;
+        }
+
+        $user = $DB->get_record('user', ['id' => $userid], 'deleted,suspended', IGNORE_MISSING);
+        return !$user || !empty($user->deleted) || !empty($user->suspended);
+    }
+
+    /**
+     * Remove stale memberships from delivery-scoped child groups so Moodle's
+     * native group calendar filtering cannot expose previous-delivery events.
+     * Grade history is keyed by retained delivery markers and does not need
+     * these memberships.
+     *
+     * @param array<int, int> $deliveryids Current active delivery IDs.
+     */
+    private static function prune_out_of_scope_delivery_group_memberships(
+        int $courseid,
+        int $userid,
+        array $deliveryids
+    ): void {
+        global $DB;
+
+        $memberships = $DB->get_records_sql(
+            "SELECT DISTINCT g.id, g.idnumber AS groupidnumber,
+                    grouping.idnumber AS groupingidnumber
+               FROM {groups_members} gm
+               JOIN {groups} g ON g.id = gm.groupid AND g.courseid = :groupcourseid
+               JOIN {groupings_groups} gg ON gg.groupid = g.id
+               JOIN {groupings} grouping
+                 ON grouping.id = gg.groupingid
+                AND grouping.courseid = g.courseid
+              WHERE gm.userid = :userid
+                AND grouping.idnumber LIKE :deliverygrouping",
+            [
+                'groupcourseid' => $courseid,
+                'userid' => $userid,
+                'deliverygrouping' => 'rtc-delivery-grouping:%',
+            ]
+        );
+
+        foreach ($memberships as $membership) {
+            $groupingmatch = [];
+            $groupmatch = [];
+            if (preg_match('/^rtc-delivery-grouping:([1-9][0-9]*)$/', (string) $membership->groupingidnumber, $groupingmatch) !== 1
+                    || preg_match(
+                        '/^rtc-delivery-class-group:([1-9][0-9]*):([^:]+)$/',
+                        (string) $membership->groupidnumber,
+                        $groupmatch
+                    ) !== 1
+                    || $groupmatch[1] !== $groupingmatch[1]) {
+                continue;
+            }
+
+            if (!in_array((int) $groupingmatch[1], $deliveryids, true)) {
+                groups_remove_member((int) $membership->id, $userid);
+            }
+        }
+    }
+
+    /** Whether one delivery is in the active scope for a non-suspended managed learner. */
+    public static function student_delivery_scope_allows(int $courseid, int $userid, int $deliveryid): bool
+    {
+        if ($deliveryid <= 0 || self::is_inactive_managed_user($userid)) {
             return false;
         }
 
         $deliveryids = self::student_current_delivery_scope($courseid, $userid);
 
         return $deliveryids !== null && in_array($deliveryid, $deliveryids, true);
+    }
+
+    /**
+     * Persist a desired delivery roster, returning only currently enrolled
+     * Student members authorized by the effective delivery scope.
+     *
+     * @param array<int, int> $userids Desired members from SMS delivery sync.
+     * @return array<int, int> Active scoped Students that may be added now.
+     */
+    public static function stage_delivery_group_roster(
+        int $courseid,
+        int $groupid,
+        int $deliveryid,
+        array $userids
+    ): array {
+        global $DB;
+
+        if ($courseid <= 1 || $groupid <= 0 || $deliveryid <= 0) {
+            throw new \invalid_parameter_exception('A valid course, group, and delivery are required.');
+        }
+        if (!$DB->get_manager()->table_exists('local_rtcsync_deliverymember')) {
+            throw new \moodle_exception('Delivery roster staging storage is not ready.');
+        }
+
+        $userids = array_values(array_unique(array_map('intval', $userids)));
+        foreach ($userids as $userid) {
+            if ($userid <= 1) {
+                throw new \invalid_parameter_exception('Delivery roster user IDs must be positive Moodle users.');
+            }
+        }
+
+        $DB->delete_records('local_rtcsync_deliverymember', [
+            'courseid' => $courseid,
+            'groupid' => $groupid,
+        ]);
+        $now = time();
+        foreach ($userids as $userid) {
+            $DB->insert_record('local_rtcsync_deliverymember', (object) [
+                'courseid' => $courseid,
+                'groupid' => $groupid,
+                'userid' => $userid,
+                'timecreated' => $now,
+            ]);
+        }
+
+        return array_values(array_filter(
+            $userids,
+            static fn(int $userid): bool => self::is_active_manual_student($courseid, $userid)
+                && self::student_delivery_scope_allows($courseid, $userid, $deliveryid)
+        ));
+    }
+
+    /** Apply staged memberships only while scope and active Student enrolment authorize them. */
+    private static function apply_staged_delivery_group_memberships(
+        int $courseid,
+        int $userid,
+        array $deliveryids
+    ): void {
+        global $DB;
+
+        if ($deliveryids === []
+                || self::is_inactive_managed_user($userid)
+                || !self::is_active_manual_student($courseid, $userid)
+                || !$DB->get_manager()->table_exists('local_rtcsync_deliverymember')) {
+            return;
+        }
+
+        $memberships = $DB->get_records_sql(
+            "SELECT desired.groupid,
+                    grouping.idnumber AS groupingidnumber,
+                    g.idnumber AS groupidnumber
+               FROM {local_rtcsync_deliverymember} desired
+               JOIN {groups} g
+                 ON g.id = desired.groupid
+                AND g.courseid = desired.courseid
+               JOIN {groupings_groups} gg ON gg.groupid = g.id
+               JOIN {groupings} grouping
+                 ON grouping.id = gg.groupingid
+                AND grouping.courseid = g.courseid
+              WHERE desired.courseid = :courseid
+                AND desired.userid = :userid
+                AND grouping.idnumber LIKE :deliverypattern",
+            [
+                'courseid' => $courseid,
+                'userid' => $userid,
+                'deliverypattern' => 'rtc-delivery-grouping:%',
+            ]
+        );
+
+        foreach ($memberships as $membership) {
+            $groupingmatch = [];
+            $groupmatch = [];
+            if (preg_match('/^rtc-delivery-grouping:([1-9][0-9]*)$/', (string) $membership->groupingidnumber, $groupingmatch) !== 1
+                    || preg_match(
+                        '/^rtc-delivery-class-group:([1-9][0-9]*):([^:]+)$/',
+                        (string) $membership->groupidnumber,
+                        $groupmatch
+                    ) !== 1
+                    || $groupmatch[1] !== $groupingmatch[1]
+                    || !in_array((int) $groupingmatch[1], $deliveryids, true)) {
+                continue;
+            }
+
+            groups_add_member((int) $membership->groupid, $userid);
+        }
+    }
+
+    /** Reconcile staged memberships and real Moodle groups after each scope write/replay. */
+    private static function reconcile_staged_delivery_group_memberships(
+        int $courseid,
+        int $userid,
+        array $deliveryids
+    ): void {
+        $canapply = !self::is_inactive_managed_user($userid)
+            && self::is_active_manual_student($courseid, $userid);
+        if (!$canapply) {
+            // Keep the desired roster in the staging table for later
+            // reactivation, but remove all real delivery memberships while
+            // this user cannot participate in the course.
+            $deliveryids = [];
+        } else {
+            self::apply_staged_delivery_group_memberships($courseid, $userid, $deliveryids);
+        }
+
+        self::prune_out_of_scope_delivery_group_memberships($courseid, $userid, $deliveryids);
     }
 
     /**

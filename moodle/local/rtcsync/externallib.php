@@ -607,7 +607,16 @@ class local_rtcsync_external extends external_api
             // manual enrolment status is shared across the user's course roles.
             \local_rtcsync\local\delivery_activity_access::with_ready_course(
                 (int) $course->id,
-                static fn() => $writeenrolment(true)
+                static function() use ($writeenrolment, $course, $enrolment): void {
+                    $writeenrolment(true);
+                    // Scope is synchronized before active enrolment. Reconcile
+                    // staged delivery groups now, before the learner's first
+                    // module request evaluates Moodle grouping availability.
+                    \local_rtcsync\local\delivery_activity_access::reconcile_course_delivery_group_memberships_locked(
+                        (int) $course->id,
+                        (int) $enrolment['userid']
+                    );
+                }
             );
         } else if ($subjectCourseEnrolment) {
             // Suspended subject-course writes also serialize with regrouping

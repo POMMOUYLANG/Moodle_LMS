@@ -416,5 +416,43 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         upgrade_plugin_savepoint(true, 2026102506, 'local', 'rtcsync');
     }
 
+    if ($oldversion < 2026102600) {
+        $dbman = $DB->get_manager();
+
+        // Page-level reconciliation enumerates scopes by user ID. The unique
+        // course-first index cannot accelerate that reverse lookup.
+        $studentscope = new xmldb_table('local_rtcsync_studentscope');
+        $userCourseIndex = new xmldb_index('usercourse_ix', XMLDB_INDEX_NOTUNIQUE, ['userid', 'courseid']);
+        if (!$dbman->index_exists($studentscope, $userCourseIndex)) {
+            $dbman->add_index($studentscope, $userCourseIndex);
+        }
+
+        $deliverymember = new xmldb_table('local_rtcsync_deliverymember');
+        $deliverymember->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $deliverymember->add_field('courseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $deliverymember->add_field('groupid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $deliverymember->add_field('userid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $deliverymember->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $deliverymember->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $deliverymember->add_key('course_fk', XMLDB_KEY_FOREIGN, ['courseid'], 'course', ['id']);
+        $deliverymember->add_key('user_fk', XMLDB_KEY_FOREIGN, ['userid'], 'user', ['id']);
+        if (!$dbman->table_exists($deliverymember)) {
+            $dbman->create_table($deliverymember);
+        }
+        $groupUserIndex = new xmldb_index('groupuser_uix', XMLDB_INDEX_UNIQUE, ['groupid', 'userid']);
+        if (!$dbman->index_exists($deliverymember, $groupUserIndex)) {
+            $dbman->add_index($deliverymember, $groupUserIndex);
+        }
+        $courseUserIndex = new xmldb_index('courseuser_ix', XMLDB_INDEX_NOTUNIQUE, ['courseid', 'userid']);
+        if (!$dbman->index_exists($deliverymember, $courseUserIndex)) {
+            $dbman->add_index($deliverymember, $courseUserIndex);
+        }
+
+        // Keep desired delivery-group rosters separate from active Moodle group
+        // memberships so suspended users and out-of-scope syncs cannot expose
+        // previous-delivery calendar events.
+        upgrade_plugin_savepoint(true, 2026102600, 'local', 'rtcsync');
+    }
+
     return true;
 }

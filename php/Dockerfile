@@ -4,7 +4,7 @@ RUN printf 'session.upload_progress.enabled=0\n' > /usr/local/etc/php/conf.d/zz-
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    git unzip libpng-dev libjpeg-dev libfreetype6-dev libxml2-dev libzip-dev \
+    ca-certificates git unzip libpng-dev libjpeg-dev libfreetype6-dev libxml2-dev libzip-dev \
     libicu-dev g++ libxslt1-dev libwebp-dev libonig-dev libcurl4-openssl-dev \
     locales \
     && sed -i '/^# *en_AU.UTF-8 UTF-8/s/^# *//' /etc/locale.gen \
