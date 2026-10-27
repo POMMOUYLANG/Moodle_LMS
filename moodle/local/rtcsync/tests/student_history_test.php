@@ -434,6 +434,21 @@ final class student_history_test extends \advanced_testcase
         $history->require_current_rtc_student($this->rtcStudentIdentity($student['user'], false));
     }
 
+    public function test_multiple_history_markers_do_not_trigger_duplicate_key_debugging(): void
+    {
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('multiple-markers');
+        $history = new \local_rtcsync\local\student_history();
+        $this->setUser($student['user']);
+
+        $this->resetDebugging();
+        $history->require_current_rtc_student($this->rtcStudentIdentity($student['user']));
+
+        $this->assertDebuggingNotCalled(
+            'History identity lookup is an existence check and must tolerate multiple matching markers.'
+        );
+    }
+
     public function test_student_without_a_history_marker_is_denied(): void
     {
         global $DB;

@@ -67,6 +67,32 @@ final class upgrade_test extends \advanced_testcase
         $this->assertTrue($dbman->table_exists($studentscope));
         $this->assertTrue($dbman->table_exists($deliverymember));
 
+        // Model the prior MySQL schema's separate unique indexes for delivery mappings.
+        // Moodle's MySQL generator does not create physical foreign keys, so the old
+        // FOREIGN + unique-index and new FOREIGN_UNIQUE forms share this indexed state.
+        $deliverymappingindexes = [
+            ['local_rtcsync_deliverycm', 'cmid', 'cm_uix'],
+            ['local_rtcsync_deliverygrade', 'gradeitemid', 'gradeitem_uix'],
+            ['local_rtcsync_deliverycourse', 'courseid', 'course_uix'],
+        ];
+        foreach ($deliverymappingindexes as [$tablename, $field, $legacyindexname]) {
+            $table = new \xmldb_table($tablename);
+            foreach ($DB->get_indexes($tablename) as $indexname => $index) {
+                if ((bool) ($index['unique'] ?? false)
+                        && array_values($index['columns'] ?? []) === [$field]) {
+                    $dbman->drop_index(
+                        $table,
+                        new \xmldb_index($indexname, XMLDB_INDEX_UNIQUE, [$field])
+                    );
+                }
+            }
+            $dbman->add_index(
+                $table,
+                new \xmldb_index($legacyindexname, XMLDB_INDEX_UNIQUE, [$field])
+            );
+            $this->assertSame(1, $this->count_indexes_with_columns($tablename, [$field], true));
+        }
+
         // Model the prior schema with only its course-first unique index. XMLDB drop_index()
         // removes every index with the same column set, regardless of order or uniqueness.
         $dbman->drop_table($deliverymember);
@@ -100,10 +126,7 @@ final class upgrade_test extends \advanced_testcase
             ['local_rtcsync_deliverygrade', 'gradeitemid'],
             ['local_rtcsync_deliverycourse', 'courseid'],
         ] as [$tablename, $field]) {
-            $this->assertTrue($dbman->index_exists(
-                new \xmldb_table($tablename),
-                new \xmldb_index('unique_scope_ix', XMLDB_INDEX_UNIQUE, [$field])
-            ));
+            $this->assertSame(1, $this->count_indexes_with_columns($tablename, [$field], true), $tablename);
         }
         $this->assertSame('2026102700', (string) get_config('local_rtcsync', 'version'));
 
@@ -117,6 +140,24 @@ final class upgrade_test extends \advanced_testcase
         set_config('version', (string) $oldversion, 'local_rtcsync');
         $this->assertTrue(xmldb_local_rtcsync_upgrade($oldversion));
         $this->assertSame('2026102700', (string) get_config('local_rtcsync', 'version'));
+        foreach ($deliverymappingindexes as [$tablename, $field]) {
+            $this->assertSame(1, $this->count_indexes_with_columns($tablename, [$field], true), $tablename);
+        }
+    }
+
+    private function count_indexes_with_columns(string $table, array $columns, bool $unique): int
+    {
+        global $DB;
+
+        $count = 0;
+        foreach ($DB->get_indexes($table) as $index) {
+            if ((bool) ($index['unique'] ?? false) === $unique
+                && array_values($index['columns'] ?? []) === $columns) {
+                $count++;
+            }
+        }
+
+        return $count;
     }
 
     private function has_index_with_columns(string $table, array $columns, bool $unique): bool

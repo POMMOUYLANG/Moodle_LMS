@@ -573,7 +573,7 @@ final class student_history
 
         // A retained source marker keeps the Results page available after re-enrolment;
         // visible grade rows still require an exact delivery-to-item mapping.
-        return (bool) $DB->get_field_sql(
+        return $DB->record_exists_sql(
             "SELECT 1
                FROM {local_rtcsync_history} history
                JOIN {course} c ON c.id = history.courseid
