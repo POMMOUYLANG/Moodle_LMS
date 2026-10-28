@@ -1011,6 +1011,10 @@ class local_rtcsync_external extends external_api
         }
 
         $transaction = $DB->start_delegated_transaction();
+        $existingitem = grade_item::fetch([
+            'courseid' => (int) $course->id,
+            'idnumber' => $idnumber,
+        ]);
         $item = self::ensure_grade_item(
             (int) $course->id,
             $idnumber,
@@ -1029,7 +1033,12 @@ class local_rtcsync_external extends external_api
         );
 
         if ($deliveryid > 0) {
-            self::upsert_delivery_grade_mapping((int) $item->id, (int) $course->id, $deliveryid);
+            self::upsert_delivery_grade_mapping(
+                (int) $item->id,
+                (int) $course->id,
+                $deliveryid,
+                !$existingitem
+            );
         }
 
         $transaction->allow_commit();
@@ -1907,7 +1916,12 @@ class local_rtcsync_external extends external_api
      * @param int $courseid Moodle course ID.
      * @param int $deliveryid SMS delivery ID.
      */
-    private static function upsert_delivery_grade_mapping(int $gradeitemid, int $courseid, int $deliveryid): void
+    private static function upsert_delivery_grade_mapping(
+        int $gradeitemid,
+        int $courseid,
+        int $deliveryid,
+        bool $newgradeitem
+    ): void
     {
         global $DB;
 
@@ -1916,6 +1930,9 @@ class local_rtcsync_external extends external_api
             if ((int) $existing->courseid !== $courseid || (int) $existing->deliveryid !== $deliveryid) {
                 throw new invalid_parameter_exception('A synced grade item cannot be reassigned to another delivery.');
             }
+            // A current sync can update a grade item, but it cannot establish
+            // where values already stored on a legacy item belong. Only a new
+            // item created by this request or a reviewed manifest can verify it.
             $existing->timemodified = time();
             $DB->update_record('local_rtcsync_deliverygrade', $existing);
             return;
@@ -1928,6 +1945,8 @@ class local_rtcsync_external extends external_api
             'deliveryid' => $deliveryid,
             'timecreated' => $now,
             'timemodified' => $now,
+            'lineageverified' => $newgradeitem ? 1 : 0,
+            'lineagemanifestid' => null,
         ]);
     }
 }

@@ -111,6 +111,51 @@ Moodle backup/restore or preserve it in an archive category. After import,
 verify that course restoration did not duplicate RTC-managed users,
 enrolments, categories, courses, or idnumbers.
 
+### Delivery-history mapping gate
+
+The inventory counts learning content; it does not verify delivery-mapping
+lineage. `rebuild_acceptance.php` checks the RTC service contract and managed
+objects; it does not prove that historical activity or grade mappings were
+preserved. Keep cutover blocked until a data owner has reviewed the mapping
+evidence for every retained delivery result.
+
+Capture the source plugin version and preserve the relevant rows from the
+verified blue database backup:
+
+- `local_rtcsync_deliverycm` records the module's guarded state and mapping
+  decision. Existing rows are unreviewed after transition until an approved
+  manifest assigns current lineage or a quarantine/archive/disposal decision.
+- `local_rtcsync_deliverycmhist` records prior mappings observed after history
+  tracking was installed; only owner-reviewed rows are verified for Released
+  results. It cannot reconstruct a delivery association overwritten earlier.
+- `local_rtcsync_deliverygrade` records explicit delivery mappings for
+  RTC-synchronized grade items. Pre-transition mappings remain unverified,
+  and unmapped or unresolved manual grade items stay out of Released results.
+- `local_rtcsync_history` records source-scoped student history markers. A
+  current delivery scope or roster is not a substitute for an old marker.
+
+Course backup/restore can assign new course-module IDs and does not carry these
+local plugin mapping tables. If restored activities need to retain released
+history, create a reviewed manifest that links each source activity to its
+restored activity and states the supported delivery IDs and evidence. Include
+stable course idnumbers, source and target module IDs, module type, stable
+activity identity where available, current and historical delivery IDs, and
+the approving data owner. Do not map by activity name, grade value, timestamp,
+or the activity's current grouping alone.
+
+The plugin's initial backfill locks modules with unresolved lineage. A reviewed
+`current` manifest decision is accepted only if the target module's exact live
+grouping matches the explicitly approved ID. That grouping is a consistency
+check; it does not prove that older attempts or grades on the same module
+belong to that delivery. Keep modules with unresolved history quarantined and their old
+results unavailable. Do not enable student access until each retained record
+is mapped from the verified backup/manifest or explicitly dispositioned by the
+academic/data owner. The plugin provides a reviewed-manifest validation/apply
+CLI. Rehearse it on a disposable target-engine restore before migration begins
+and retain its dry-run hash, audit output, source backup hash, owner approval,
+and unresolved-row dispositions. See `rtc-delivery-lineage-reconciliation.md`
+for the v1 manifest contract and exact command sequence.
+
 Run acceptance again after content migration:
 
 ```bash
@@ -129,6 +174,11 @@ Validate with non-administrator accounts:
 Collect evidence for hierarchy, stable RTC idnumbers, teacher-credit isolation,
 class/cohort membership, student enrolment, RTC-owned grades, restored
 activities/files, and absence of duplicate managed objects.
+
+Also verify a transferred learner can read only released rows mapped to the
+prior delivery, cannot open its activities, and can open activities in the new
+delivery. Confirm unmapped legacy/manual grade items remain absent from the
+student history view and record the disposition of every unresolved mapping.
 
 ## 7. Controlled cutover
 

@@ -276,6 +276,7 @@ final class student_history
           LEFT JOIN {local_rtcsync_deliverygrade} deliverygrade
                  ON deliverygrade.gradeitemid = gi.id
                 AND deliverygrade.courseid = c.id
+                AND deliverygrade.lineageverified = 1
           LEFT JOIN {modules} activitymodule
                  ON activitymodule.name = gi.itemmodule
           LEFT JOIN {course_modules} cm
@@ -285,10 +286,12 @@ final class student_history
           LEFT JOIN {local_rtcsync_deliverycm} deliverymodule
                  ON deliverymodule.cmid = cm.id
                 AND deliverymodule.courseid = c.id
+                AND deliverymodule.lineagestatus = 1
           LEFT JOIN {local_rtcsync_deliverycmhist} deliverymodulehistory
                  ON deliverymodulehistory.cmid = cm.id
                 AND deliverymodulehistory.courseid = c.id
                 AND deliverymodulehistory.deliveryid = history.deliveryid
+                AND deliverymodulehistory.lineageverified = 1
           LEFT JOIN {groupings} deliverygrouping
                  ON deliverygrouping.courseid = c.id
                 AND deliverygrouping.idnumber = {$deliveryGroupingIdnumber}

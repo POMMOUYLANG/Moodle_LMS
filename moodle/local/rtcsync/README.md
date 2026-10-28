@@ -29,7 +29,7 @@ scheduler runs `moodle:import-grades --apply` every five minutes.
 
 Student profile fields include RTC user program ID, program ID/name/Khmer/code/degree/department, generation ID/label/year range, academic year ID/label, study year, user-program promotion, enrollment status/type, previous enrollment ID, and a JSON snapshot of all RTC enrollments for that student.
 
-Soft-deleted RTC subjects are hidden in Moodle and their RTC-managed enrolments are removed. Completed, completed-program, and failed RTC enrolments remain suspended under the existing sync policy. For withdrawn and transferred students, Moodle retains source-scoped markers for released delivery history. Students can open **Released results** from site navigation while their manual enrolment is active or suspended, even when the course is hidden; course visibility and suspended enrolment still block course activities. A course module stays bound to its original delivery once it has been assigned there. If a teacher changes it to another delivery, the plugin preserves its old delivery mapping for released-grade history and places the reused module behind an impossible grouping. Create a separate Moodle activity instance for the new delivery; do not copy learner attempts or submissions. This keeps the prior activity state private while the learner can use the new delivery's activities. The page revalidates the RTC token and active Student identity on each request, sends no-store headers, and does not expose activities, submissions, files, or answers. Delivery-participation history only returns visible, non-null activity grades tied to a module assigned to the matching `rtc-delivery-grouping`, or explicitly synchronized delivery-scoped SMS score items. User-program history remains limited to suspended enrolments. Manual or legacy grade items without a delivery mapping are omitted from delivery history. Hidden-category descendants, category/course aggregate totals, and hidden or not-yet-visible grade rows are excluded before pagination. Inactive or mismatched RTC accounts are denied. Soft-deleted mapped RTC users are suspended in Moodle. Unpublished or deleted RTC scores clear the synced Moodle grade.
+Soft-deleted RTC subjects are hidden in Moodle and their RTC-managed enrolments are removed. Completed, completed-program, and failed RTC enrolments remain suspended under the existing sync policy. For withdrawn and transferred students, Moodle retains source-scoped markers for released delivery history. Students can open **Released results** from site navigation while their manual enrolment is active or suspended, even when the course is hidden; course visibility and suspended enrolment still block course activities. A course module stays bound to its original delivery once it has been assigned there. If a teacher changes it to another delivery, the plugin preserves its old delivery mapping for released-grade history and places the reused module behind an impossible grouping. Create a separate Moodle activity instance for the new delivery; do not copy learner attempts or submissions. This keeps the prior activity state private while the learner can use the new delivery's activities. The page revalidates the RTC token and active Student identity on each request, sends no-store headers, and does not expose activities, submissions, files, or answers. Delivery-participation history only returns visible, non-null activity grades tied to a verified current or historical module mapping to the matching `rtc-delivery-grouping`, or verified delivery-scoped SMS score items. User-program history remains limited to suspended enrolments. Manual or legacy grade items without a verified delivery mapping are omitted from delivery history. Hidden-category descendants, category/course aggregate totals, and hidden or not-yet-visible grade rows are excluded before pagination. Inactive or mismatched RTC accounts are denied. Soft-deleted mapped RTC users are suspended in Moodle. Unpublished or deleted RTC scores clear the synced Moodle grade.
 
 Delivery-aware courses use Moodle's standard availability grouping condition on every activity module. Modules assigned to an exact `rtc-delivery-grouping:<deliveryid>` receive that grouping condition. Untagged modules receive an impossible grouping condition and are inaccessible to students. The first delivery preflight hides the course and suspends active managed Student enrolments while a bounded backfill guards existing modules; the `local_rtcsync_prepare_delivery_course` service returns `ready=false` until the guard is complete. A successful fresh Laravel `syncSubject` reactivates only users in its current authoritative roster; Moodle readiness or a stale grouping snapshot never reactivates users. Activity access also requires the complete per-user delivery scope synchronized by `local_rtcsync_sync_student_delivery_scope`. That scope is replaced by a monotonic SMS revision before course enrolment is activated; lower revisions cannot restore a previous delivery, and a missing scope fails closed. Desired delivery-group rosters are staged separately from real Moodle membership, so roster writes outside the effective scope cannot expose old-delivery calendar events; a scope update applies staged memberships only for newly active deliveries and removes memberships from prior deliveries. Active subject enrolment applies eligible staged groups under the course access lock, and page requests reconcile them again before calendar rendering. Retained released marks remain readable from source-scoped history markers. Activity and course-search guards also recheck the synced Moodle account's deleted/suspended status, including existing sessions after an account is deactivated. Upgrade does not infer scopes from Moodle group membership, so active learners need a current SMS scope sync before delivery activities reopen. If the queued sync exhausts its retries, the users remain suspended until the failed Moodle sync is retried from the monitored recovery path. Moodle's scheduled task continues pending backfills. Availability restrictions must be enabled on the Moodle site; otherwise preflight remains fail-closed.
 
@@ -150,3 +150,43 @@ php local/rtcsync/cli/rebuild_acceptance.php
 
 These commands never modify Moodle. See `docs/rtc-blue-green-rebuild.md` for
 the complete backup, synchronization, cutover, and rollback process.
+
+## Delivery-Lineage Reconciliation
+
+Current groupings do not prove the delivery of legacy attempts or grades.
+Existing and restored activity modules remain inaccessible until the data
+owner's reviewed mapping or explicit quarantine/archive/disposal decision is
+applied. Validate first, then apply with the exact dry-run plan hash:
+
+```bash
+php local/rtcsync/cli/reconcile_delivery_lineage.php --manifest=/secure/path/lineage.json
+```
+
+Dry-run may include `--source-backup=<path>` to hash the source snapshot
+artifact. Apply requires that option and rechecks the file immediately before
+the write transaction. The importer stores only the digest, verified flag, and
+time; it does not store or emit the path or contents. A digest match proves the
+file bytes match the manifest declaration, but does not authenticate the
+backup, source, reviewer, approval, or operator.
+
+Applying requires the matching plan hash, operator, and exact reviewer/source
+provenance confirmations printed by the manifest; those declarations are
+recorded but not authenticated. v2 amendments append reviewed decisions only
+for the exact quarantined records in their named parent import. The verifier
+checks the full amendment chain and current chain-head state. The v1 manifest,
+v2 amendment contract, conflict rules, target checks, audit fields, and
+unresolved multi-delivery limitation are documented in
+`docs/rtc-delivery-lineage-reconciliation.md`.
+
+After apply, verify the exact recorded import with the reviewed manifest:
+
+```bash
+php local/rtcsync/cli/reconcile_delivery_lineage.php \
+  --verify --manifest-id="<exact manifest_id>" --manifest=/secure/path/lineage.json
+```
+
+Exit `0` means the import audit matches and the target matches the current
+chain head; `1` reports drift or audit inconsistencies; `2` means the import is
+unknown, invalid, or lacks a complete apply-time result or source-artifact
+verification. Verification is read-only and does not authenticate the backup,
+approver, approval reference, or operator declaration.

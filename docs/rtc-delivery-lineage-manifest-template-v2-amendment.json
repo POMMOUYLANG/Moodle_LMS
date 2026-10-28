@@ -1,0 +1,60 @@
+{
+  "schema_version": 2,
+  "manifest_id": "<UNIQUE_STABLE_AMENDMENT_ID>",
+  "amendment": {
+    "parent_manifest_id": "<EXACT_PARENT_MANIFEST_ID>",
+    "parent_manifest_sha256": "<64_HEX_SHA256_OF_EXACT_PARENT_MANIFEST_BYTES>"
+  },
+  "course_idnumber": "rtc-subject:<STABLE_COURSE_ID_FROM_PARENT>",
+  "source_snapshot_sha256": "<EXACT_SOURCE_SHA256_FROM_PARENT>",
+  "source_plugin_version": 0,
+  "review": {
+    "approved_by": "<DATA_OWNER_REVIEWER>",
+    "approved_at": "<UTC_TIMESTAMP_YYYY-MM-DDTHH:MM:SSZ>",
+    "approval_reference": "<DURABLE_AMENDMENT_APPROVAL_REFERENCE>"
+  },
+  "entries": [
+    {
+      "source": {
+        "course_idnumber": "rtc-subject:<STABLE_COURSE_ID_FROM_PARENT>",
+        "cmid": 0,
+        "modname": "<EXACT_SOURCE_MODULE_NAME_FROM_PARENT>",
+        "instanceid": 0,
+        "idnumber": "<EXACT_SOURCE_MODULE_IDNUMBER_FROM_PARENT_OR_EMPTY>"
+      },
+      "target": {
+        "course_idnumber": "rtc-subject:<STABLE_COURSE_ID_FROM_PARENT>",
+        "cmid": 0,
+        "modname": "<EXACT_TARGET_MODULE_NAME_FROM_PARENT>",
+        "instanceid": 0,
+        "idnumber": "<EXACT_TARGET_MODULE_IDNUMBER_FROM_PARENT_OR_EMPTY>"
+      },
+      "decision": "<current|historical|quarantine>",
+      "delivery_ids": [],
+      "reason": "<DATA_OWNER_REVIEWED_AMENDMENT_EVIDENCE_AND_DECISION_REASON>"
+    }
+  ],
+  "grade_items": [
+    {
+      "source": {
+        "course_idnumber": "rtc-subject:<STABLE_COURSE_ID_FROM_PARENT>",
+        "itemid": 0,
+        "itemtype": "manual",
+        "itemmodule": "",
+        "iteminstance": 0,
+        "idnumber": "<EXACT_SOURCE_GRADE_IDNUMBER_FROM_PARENT_OR_EMPTY>"
+      },
+      "target": {
+        "course_idnumber": "rtc-subject:<STABLE_COURSE_ID_FROM_PARENT>",
+        "itemid": 0,
+        "itemtype": "manual",
+        "itemmodule": "",
+        "iteminstance": 0,
+        "idnumber": "<EXACT_TARGET_GRADE_IDNUMBER_FROM_PARENT_OR_EMPTY>"
+      },
+      "decision": "<map|quarantine>",
+      "delivery_id": 0,
+      "reason": "<DATA_OWNER_REVIEWED_AMENDMENT_EVIDENCE_AND_DECISION_REASON>"
+    }
+  ]
+}

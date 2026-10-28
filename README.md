@@ -92,7 +92,7 @@ docker compose --env-file ../.env ps
 
 ## Isolated Moodle PHPUnit
 
-The optional PHPUnit stack is separate from the normal Moodle Compose project. It uses its own MySQL 8.4 service and project-scoped named volumes on an internal network with no published ports or shared application volumes. The database, Moodle data, and runner state volumes are Compose-derived names under the fixed `rtc-moodle-phpunit` project; there are no globally named volume overrides. The runner mounts the checkout read-only, copies the code into a temporary workspace, excludes the ordinary `config.php` and generated PHPUnit config, and uses a test-only config that pins the connection to `phpunit-db` / `rtc_moodle_phpunit`.
+The optional PHPUnit stack is separate from the normal Moodle Compose project. It uses its own MySQL 8.4 service and project-scoped named volumes on an internal network with no published ports or shared application volumes. The database, Moodle data, and runner state volumes use a stable per-checkout project name (rtc-moodle-phpunit-<12-character-path-hash>) derived from the absolute repository path by the guarded runner, so separate clones do not share named volumes. The Compose file has no fixed project name. The runner mounts the checkout read-only, copies the code into a temporary workspace, excludes the ordinary `config.php` and generated PHPUnit config, and uses a test-only config that pins the connection to `phpunit-db` / `rtc_moodle_phpunit`.
 
 From the `Moodle_LMS/` folder, create the ignored local credentials file and set two different random 64-character hexadecimal passwords:
 
@@ -100,16 +100,57 @@ From the `Moodle_LMS/` folder, create the ignored local credentials file and set
 Copy-Item .\phpunit\.env.example .\phpunit\.env
 ```
 
-Then initialize the isolated PHPUnit site and run the focused released-history test:
+Before every mutating command, confirm the exact checkout-specific profile and
+schema. The script requires that explicit consent on both `Initialize` and
+`Test`; `Initialize` also requires the separate reset opt-in. It verifies the
+selected Docker endpoint is local, confirms the engine is already available,
+checks all existing volume Compose labels against the derived project and
+refuses partial or foreign profiles. A first initialization is allowed only
+when none of the profile volumes exist. The runner never starts Docker Desktop
+or a Docker service when `docker info` fails.
+
+Use this guarded sequence from the `Moodle_LMS/` folder:
 
 ```powershell
-.\phpunit\run.ps1 -Action Initialize
-.\phpunit\run.ps1 -Action Test
+. .\phpunit\compose-project-name.ps1
+$profile = Get-MoodlePhpUnitComposeProjectName -RepositoryRoot (Get-Location).Path
+$target = @{
+    ConfirmDisposableTarget = $true
+    ExpectedProjectName = $profile
+    ExpectedDatabaseName = 'rtc_moodle_phpunit'
+}
+.\phpunit\run.ps1 -Action Initialize @target -AllowDatabaseReset
+.\phpunit\run.ps1 -Action Test @target `
+    -TestFile local/rtcsync/tests/upgrade_test.php `
+    -TestFilter '^test_upgrade_2026102600_creates_and_recreates_delivery_membership_schema$'
+.\phpunit\run.ps1 -Action Test @target `
+    -TestFile local/rtcsync/tests/delivery_lineage_reconciliation_test.php
+.\phpunit\run.ps1 -Action Test @target `
+    -TestFile local/rtcsync/tests/student_history_test.php `
+    -TestFilter 'test_delivery_course_stays_locked_until_bounded_module_backfill_finishes|test_page_and_resource_availability_map_per_delivery_and_block_cross_delivery_reuse|test_page_and_resource_without_one_exact_delivery_restriction_fail_closed'
 ```
 
-`Initialize` uses Moodle's `--disable-composer` mode. The runner refuses to start if the checked-out `vendor` tree or `composer.phar` is missing, so it will not install or download dependencies. Moodle may rebuild the isolated PHPUnit schema and data when its test-version marker is stale. A different focused test can be selected with `-TestFile local/rtcsync/tests/your_test.php`.
+The upgrade test simulates the 2026102600-to-2026102800 path with a partial
+2026102600 index state, runs the exact 2026102700 unique-index repair, then
+asserts the v2026102800 lineage columns/audit tables and legacy quarantine.
+The reconciliation test file covers reviewed preview/apply, target drift,
+repeat import, conflict/ambiguous references, per-record provenance, and
+transaction rollback. The selected history tests cover backfill quarantine,
+activity guards, and exclusion of unmapped/ambiguous Released rows.
 
-The local `.env` is excluded from Git. The temporary source workspace is disposable, but the project-scoped database, data, and generated PHPUnit config volumes persist between runs. Before initializing on a host where these volumes already exist, verify their Compose project labels identify `rtc-moodle-phpunit`; do not point this Compose file at the normal or staging project or reuse their volumes. The static Compose check verifies the internal-only network, absence of published ports, and project-derived volume names without starting services.
+`Initialize` uses Moodle's `--disable-composer` mode. The runner refuses to
+start if the checked-out `vendor` tree or `composer.phar` is missing, so it
+will not install or download dependencies. `Test` requires all three
+checkout-scoped profile volumes to exist with matching Docker Compose labels;
+`Initialize` refuses a partial volume set and cannot rebuild an existing
+profile without `-AllowDatabaseReset`. Do not point this stack at the normal
+or staging Compose projects.
+
+The local `.env` is excluded from Git. The temporary source workspace is
+disposable, while the project-scoped database, Moodle data, and generated
+PHPUnit config volumes persist between runs. The static Compose check validates
+the fail-closed target guards, internal-only network, absence of published
+ports, and project-derived volume names without starting services.
 
 ## Local Staging Moodle Stack
 

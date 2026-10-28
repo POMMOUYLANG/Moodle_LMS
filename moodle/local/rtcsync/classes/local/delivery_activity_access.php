@@ -15,6 +15,12 @@ defined('MOODLE_INTERNAL') || die();
 final class delivery_activity_access
 {
     public const MODULE_PAGE_SIZE = 100;
+    public const LINEAGE_UNREVIEWED = 0;
+    public const LINEAGE_CURRENT = 1;
+    public const LINEAGE_HISTORICAL = 2;
+    public const LINEAGE_QUARANTINED = 3;
+    public const LINEAGE_ARCHIVED = 4;
+    public const LINEAGE_DISPOSED = 5;
     /** Minimum versioned contract revision accepted from SMS. */
     private const MIN_STUDENT_SCOPE_REVISION = 2026102505;
     private const LOCK_TYPE = 'local_rtcsync_delivery_access';
@@ -193,6 +199,7 @@ final class delivery_activity_access
                     cm.groupingid AS livegroupingid,
                     delivery.deliveryid,
                     delivery.groupingid,
+                    delivery.lineagestatus,
                     delivery.managedavailability,
                     deliverygrouping.idnumber AS groupingidnumber
                FROM {course_modules} cm
@@ -343,6 +350,7 @@ final class delivery_activity_access
                     cm.groupingid AS livegroupingid,
                     delivery.deliveryid,
                     delivery.groupingid,
+                    delivery.lineagestatus,
                     delivery.managedavailability,
                     deliverygrouping.idnumber AS groupingidnumber
                FROM {course_modules} cm
@@ -949,6 +957,7 @@ final class delivery_activity_access
                     cm.groupingid AS livegroupingid,
                     delivery.deliveryid,
                     delivery.groupingid,
+                    delivery.lineagestatus,
                     delivery.managedavailability,
                     deliverygrouping.idnumber AS groupingidnumber
                FROM {course_modules} cm
@@ -1004,11 +1013,15 @@ final class delivery_activity_access
 
         $deliveryid = (int) $module->deliveryid;
         $groupingid = (int) $module->groupingid;
+        $lineagestatus = (int) ($module->lineagestatus ?? self::LINEAGE_UNREVIEWED);
         if (!self::availability_requires_grouping($module->managedavailability, $groupingid)) {
             return false;
         }
 
         if ($deliveryid > 0) {
+            if ($lineagestatus !== self::LINEAGE_CURRENT) {
+                return false;
+            }
             if (self::has_conflicting_delivery_history_mapping(
                 (int) $module->id,
                 (int) $module->courseid,
@@ -1025,6 +1038,7 @@ final class delivery_activity_access
         return $allowsentinel
             && $deliveryid === 0
             && $groupingid < 0
+            && $lineagestatus !== self::LINEAGE_CURRENT
             && $module->groupingidnumber === null;
     }
 
@@ -1869,30 +1883,43 @@ final class delivery_activity_access
                 $existing->managedavailability
             );
         }
-        [$deliveryid, $groupingid] = self::delivery_grouping_for_module(
-            (int) $cm->course,
-            (int) $cm->groupingid,
-            $cmid,
-            $editedavailability
-        );
-        if ($existing
-                && (int) $existing->deliveryid > 0
-                && ((int) $existing->deliveryid !== $deliveryid
-                    || (int) $existing->courseid !== (int) $cm->course)) {
-            self::retain_previous_delivery_history_mapping(
+        $trustedcurrent = $existing
+            && (int) $existing->lineagestatus === self::LINEAGE_CURRENT;
+        if ($trustedcurrent) {
+            [$deliveryid, $groupingid] = self::delivery_grouping_for_module(
+                (int) $cm->course,
+                (int) $cm->groupingid,
                 $cmid,
-                (int) $existing->courseid,
-                (int) $existing->deliveryid
+                $editedavailability
             );
-        }
-        if ($deliveryid > 0 && self::has_conflicting_delivery_history_mapping(
-            $cmid,
-            (int) $cm->course,
-            $deliveryid
-        )) {
-            // Moodle submissions and attempts belong to the activity instance,
-            // not to an RTC delivery. Keep a previously used module bound to
-            // its original delivery; a new delivery needs a new course module.
+            if ((int) $existing->deliveryid > 0
+                    && ((int) $existing->deliveryid !== $deliveryid
+                        || (int) $existing->courseid !== (int) $cm->course)) {
+                self::retain_previous_delivery_history_mapping(
+                    $cmid,
+                    (int) $existing->courseid,
+                    (int) $existing->deliveryid,
+                    (string) ($existing->lineagemanifestid ?? '')
+                );
+                $existing->lineagestatus = self::LINEAGE_HISTORICAL;
+            }
+            if ($deliveryid > 0 && self::has_conflicting_delivery_history_mapping(
+                $cmid,
+                (int) $cm->course,
+                $deliveryid
+            )) {
+                // Moodle submissions and attempts belong to the activity instance,
+                // not to an RTC delivery. Keep a previously used module bound to
+                // its original delivery; a new delivery needs a new course module.
+                $deliveryid = 0;
+                $groupingid = -max(1, $cmid);
+                $existing->lineagestatus = self::LINEAGE_HISTORICAL;
+            }
+        } else {
+            // A current grouping identifies only today's delivery. It cannot
+            // establish where a legacy attempt or grade belongs. Keep every
+            // unreviewed/restored module inaccessible until an approved
+            // reconciliation manifest assigns its lineage or disposition.
             $deliveryid = 0;
             $groupingid = -max(1, $cmid);
         }
@@ -1903,6 +1930,8 @@ final class delivery_activity_access
                 'courseid' => (int) $cm->course,
                 'deliveryid' => $deliveryid,
                 'groupingid' => $groupingid,
+                'lineagestatus' => self::LINEAGE_UNREVIEWED,
+                'lineagemanifestid' => null,
                 'originalavailability' => $originalavailability,
                 'managedavailability' => null,
                 'timecreated' => $now,
@@ -1944,7 +1973,12 @@ final class delivery_activity_access
     }
 
     /** Preserve old result scope without changing the module's current access restriction. */
-    private static function retain_previous_delivery_history_mapping(int $cmid, int $courseid, int $deliveryid): void
+    private static function retain_previous_delivery_history_mapping(
+        int $cmid,
+        int $courseid,
+        int $deliveryid,
+        string $manifestid = ''
+    ): void
     {
         global $DB;
 
@@ -1962,6 +1996,8 @@ final class delivery_activity_access
             'courseid' => $courseid,
             'deliveryid' => $deliveryid,
             'timecreated' => time(),
+            'lineageverified' => 1,
+            'lineagemanifestid' => $manifestid !== '' ? $manifestid : null,
         ]);
     }
 
@@ -2081,6 +2117,36 @@ final class delivery_activity_access
         // Moodle's grouping condition treats a missing grouping as inaccessible.
         // A missing or ambiguous restriction stays inaccessible.
         return [0, -max(1, $cmid)];
+    }
+
+    /**
+     * Return the exact grouping already present on a target module for manifest
+     * consistency validation. Callers must compare this with an explicit
+     * reviewed delivery ID; this method never authorizes or persists a mapping.
+     *
+     * @return array{0:int,1:int} Observed delivery ID and grouping ID.
+     */
+    public static function manifest_grouping_reference(
+        int $courseid,
+        int $groupingid,
+        int $cmid,
+        ?string $availability
+    ): array {
+        global $DB;
+
+        [$deliveryid, $resolvedgroupingid] = self::delivery_grouping_for_module(
+            $courseid,
+            $groupingid,
+            $cmid,
+            $availability
+        );
+        if ($deliveryid <= 0 || count($DB->get_records('groupings', [
+            'courseid' => $courseid,
+            'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
+        ], 'id ASC', 'id')) !== 1) {
+            return [0, -max(1, $cmid)];
+        }
+        return [$deliveryid, $resolvedgroupingid];
     }
 
     /** Collect exact RTC delivery grouping conditions from availability JSON. */

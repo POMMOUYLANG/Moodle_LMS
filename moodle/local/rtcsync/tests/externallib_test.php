@@ -56,9 +56,66 @@ final class externallib_test extends \advanced_testcase
      */
     private function createManagedCourse(array $options = []): \stdClass
     {
-        $options['idnumber'] ??= 'rtc-subject:test-'.uniqid('', true);
+        $options['idnumber'] ??= 'rtc-subject:' . random_int(100000000, 999999999);
 
         return $this->getDataGenerator()->create_course($options);
+    }
+
+    /** Apply an explicitly reviewed module identity fixture. */
+    private function reconcileDeliveryModule(\stdClass $course, int $cmid, string $decision, int $deliveryid): void
+    {
+        global $DB;
+
+        $cm = $DB->get_record_sql(
+            'SELECT cm.id, cm.instance, cm.idnumber, m.name AS modname
+               FROM {course_modules} cm JOIN {modules} m ON m.id = cm.module
+              WHERE cm.id = :cmid',
+            ['cmid' => $cmid],
+            MUST_EXIST
+        );
+        $identity = [
+            'course_idnumber' => (string) $course->idnumber,
+            'cmid' => $cmid,
+            'modname' => (string) $cm->modname,
+            'instanceid' => (int) $cm->instance,
+            'idnumber' => (string) $cm->idnumber,
+        ];
+        $json = json_encode([
+            'schema_version' => 1,
+            'manifest_id' => 'externallib-' . bin2hex(random_bytes(8)),
+            'course_idnumber' => (string) $course->idnumber,
+            'source_snapshot_sha256' => hash_file('sha256', __DIR__ . '/fixtures/lineage-source-backup.txt'),
+            'source_plugin_version' => 2026102700,
+            'review' => [
+                'approved_by' => 'RTC Data Owner Test Fixture',
+                'approved_at' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 1),
+                'approval_reference' => 'TEST-FIXTURE',
+            ],
+            'entries' => [[
+                'source' => $identity,
+                'target' => $identity,
+                'decision' => $decision,
+                'delivery_ids' => [$deliveryid],
+                'reason' => 'Explicit test fixture mapping.',
+            ]],
+            'grade_items' => [],
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $preview = \local_rtcsync\local\delivery_lineage_reconciliation::preview($json);
+        $this->assertTrue($preview['valid'], implode('; ', $preview['errors']));
+        $manifest = json_decode($json, true);
+        \local_rtcsync\local\delivery_lineage_reconciliation::apply(
+            $json,
+            $preview['plan_sha256'],
+            'externallib-test',
+            [
+                'approved_by' => $manifest['review']['approved_by'],
+                'approved_at' => $manifest['review']['approved_at'],
+                'approval_reference' => $manifest['review']['approval_reference'],
+                'source_snapshot_sha256' => $manifest['source_snapshot_sha256'],
+                'source_plugin_version' => $manifest['source_plugin_version'],
+            ],
+            __DIR__ . '/fixtures/lineage-source-backup.txt'
+        );
     }
 
     /** Create an explicitly named RTC delivery grouping in one subject course. */
@@ -1115,6 +1172,60 @@ final class externallib_test extends \advanced_testcase
             'courseid' => (int) $course->id,
             'deliveryid' => 711,
         ]));
+        $this->assertSame(1, (int) $DB->get_field('local_rtcsync_deliverygrade', 'lineageverified', [
+            'gradeitemid' => (int) $first['itemid'],
+        ]));
+        $this->assertSame(1, (int) $DB->get_field('local_rtcsync_deliverygrade', 'lineageverified', [
+            'gradeitemid' => (int) $second['itemid'],
+        ]));
+    }
+
+    public function test_sync_does_not_verify_a_legacy_delivery_grade_mapping(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:316']);
+        $this->createDeliveryGrouping($course, 714);
+        $user = $this->createManagedUser();
+        $idnumber = 'rtc-subject-score:316:delivery:714';
+        $item = new \grade_item([
+            'courseid' => (int) $course->id,
+            'itemname' => 'Legacy delivery score',
+            'itemtype' => 'manual',
+            'itemmodule' => null,
+            'iteminstance' => null,
+            'itemnumber' => 0,
+            'idnumber' => $idnumber,
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ], false);
+        $item->insert('lineage-test');
+        $item->update_final_grade((int) $user->id, 54.0, 'lineage-test');
+        $DB->insert_record('local_rtcsync_deliverygrade', (object) [
+            'gradeitemid' => (int) $item->id,
+            'courseid' => (int) $course->id,
+            'deliveryid' => 714,
+            'timecreated' => time(),
+            'timemodified' => time(),
+            'lineageverified' => 0,
+            'lineagemanifestid' => null,
+        ]);
+
+        \local_rtcsync_external::upsert_grade([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Legacy delivery score',
+            'idnumber' => $idnumber,
+            'deliveryid' => 714,
+            'grade' => 88.0,
+        ]);
+
+        $mapping = $DB->get_record('local_rtcsync_deliverygrade', ['gradeitemid' => (int) $item->id], '*', MUST_EXIST);
+        $this->assertSame(0, (int) $mapping->lineageverified);
+        $this->assertNull($mapping->lineagemanifestid);
     }
 
     public function test_delivery_score_rejects_an_idnumber_for_another_delivery(): void
@@ -1260,7 +1371,7 @@ final class externallib_test extends \advanced_testcase
         $this->setAdminUser();
         set_config('enableavailability', 1);
         $course = $this->createManagedCourse([
-            'idnumber' => 'rtc-subject:retained-module-history',
+            'idnumber' => 'rtc-subject:9100991',
             'showgrades' => 1,
         ]);
         $student = $this->createManagedUser();
@@ -1320,8 +1431,12 @@ final class externallib_test extends \advanced_testcase
         $DB->set_field('course_modules', 'groupingid', (int) $grouping->id, ['id' => (int) $quiz->cmid]);
         \local_rtcsync\local\delivery_activity_access::protect_course_module((int) $quiz->cmid);
         $mapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $quiz->cmid], '*', MUST_EXIST);
-        $this->assertSame(991, (int) $mapping->deliveryid);
-        $this->assertSame((int) $grouping->id, (int) $mapping->groupingid);
+        $this->assertSame(0, (int) $mapping->deliveryid);
+        $this->assertSame(\local_rtcsync\local\delivery_activity_access::LINEAGE_UNREVIEWED, (int) $mapping->lineagestatus);
+        $this->reconcileDeliveryModule($course, (int) $quiz->cmid, 'historical', 991);
+        $mapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $quiz->cmid], '*', MUST_EXIST);
+        $this->assertSame(\local_rtcsync\local\delivery_activity_access::LINEAGE_HISTORICAL, (int) $mapping->lineagestatus);
+        $this->assertLessThan(0, (int) $mapping->groupingid);
 
         $gradeitem = \grade_item::fetch([
             'courseid' => (int) $course->id,
@@ -1365,7 +1480,7 @@ final class externallib_test extends \advanced_testcase
         // This delivery-owned child group is emptied but kept because the
         // teacher's availability condition still references its ID.
         $this->assertFalse($DB->record_exists('groups_members', ['groupid' => (int) $managedgroup->id]));
-        $this->assertSame(991, (int) $DB->get_field('local_rtcsync_deliverycm', 'deliveryid', ['cmid' => (int) $quiz->cmid]));
+        $this->assertSame(0, (int) $DB->get_field('local_rtcsync_deliverycm', 'deliveryid', ['cmid' => (int) $quiz->cmid]));
 
         $this->setUser($student);
         $history = new \local_rtcsync\local\student_history();

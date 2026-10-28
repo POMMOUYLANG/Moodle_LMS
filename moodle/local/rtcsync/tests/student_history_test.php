@@ -38,7 +38,7 @@ final class student_history_test extends \advanced_testcase
         ]);
 
         $course = $this->getDataGenerator()->create_course([
-            'idnumber' => $courseidnumber !== '' ? $courseidnumber : 'rtc-subject:history-' . $suffix,
+            'idnumber' => $courseidnumber !== '' ? $courseidnumber : 'rtc-subject:' . (910000000 + random_int(1, 9000000)),
             'showgrades' => 1,
         ]);
         $this->enrolHistoryStudent($user, $course);
@@ -136,6 +136,14 @@ final class student_history_test extends \advanced_testcase
                     'courseid' => (int) $course->id,
                     'deliveryid' => $deliveryid,
                     'timecreated' => time(),
+                    'lineageverified' => 1,
+                    'lineagemanifestid' => 'student-history-fixture',
+                ]);
+            } else {
+                $DB->set_field('local_rtcsync_deliverycmhist', 'lineageverified', 1, [
+                    'cmid' => $cmid,
+                    'courseid' => (int) $course->id,
+                    'deliveryid' => $deliveryid,
                 ]);
             }
             return;
@@ -149,8 +157,71 @@ final class student_history_test extends \advanced_testcase
                 'deliveryid' => $deliveryid,
                 'timecreated' => time(),
                 'timemodified' => time(),
+                'lineageverified' => 1,
+                'lineagemanifestid' => 'student-history-fixture',
             ]);
         }
+    }
+
+    /** Apply an explicit reviewed current or historical module mapping in a fixture. */
+    private function reconcileHistoryModule(
+        \stdClass $course,
+        int $cmid,
+        string $decision,
+        int $deliveryid
+    ): void {
+        global $DB;
+
+        $cm = $DB->get_record_sql(
+            'SELECT cm.id, cm.instance, cm.idnumber, m.name AS modname
+               FROM {course_modules} cm JOIN {modules} m ON m.id = cm.module
+              WHERE cm.id = :cmid',
+            ['cmid' => $cmid],
+            MUST_EXIST
+        );
+        $identity = [
+            'course_idnumber' => (string) $course->idnumber,
+            'cmid' => $cmid,
+            'modname' => (string) $cm->modname,
+            'instanceid' => (int) $cm->instance,
+            'idnumber' => (string) $cm->idnumber,
+        ];
+        $json = json_encode([
+            'schema_version' => 1,
+            'manifest_id' => 'student-history-' . bin2hex(random_bytes(8)),
+            'course_idnumber' => (string) $course->idnumber,
+            'source_snapshot_sha256' => hash_file('sha256', __DIR__ . '/fixtures/lineage-source-backup.txt'),
+            'source_plugin_version' => 2026102700,
+            'review' => [
+                'approved_by' => 'RTC Data Owner Test Fixture',
+                'approved_at' => gmdate('Y-m-d\TH:i:s\Z', time() - 1),
+                'approval_reference' => 'TEST-FIXTURE',
+            ],
+            'entries' => [[
+                'source' => $identity,
+                'target' => $identity,
+                'decision' => $decision,
+                'delivery_ids' => [$deliveryid],
+                'reason' => 'Explicit test fixture mapping.',
+            ]],
+            'grade_items' => [],
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $preview = \local_rtcsync\local\delivery_lineage_reconciliation::preview($json);
+        $this->assertTrue($preview['valid'], implode('; ', $preview['errors']));
+        $manifest = json_decode($json, true);
+        \local_rtcsync\local\delivery_lineage_reconciliation::apply(
+            $json,
+            $preview['plan_sha256'],
+            'student-history-test',
+            [
+                'approved_by' => $manifest['review']['approved_by'],
+                'approved_at' => $manifest['review']['approved_at'],
+                'approval_reference' => $manifest['review']['approval_reference'],
+                'source_snapshot_sha256' => $manifest['source_snapshot_sha256'],
+                'source_plugin_version' => $manifest['source_plugin_version'],
+            ],
+            __DIR__ . '/fixtures/lineage-source-backup.txt'
+        );
     }
 
     /**
@@ -683,6 +754,8 @@ final class student_history_test extends \advanced_testcase
             'courseid' => (int) $course->id,
             'deliveryid' => $this->historyDeliveryId($course),
         ]);
+        $this->reconcileHistoryModule($course, $oldcmid, 'historical', 770);
+        $this->reconcileHistoryModule($course, $currentcmid, 'current', 881);
 
         $this->setAdminUser();
         $scope = \local_rtcsync_external::sync_student_delivery_scope([
@@ -693,7 +766,7 @@ final class student_history_test extends \advanced_testcase
         ]);
         $this->assertSame([881], $scope['deliveryids']);
 
-        $this->assertSame(770, (int) $DB->get_field('local_rtcsync_deliverycm', 'deliveryid', ['cmid' => $oldcmid]));
+        $this->assertSame(0, (int) $DB->get_field('local_rtcsync_deliverycm', 'deliveryid', ['cmid' => $oldcmid]));
         $this->assertSame(881, (int) $DB->get_field('local_rtcsync_deliverycm', 'deliveryid', ['cmid' => $currentcmid]));
 
         $manualinstance = $DB->get_record('enrol', [
@@ -832,15 +905,24 @@ final class student_history_test extends \advanced_testcase
             ], MUST_EXIST));
         }
 
-        $this->assertTrue(\local_rtcsync\local\delivery_activity_access::prepare_course((int) $student['course']->id));
         $previouscmid = (int) $DB->get_field('course_modules', 'id', [
             'course' => (int) $student['course']->id,
             'module' => $quizmoduleid,
             'instance' => (int) $previousitem->iteminstance,
         ], MUST_EXIST);
+        $othercmid = (int) $DB->get_field('course_modules', 'id', [
+            'course' => (int) $student['course']->id,
+            'module' => $quizmoduleid,
+            'instance' => (int) $otheritem->iteminstance,
+        ], MUST_EXIST);
+        $this->reconcileHistoryModule($student['course'], $previouscmid, 'historical', 77);
+        $this->reconcileHistoryModule($student['course'], $othercmid, 'current', 88);
+
+        $this->assertTrue(\local_rtcsync\local\delivery_activity_access::prepare_course((int) $student['course']->id));
         $previousmapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => $previouscmid], '*', MUST_EXIST);
-        $this->assertSame(77, (int) $previousmapping->deliveryid);
-        $this->assertStringContainsString('"id":' . (int) $deliverygrouping->id, (string) $previousmapping->managedavailability);
+        $this->assertSame(delivery_activity_access::LINEAGE_HISTORICAL, (int) $previousmapping->lineagestatus);
+        $this->assertSame(0, (int) $previousmapping->deliveryid);
+        $this->assertStringContainsString('"id":-' . $previouscmid, (string) $previousmapping->managedavailability);
         $DB->set_field('user_enrolments', 'status', ENROL_USER_ACTIVE, [
             'userid' => (int) $student['user']->id,
         ]);
@@ -918,6 +1000,7 @@ final class student_history_test extends \advanced_testcase
             'grade' => 100,
         ], ['availability' => $this->groupingAvailability([(int) $previousgrouping->id])]);
         $this->assertTrue(\local_rtcsync\local\delivery_activity_access::prepare_course((int) $course->id));
+        $this->reconcileHistoryModule($course, (int) $quiz->cmid, 'current', 771);
         $manualinstance = $DB->get_record('enrol', [
             'courseid' => (int) $course->id,
             'enrol' => 'manual',
@@ -984,6 +1067,7 @@ final class student_history_test extends \advanced_testcase
             'name' => 'Current delivery activity',
             'grade' => 100,
         ], ['availability' => $this->groupingAvailability([(int) $currentgrouping->id])]);
+        $this->reconcileHistoryModule($course, (int) $newquiz->cmid, 'current', 772);
         $newmapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $newquiz->cmid], '*', MUST_EXIST);
         $this->assertSame(772, (int) $newmapping->deliveryid);
 
@@ -1069,6 +1153,8 @@ final class student_history_test extends \advanced_testcase
             'grade' => 100,
         ], ['availability' => $this->groupingAvailability([(int) $currentgrouping->id])]);
         $this->assertTrue(\local_rtcsync\local\delivery_activity_access::prepare_course((int) $course->id));
+        $this->reconcileHistoryModule($course, (int) $previousquiz->cmid, 'historical', 771);
+        $this->reconcileHistoryModule($course, (int) $currentquiz->cmid, 'current', 772);
 
         $manualinstance = $DB->get_record('enrol', [
             'courseid' => (int) $course->id,
@@ -1108,7 +1194,7 @@ final class student_history_test extends \advanced_testcase
         ]);
         $this->assertSame([771], $initial['deliveryids']);
         $this->assertSame(1, $initial['applied']);
-        $this->assertSame(771, (int) $DB->get_field('local_rtcsync_deliverycm', 'deliveryid', ['cmid' => (int) $previousquiz->cmid]));
+        $this->assertSame(0, (int) $DB->get_field('local_rtcsync_deliverycm', 'deliveryid', ['cmid' => (int) $previousquiz->cmid]));
         $this->assertSame(772, (int) $DB->get_field('local_rtcsync_deliverycm', 'deliveryid', ['cmid' => (int) $currentquiz->cmid]));
         $this->assertTrue($DB->record_exists('groups_members', [
             'groupid' => (int) $previousgroup->id,
@@ -1513,7 +1599,7 @@ final class student_history_test extends \advanced_testcase
         $this->resetAfterTest();
         set_config('enableavailability', 1);
         $course = $this->getDataGenerator()->create_course([
-            'idnumber' => 'rtc-subject:page-resource-map',
+            'idnumber' => 'rtc-subject:9100771',
             'visible' => 1,
             'groupmode' => NOGROUPS,
             'groupmodeforce' => 0,
@@ -1538,6 +1624,9 @@ final class student_history_test extends \advanced_testcase
             'course' => (int) $course->id,
             'name' => 'Delivery resource',
         ], ['availability' => $this->groupingAvailability([(int) $resourcegrouping->id])]);
+
+        $this->reconcileHistoryModule($course, (int) $page->cmid, 'current', 771);
+        $this->reconcileHistoryModule($course, (int) $resource->cmid, 'current', 772);
 
         $pagemapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $page->cmid], '*', MUST_EXIST);
         $resourcemapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $resource->cmid], '*', MUST_EXIST);

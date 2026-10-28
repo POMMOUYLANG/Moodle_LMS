@@ -1,5 +1,3 @@
-name: rtc-moodle-phpunit
-
 services:
   phpunit-db:
     image: mysql:8.4

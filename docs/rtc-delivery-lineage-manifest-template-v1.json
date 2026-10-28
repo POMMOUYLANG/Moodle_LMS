@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "manifest_id": "<UNIQUE_STABLE_MANIFEST_ID>",
+  "course_idnumber": "rtc-subject:<STABLE_COURSE_ID>",
+  "source_snapshot_sha256": "<64_HEX_SHA256_OF_REVIEWED_SOURCE_BACKUP>",
+  "source_plugin_version": 0,
+  "review": {
+    "approved_by": "<DATA_OWNER_REVIEWER>",
+    "approved_at": "<UTC_TIMESTAMP_YYYY-MM-DDTHH:MM:SSZ>",
+    "approval_reference": "<DURABLE_APPROVAL_RECORD_REFERENCE>"
+  },
+  "entries": [
+    {
+      "source": {
+        "course_idnumber": "rtc-subject:<SOURCE_STABLE_COURSE_ID>",
+        "cmid": 0,
+        "modname": "<SOURCE_MOODLE_MODULE_NAME>",
+        "instanceid": 0,
+        "idnumber": "<EXACT_SOURCE_COURSE_MODULE_IDNUMBER_OR_EMPTY>"
+      },
+      "target": {
+        "course_idnumber": "rtc-subject:<TARGET_STABLE_COURSE_ID>",
+        "cmid": 0,
+        "modname": "<TARGET_MOODLE_MODULE_NAME>",
+        "instanceid": 0,
+        "idnumber": "<EXACT_TARGET_COURSE_MODULE_IDNUMBER_OR_EMPTY>"
+      },
+      "decision": "<current|historical|quarantine|archive|dispose>",
+      "delivery_ids": [],
+      "reason": "<DATA_OWNER_REVIEWED_EVIDENCE_AND_DECISION_REASON>"
+    }
+  ],
+  "grade_items": [
+    {
+      "source": {
+        "course_idnumber": "rtc-subject:<SOURCE_STABLE_COURSE_ID>",
+        "itemid": 0,
+        "itemtype": "manual",
+        "itemmodule": "",
+        "iteminstance": 0,
+        "idnumber": "<EXACT_SOURCE_GRADE_ITEM_IDNUMBER_OR_EMPTY>"
+      },
+      "target": {
+        "course_idnumber": "rtc-subject:<TARGET_STABLE_COURSE_ID>",
+        "itemid": 0,
+        "itemtype": "manual",
+        "itemmodule": "",
+        "iteminstance": 0,
+        "idnumber": "<EXACT_TARGET_GRADE_ITEM_IDNUMBER_OR_EMPTY>"
+      },
+      "decision": "<map|quarantine|archive|dispose>",
+      "delivery_id": 0,
+      "reason": "<DATA_OWNER_REVIEWED_EVIDENCE_AND_DECISION_REASON>"
+    }
+  ]
+}

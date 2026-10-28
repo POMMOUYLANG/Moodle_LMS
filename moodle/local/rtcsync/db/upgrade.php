@@ -471,6 +471,41 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
             }
         }
 
+        // add_key() can mistake a same-column non-unique index for the index required
+        // by a foreign-unique key. Verify the exact column set and uniqueness, then repair
+        // partial schemas using Moodle's database-specific index generator.
+        foreach ($deliverykeys as [$tablename, $keyname, $fields]) {
+            $table = new xmldb_table($tablename);
+            if (!$dbman->table_exists($table)) {
+                continue;
+            }
+
+            $existingindexes = $DB->get_indexes($tablename);
+            $hasuniqueindex = false;
+            foreach ($existingindexes as $existingindex) {
+                if ((bool) ($existingindex['unique'] ?? false)
+                        && array_values($existingindex['columns'] ?? []) === $fields) {
+                    $hasuniqueindex = true;
+                    break;
+                }
+            }
+
+            if (!$hasuniqueindex) {
+                $existingindexnames = array_map('strtolower', array_keys($existingindexes));
+                $indexname = $keyname . '_uix';
+                $suffix = 1;
+                while (in_array(strtolower($indexname), $existingindexnames, true)) {
+                    $indexname = $keyname . '_uix' . $suffix;
+                    $suffix++;
+                }
+                $uniqueindex = new xmldb_index($indexname, XMLDB_INDEX_UNIQUE, $fields);
+                $DB->change_database_structure(
+                    $dbman->generator->getAddIndexSQL($table, $uniqueindex),
+                    [$table->getName()],
+                );
+            }
+        }
+
         // XMLDB index_exists()/add_index() match on the column set only, ignoring order and
         // uniqueness, so the unique (courseid, userid) index makes them treat the reverse
         // (userid, courseid) lookup index as present and skip it. Check the exact ordered
@@ -494,6 +529,192 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         }
 
         upgrade_plugin_savepoint(true, 2026102700, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026102800) {
+        $dbman = $DB->get_manager();
+
+        $lineagefields = [
+            ['local_rtcsync_deliverycm', 'lineagestatus', XMLDB_TYPE_INTEGER, '2', XMLDB_NOTNULL, '0', 'timemodified'],
+            ['local_rtcsync_deliverycm', 'lineagemanifestid', XMLDB_TYPE_CHAR, '64', null, null, 'lineagestatus'],
+            ['local_rtcsync_deliverycmhist', 'lineageverified', XMLDB_TYPE_INTEGER, '1', XMLDB_NOTNULL, '0', 'timecreated'],
+            ['local_rtcsync_deliverycmhist', 'lineagemanifestid', XMLDB_TYPE_CHAR, '64', null, null, 'lineageverified'],
+            ['local_rtcsync_deliverygrade', 'lineageverified', XMLDB_TYPE_INTEGER, '1', XMLDB_NOTNULL, '0', 'timemodified'],
+            ['local_rtcsync_deliverygrade', 'lineagemanifestid', XMLDB_TYPE_CHAR, '64', null, null, 'lineageverified'],
+        ];
+        foreach ($lineagefields as [$tablename, $fieldname, $type, $length, $notnull, $default, $after]) {
+            $table = new xmldb_table($tablename);
+            if (!$dbman->table_exists($table)) {
+                continue;
+            }
+            $field = new xmldb_field($fieldname, $type, $length, null, $notnull, null, $default, $after);
+            if (!$dbman->field_exists($table, $field)) {
+                $dbman->add_field($table, $field);
+            }
+        }
+
+        $manifesttable = new xmldb_table('local_rtcsync_linemanifest');
+        $manifesttable->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $manifesttable->add_field('manifestid', XMLDB_TYPE_CHAR, '64', null, XMLDB_NOTNULL);
+        $manifesttable->add_field('manifesthash', XMLDB_TYPE_CHAR, '64', null, XMLDB_NOTNULL);
+        $manifesttable->add_field('sourcehash', XMLDB_TYPE_CHAR, '64', null, XMLDB_NOTNULL);
+        $manifesttable->add_field('courseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $manifesttable->add_field('courseidnumber', XMLDB_TYPE_CHAR, '100', null, XMLDB_NOTNULL);
+        $manifesttable->add_field('sourceversion', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $manifesttable->add_field('approvedby', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL);
+        $manifesttable->add_field('approvalref', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL);
+        $manifesttable->add_field('approvedat', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $manifesttable->add_field('actorid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $manifesttable->add_field('operator', XMLDB_TYPE_CHAR, '100', null, XMLDB_NOTNULL);
+        $manifesttable->add_field('entrycount', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $manifesttable->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $manifesttable->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $manifesttable->add_index('manifest_uix', XMLDB_INDEX_UNIQUE, ['manifestid']);
+        $manifesttable->add_index('course_ix', XMLDB_INDEX_NOTUNIQUE, ['courseid']);
+        if (!$dbman->table_exists($manifesttable)) {
+            $dbman->create_table($manifesttable);
+        }
+
+        $audit = new xmldb_table('local_rtcsync_lineageaudit');
+        $audit->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $audit->add_field('manifestid', XMLDB_TYPE_CHAR, '64', null, XMLDB_NOTNULL);
+        $audit->add_field('manifesthash', XMLDB_TYPE_CHAR, '64', null, XMLDB_NOTNULL);
+        $audit->add_field('courseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $audit->add_field('recordtype', XMLDB_TYPE_CHAR, '16', null, XMLDB_NOTNULL);
+        $audit->add_field('targetid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $audit->add_field('decision', XMLDB_TYPE_CHAR, '16', null, XMLDB_NOTNULL);
+        $audit->add_field('deliveryids', XMLDB_TYPE_TEXT, null, null, XMLDB_NOTNULL);
+        $audit->add_field('sourceidentity', XMLDB_TYPE_TEXT, null, null, XMLDB_NOTNULL);
+        $audit->add_field('targetidentity', XMLDB_TYPE_TEXT, null, null, XMLDB_NOTNULL);
+        $audit->add_field('reason', XMLDB_TYPE_TEXT, null, null, XMLDB_NOTNULL);
+        $audit->add_field('entryhash', XMLDB_TYPE_CHAR, '64', null, XMLDB_NOTNULL);
+        $audit->add_field('resultstate', XMLDB_TYPE_TEXT, null, null, null);
+        $audit->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $audit->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $audit->add_index('manifesttarget_uix', XMLDB_INDEX_UNIQUE, ['manifestid', 'recordtype', 'targetid']);
+        $audit->add_index('course_ix', XMLDB_INDEX_NOTUNIQUE, ['courseid']);
+        if (!$dbman->table_exists($audit)) {
+            $dbman->create_table($audit);
+        }
+
+        // Existing activity mappings prove only the last observed grouping. Mark
+        // them unreviewed and force each managed course through the locking
+        // backfill before students can use activities again.
+        if ($dbman->table_exists(new xmldb_table('local_rtcsync_deliverycm'))) {
+            $DB->set_field('local_rtcsync_deliverycm', 'lineagestatus', 0);
+            $DB->set_field('local_rtcsync_deliverycm', 'lineagemanifestid', null);
+        }
+        if ($dbman->table_exists(new xmldb_table('local_rtcsync_deliverycmhist'))) {
+            $DB->set_field('local_rtcsync_deliverycmhist', 'lineageverified', 0);
+            $DB->set_field('local_rtcsync_deliverycmhist', 'lineagemanifestid', null);
+        }
+
+        // A grade-item row is explicit current evidence only when its stable
+        // idnumber, course identity, and delivery grouping still agree.
+        if ($dbman->table_exists(new xmldb_table('local_rtcsync_deliverygrade'))) {
+            $DB->set_field('local_rtcsync_deliverygrade', 'lineageverified', 0);
+            $DB->set_field('local_rtcsync_deliverygrade', 'lineagemanifestid', null);
+        }
+
+        if ($dbman->table_exists(new xmldb_table('local_rtcsync_deliverycourse'))) {
+            $DB->set_field('local_rtcsync_deliverycourse', 'ready', 0);
+            $DB->set_field('local_rtcsync_deliverycourse', 'lastcmid', 0);
+            $DB->set_field('local_rtcsync_deliverycourse', 'timemodified', time());
+            foreach ($DB->get_records('local_rtcsync_deliverycourse', null, 'courseid ASC', 'courseid') as $state) {
+                $DB->set_field('course', 'visible', 0, ['id' => (int) $state->courseid]);
+            }
+        }
+
+        upgrade_plugin_savepoint(true, 2026102800, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026102900) {
+        $dbman = $DB->get_manager();
+        $audit = new xmldb_table('local_rtcsync_lineageaudit');
+        if ($dbman->table_exists($audit)) {
+            // Older imports have no trustworthy apply-result snapshot. Keep the
+            // field nullable so the verifier reports those imports as incomplete.
+            $resultstate = new xmldb_field('resultstate', XMLDB_TYPE_TEXT, null, null, null, null, null, 'entryhash');
+            if (!$dbman->field_exists($audit, $resultstate)) {
+                $dbman->add_field($audit, $resultstate);
+            }
+        }
+        upgrade_plugin_savepoint(true, 2026102900, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026103000) {
+        $dbman = $DB->get_manager();
+        $manifest = new xmldb_table('local_rtcsync_linemanifest');
+        if ($dbman->table_exists($manifest)) {
+            // Existing import records have no artifact-verification evidence.
+            // Keep the digest nullable and the verified marker false; do not
+            // infer verification from the manifest's declared source hash.
+            $sourcefilehash = new xmldb_field('sourcefilehash', XMLDB_TYPE_CHAR, '64', null, null, null, null, 'sourcehash');
+            if (!$dbman->field_exists($manifest, $sourcefilehash)) {
+                $dbman->add_field($manifest, $sourcefilehash);
+            }
+            $sourcefileverified = new xmldb_field(
+                'sourcefileverified', XMLDB_TYPE_INTEGER, '1', null, XMLDB_NOTNULL, null, '0', 'sourcefilehash'
+            );
+            if (!$dbman->field_exists($manifest, $sourcefileverified)) {
+                $dbman->add_field($manifest, $sourcefileverified);
+            }
+            $sourcefileverifiedat = new xmldb_field(
+                'sourcefileverifiedat', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'sourcefileverified'
+            );
+            if (!$dbman->field_exists($manifest, $sourcefileverifiedat)) {
+                $dbman->add_field($manifest, $sourcefileverifiedat);
+            }
+        }
+        upgrade_plugin_savepoint(true, 2026103000, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026103100) {
+        $dbman = $DB->get_manager();
+        $manifest = new xmldb_table('local_rtcsync_linemanifest');
+        if ($dbman->table_exists($manifest)) {
+            $manifestjson = new xmldb_field(
+                'manifestjson', XMLDB_TYPE_TEXT, null, null, null, null, null, 'manifesthash'
+            );
+            if (!$dbman->field_exists($manifest, $manifestjson)) {
+                $dbman->add_field($manifest, $manifestjson);
+            }
+            $parentmanifestid = new xmldb_field(
+                'parentmanifestid', XMLDB_TYPE_CHAR, '64', null, null, null, null, 'sourcefileverifiedat'
+            );
+            $applyplanhash = new xmldb_field(
+                'applyplanhash', XMLDB_TYPE_CHAR, '64', null, null, null, null, 'sourcefileverifiedat'
+            );
+            if (!$dbman->field_exists($manifest, $applyplanhash)) {
+                $dbman->add_field($manifest, $applyplanhash);
+            }
+            if (!$dbman->field_exists($manifest, $parentmanifestid)) {
+                $dbman->add_field($manifest, $parentmanifestid);
+            }
+            $parentmanifesthash = new xmldb_field(
+                'parentmanifesthash', XMLDB_TYPE_CHAR, '64', null, null, null, null, 'parentmanifestid'
+            );
+            if (!$dbman->field_exists($manifest, $parentmanifesthash)) {
+                $dbman->add_field($manifest, $parentmanifesthash);
+            }
+            $parentindex = new xmldb_index('parent_ix', XMLDB_INDEX_NOTUNIQUE, ['parentmanifestid']);
+            if (!$dbman->index_exists($manifest, $parentindex)) {
+                $dbman->add_index($manifest, $parentindex);
+            }
+        }
+
+        $audit = new xmldb_table('local_rtcsync_lineageaudit');
+        if ($dbman->table_exists($audit)) {
+            $parententryhash = new xmldb_field('parententryhash', XMLDB_TYPE_CHAR, '64', null, null, null, null, 'resultstate');
+            if (!$dbman->field_exists($audit, $parententryhash)) {
+                $dbman->add_field($audit, $parententryhash);
+            }
+            $parentresultstate = new xmldb_field('parentresultstate', XMLDB_TYPE_TEXT, null, null, null, null, null, 'parententryhash');
+            if (!$dbman->field_exists($audit, $parentresultstate)) {
+                $dbman->add_field($audit, $parentresultstate);
+            }
+        }
+        upgrade_plugin_savepoint(true, 2026103100, 'local', 'rtcsync');
     }
 
     return true;

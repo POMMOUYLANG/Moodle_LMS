@@ -25,9 +25,13 @@ Do not reset Moodle until all of these gates pass:
    12 characters.
 7. The operator supplies both the verified backup ID and exact confirmation
    `RESET-<school>-MOODLE`.
+8. A Moodle data owner has reviewed the disposition of every retained
+   delivery/activity/grade mapping, including associations overwritten before
+   history tracking began.
 
 The guarded setup script verifies gates 1, 3, 6, and 7 before it removes either
-Moodle volume. The operational owner must record evidence for gates 2, 4, and 5.
+Moodle volume. The operational owner must record evidence for gates 2, 4, 5,
+and 8.
 
 ## Phase 1: deploy and audit without changing Moodle
 
@@ -56,8 +60,24 @@ Create and verify:
 
 - a databases backup for rollback of the RTC mapping table;
 - a full Moodle-scope backup for rollback of Moodle DB and Moodledata.
+- a versioned extract of `local_rtcsync_deliverycm`,
+  `local_rtcsync_deliverycmhist`, `local_rtcsync_deliverygrade`, and
+  `local_rtcsync_history` from that same verified Moodle database backup;
+- a data-owner-reviewed source-to-target module manifest for any Moodle
+  content that will be restored with new course-module IDs.
 
 Copy runner-workspace backups to the durable school backup root before reset.
+
+A reviewed `current` manifest may use the target module grouping as a
+consistency check for its explicitly approved current delivery; the grouping
+alone does not establish attempts or grades on that module. The plugin's
+backfill locks modules with unresolved lineage. `local_rtcsync_deliverycmhist`
+contains only transitions recorded after history tracking was installed. If an
+activity was reassigned earlier, current Moodle tables cannot recover its
+previous delivery. Do not infer that delivery from the current grouping, grade,
+activity name, or timestamp. Keep the affected module/results quarantined until
+the verified backup or reviewed manifest supports a mapping, or the data owner
+approves archive/disposal.
 
 ## Phase 3: guarded fresh installation
 
@@ -123,6 +143,14 @@ sudo docker exec -d rtc-bb-rtc_app sh -lc \
 Do not deploy RTC-BB, RTC-KP, RTC-KC, or shared Caddy while the full sync is
 running.
 
+Before learner access is reopened, reconcile the preserved delivery mappings
+against the restored course modules with the reviewed-manifest CLI. Rehearse it
+on a disposable target-engine restore and retain the dry-run hash, owner
+approval, source backup hash, audit records, and unresolved-row dispositions.
+A successful schema upgrade, full RTC sync, or `rebuild_acceptance.php` run
+does not prove historical mapping completeness. See
+`rtc-delivery-lineage-reconciliation.md` for the v1 contract.
+
 ## Phase 5: acceptance
 
 Require all of the following:
@@ -138,6 +166,8 @@ sudo docker exec rtc-bb-moodle-app \
 - Full sync exits successfully.
 - Reconciliation reports `0 finding(s)`.
 - Rebuild acceptance passes.
+- Every retained history row has an approved source-to-target mapping or an
+  explicit archive/disposal disposition; unknown mappings remain hidden.
 - Program/year/semester categories are correct.
 - Multiple teachers receive separate isolated credit courses.
 - Class/cohort membership matches SMS.
