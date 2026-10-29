@@ -24,12 +24,13 @@ final class student_history_test extends \advanced_testcase
         global $DB;
 
         $email = 'history-' . $suffix . '@example.test';
-        $idnumber = 'HISTORY-CARD-' . strtoupper($suffix);
         $user = $this->getDataGenerator()->create_user([
             'username' => $email,
             'email' => $email,
-            'idnumber' => $idnumber,
         ]);
+        $idnumber = 'rtc-user:' . (int) $user->id;
+        $DB->set_field('user', 'idnumber', $idnumber, ['id' => (int) $user->id]);
+        $user->idnumber = $idnumber;
         $DB->insert_record('local_rtcsync_user', (object) [
             'userid' => (int) $user->id,
             'idnumber' => $idnumber,
@@ -168,24 +169,40 @@ final class student_history_test extends \advanced_testcase
         \stdClass $course,
         int $cmid,
         string $decision,
-        int $deliveryid
+        int $deliveryid,
+        array $additionalModules = []
     ): void {
         global $DB;
 
-        $cm = $DB->get_record_sql(
-            'SELECT cm.id, cm.instance, cm.idnumber, m.name AS modname
-               FROM {course_modules} cm JOIN {modules} m ON m.id = cm.module
-              WHERE cm.id = :cmid',
-            ['cmid' => $cmid],
-            MUST_EXIST
+        $modules = array_merge(
+            [['cmid' => $cmid, 'decision' => $decision, 'deliveryid' => $deliveryid]],
+            $additionalModules
         );
-        $identity = [
-            'course_idnumber' => (string) $course->idnumber,
-            'cmid' => $cmid,
-            'modname' => (string) $cm->modname,
-            'instanceid' => (int) $cm->instance,
-            'idnumber' => (string) $cm->idnumber,
-        ];
+        $entries = [];
+        foreach ($modules as $module) {
+            $modulecmid = (int) $module['cmid'];
+            $cm = $DB->get_record_sql(
+                'SELECT cm.id, cm.instance, cm.idnumber, m.name AS modname
+                   FROM {course_modules} cm JOIN {modules} m ON m.id = cm.module
+                  WHERE cm.id = :cmid',
+                ['cmid' => $modulecmid],
+                MUST_EXIST
+            );
+            $identity = [
+                'course_idnumber' => (string) $course->idnumber,
+                'cmid' => $modulecmid,
+                'modname' => (string) $cm->modname,
+                'instanceid' => (int) $cm->instance,
+                'idnumber' => (string) $cm->idnumber,
+            ];
+            $entries[] = [
+                'source' => $identity,
+                'target' => $identity,
+                'decision' => (string) $module['decision'],
+                'delivery_ids' => [(int) $module['deliveryid']],
+                'reason' => 'Explicit test fixture mapping.',
+            ];
+        }
         $json = json_encode([
             'schema_version' => 1,
             'manifest_id' => 'student-history-' . bin2hex(random_bytes(8)),
@@ -197,13 +214,7 @@ final class student_history_test extends \advanced_testcase
                 'approved_at' => gmdate('Y-m-d\TH:i:s\Z', time() - 1),
                 'approval_reference' => 'TEST-FIXTURE',
             ],
-            'entries' => [[
-                'source' => $identity,
-                'target' => $identity,
-                'decision' => $decision,
-                'delivery_ids' => [$deliveryid],
-                'reason' => 'Explicit test fixture mapping.',
-            ]],
+            'entries' => $entries,
             'grade_items' => [],
         ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $preview = \local_rtcsync\local\delivery_lineage_reconciliation::preview($json);
@@ -276,7 +287,7 @@ final class student_history_test extends \advanced_testcase
     private function rtcStudentIdentity(\stdClass $user, bool $active = true): array
     {
         return [
-            'id' => 42,
+            'id' => (int) $user->id,
             'email' => (string) $user->email,
             'account_is_active' => $active,
             'user_detail' => ['id_card' => (string) $user->idnumber],
@@ -339,6 +350,134 @@ final class student_history_test extends \advanced_testcase
         $this->assertNotContains('Hidden result', $names);
         $this->assertNotContains('Unreleased result', $names);
         $this->assertNotContains('Course grade display off', $names);
+    }
+
+    public function test_nonmanual_delivery_grade_mapping_is_hidden_from_activity_and_released_results(): void
+    {
+        global $CFG, $DB;
+
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('invalid-module-delivery-grade');
+        $item = $this->createQuizGrade(
+            $student['course'],
+            $student['user'],
+            'Unresolved activity grade',
+            88.0
+        );
+        $manualitem = new \grade_item([
+            'courseid' => (int) $student['course']->id,
+            'itemname' => 'Approved RTC delivery score',
+            'itemtype' => 'manual',
+            'itemmodule' => null,
+            'iteminstance' => null,
+            'itemnumber' => 0,
+            'idnumber' => 'rtc-approved-delivery-score',
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ], false);
+        $manualitem->insert('student-history-test');
+        $manualitem->update_final_grade((int) $student['user']->id, 79.0, 'student-history-test');
+        $DB->insert_record('local_rtcsync_deliverygrade', (object) [
+            'gradeitemid' => (int) $manualitem->id,
+            'courseid' => (int) $student['course']->id,
+            'deliveryid' => $this->historyDeliveryId($student['course']),
+            'timecreated' => time(),
+            'timemodified' => time(),
+            'lineageverified' => 1,
+            'lineagemanifestid' => 'student-history-fixture',
+        ]);
+        // deliverygrade is only a valid mapping for synchronized manual items.
+        // A stale or malformed mapping on a module item must not expose the
+        // activity grade through Moodle's independent activity overview.
+        $DB->insert_record('local_rtcsync_deliverygrade', (object) [
+            'gradeitemid' => (int) $item->id,
+            'courseid' => (int) $student['course']->id,
+            'deliveryid' => $this->historyDeliveryId($student['course']),
+            'timecreated' => time(),
+            'timemodified' => time(),
+            'lineageverified' => 0,
+            'lineagemanifestid' => null,
+        ]);
+
+        $this->setUser($student['user']);
+        $results = (new \local_rtcsync\local\student_history())->visible_results();
+        $this->assertSame(['Approved RTC delivery score'], array_column($results['results'], 'item'));
+        $this->assertNotContains('Unresolved activity grade', array_column($results['results'], 'item'));
+
+        \local_rtcsync\local\delivery_activity_access::quarantine_nonmanual_delivery_grade_items(
+            (int) $student['course']->id
+        );
+
+        $hiddenitem = \grade_item::fetch(['id' => (int) $item->id]);
+        $grade = \grade_grade::fetch([
+            'itemid' => (int) $item->id,
+            'userid' => (int) $student['user']->id,
+        ]);
+        $this->assertNotFalse($hiddenitem);
+        $this->assertNotFalse($grade);
+        $this->assertSame(1, (int) $hiddenitem->hidden);
+        $this->assertTrue($grade->is_hidden());
+
+        require_once($CFG->dirroot . '/course/format/classes/activityoverviewbase.php');
+        $quizmoduleid = (int) $DB->get_field('modules', 'id', ['name' => 'quiz'], MUST_EXIST);
+        $cmid = (int) $DB->get_field('course_modules', 'id', [
+            'course' => (int) $student['course']->id,
+            'module' => $quizmoduleid,
+            'instance' => (int) $item->iteminstance,
+        ], MUST_EXIST);
+        $cm = get_fast_modinfo($student['course'])->get_cm($cmid);
+        $overview = new class($cm) extends \core_courseformat\activityoverviewbase {
+        };
+        $overviewgrades = $overview->get_grades_overviews();
+        $this->assertCount(1, $overviewgrades);
+        $this->assertSame('-', $overviewgrades[0]->get_value());
+        $this->assertSame('-', $overviewgrades[0]->get_content());
+
+        $results = (new \local_rtcsync\local\student_history())->visible_results();
+        $this->assertSame(['Approved RTC delivery score'], array_column($results['results'], 'item'));
+        $this->assertNotContains('Unresolved activity grade', array_column($results['results'], 'item'));
+    }
+
+    public function test_grade_surface_revalidation_uses_fresh_active_rtc_identity(): void
+    {
+        global $DB, $SESSION;
+
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('fresh-grade-identity');
+        $DB->delete_records('local_rtcsync_history', ['userid' => (int) $student['user']->id]);
+        $this->setUser($student['user']);
+        $SESSION->rtc_token = 'grade-surface-sentinel-token';
+        $receivedtoken = null;
+        $identityfetch = function(string $token) use (&$receivedtoken, $student): array {
+            $receivedtoken = $token;
+            return $this->rtcStudentIdentity($student['user']);
+        };
+
+        (new \local_rtcsync\local\student_history())->require_current_rtc_student_session($identityfetch);
+        $this->assertSame('grade-surface-sentinel-token', $receivedtoken);
+
+        $inactivefetch = function(string $token) use (&$receivedtoken, $student): array {
+            $receivedtoken = $token;
+            return $this->rtcStudentIdentity($student['user'], false);
+        };
+        try {
+            (new \local_rtcsync\local\student_history())->require_current_rtc_student_session($inactivefetch);
+            $this->fail('An inactive RTC account must not reach a grade-bearing surface.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('studenthistorydenied', $exception->errorcode);
+        }
+        $this->assertSame('grade-surface-sentinel-token', $receivedtoken);
+
+        $failedfetch = static function(string $token): array {
+            throw new \RuntimeException('RTC identity service unavailable.');
+        };
+        try {
+            (new \local_rtcsync\local\student_history())->require_current_rtc_student_session($failedfetch);
+            $this->fail('An unavailable RTC identity service must fail closed.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('studenthistorydenied', $exception->errorcode);
+        }
     }
 
     public function test_hidden_category_descendants_and_raw_aggregates_are_not_exposed(): void
@@ -503,6 +642,92 @@ final class student_history_test extends \advanced_testcase
 
         $this->expectException(\moodle_exception::class);
         $history->require_current_rtc_student($this->rtcStudentIdentity($student['user'], false));
+    }
+
+    public function test_stable_rtc_user_id_is_canonical_when_the_id_card_changes(): void
+    {
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('stable-identity');
+        $this->setUser($student['user']);
+        $identity = $this->rtcStudentIdentity($student['user']);
+        $identity['user_detail']['id_card'] = 'CHANGED-CURRENT-CARD';
+
+        (new \local_rtcsync\local\student_history())->require_current_rtc_student($identity);
+    }
+
+    public function test_legacy_id_card_requires_a_stable_marker_mapping(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('legacy-mapped');
+        $legacycard = 'LEGACY-CARD-MAPPED';
+        $DB->set_field('user', 'idnumber', $legacycard, ['id' => (int) $student['user']->id]);
+        $student['user']->idnumber = $legacycard;
+        $this->setUser($student['user']);
+        $identity = $this->rtcStudentIdentity($student['user']);
+        $identity['user_detail']['id_card'] = $legacycard;
+
+        (new \local_rtcsync\local\student_history())->require_current_rtc_student($identity);
+    }
+
+    public function test_legacy_id_card_without_stable_mapping_is_denied(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('legacy-unmapped');
+        $legacycard = 'LEGACY-CARD-UNMAPPED';
+        $DB->set_field('user', 'idnumber', $legacycard, ['id' => (int) $student['user']->id]);
+        $DB->set_field('local_rtcsync_user', 'idnumber', $legacycard, ['userid' => (int) $student['user']->id]);
+        $student['user']->idnumber = $legacycard;
+        $this->setUser($student['user']);
+        $identity = $this->rtcStudentIdentity($student['user']);
+        $identity['user_detail']['id_card'] = $legacycard;
+
+        $this->expectException(\moodle_exception::class);
+        (new \local_rtcsync\local\student_history())->require_current_rtc_student($identity);
+    }
+
+    public function test_ambiguous_legacy_id_card_is_denied(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('legacy-ambiguous');
+        $legacycard = 'LEGACY-CARD-AMBIGUOUS';
+        $DB->set_field('user', 'idnumber', $legacycard, ['id' => (int) $student['user']->id]);
+        $student['user']->idnumber = $legacycard;
+        $this->setUser($student['user']);
+        $identity = $this->rtcStudentIdentity($student['user']);
+        $identity['user_detail']['id_card'] = $legacycard;
+
+        $this->getDataGenerator()->create_user([
+            'idnumber' => $legacycard,
+        ]);
+        try {
+            (new \local_rtcsync\local\student_history())->require_current_rtc_student($identity);
+            $this->fail('A duplicated legacy ID card must not identify a Moodle account.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('studenthistorydenied', $exception->errorcode);
+        }
+    }
+
+    public function test_changed_legacy_id_card_is_denied_until_identity_is_migrated(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('legacy-changed');
+        $legacycard = 'LEGACY-CARD-CHANGED';
+        $DB->set_field('user', 'idnumber', $legacycard, ['id' => (int) $student['user']->id]);
+        $student['user']->idnumber = $legacycard;
+        $this->setUser($student['user']);
+        $identity = $this->rtcStudentIdentity($student['user']);
+        $identity['user_detail']['id_card'] = 'CHANGED-LEGACY-CARD';
+
+        $this->expectException(\moodle_exception::class);
+        (new \local_rtcsync\local\student_history())->require_current_rtc_student($identity);
     }
 
     public function test_multiple_history_markers_do_not_trigger_duplicate_key_debugging(): void
@@ -754,8 +979,11 @@ final class student_history_test extends \advanced_testcase
             'courseid' => (int) $course->id,
             'deliveryid' => $this->historyDeliveryId($course),
         ]);
-        $this->reconcileHistoryModule($course, $oldcmid, 'historical', 770);
-        $this->reconcileHistoryModule($course, $currentcmid, 'current', 881);
+        $this->reconcileHistoryModule($course, $oldcmid, 'historical', 770, [[
+            'cmid' => $currentcmid,
+            'decision' => 'current',
+            'deliveryid' => 881,
+        ]]);
 
         $this->setAdminUser();
         $scope = \local_rtcsync_external::sync_student_delivery_scope([
@@ -915,12 +1143,15 @@ final class student_history_test extends \advanced_testcase
             'module' => $quizmoduleid,
             'instance' => (int) $otheritem->iteminstance,
         ], MUST_EXIST);
-        $this->reconcileHistoryModule($student['course'], $previouscmid, 'historical', 77);
-        $this->reconcileHistoryModule($student['course'], $othercmid, 'current', 88);
+        $this->reconcileHistoryModule($student['course'], $previouscmid, 'historical', 77, [[
+            'cmid' => $othercmid,
+            'decision' => 'current',
+            'deliveryid' => 88,
+        ]]);
 
         $this->assertTrue(\local_rtcsync\local\delivery_activity_access::prepare_course((int) $student['course']->id));
         $previousmapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => $previouscmid], '*', MUST_EXIST);
-        $this->assertSame(delivery_activity_access::LINEAGE_HISTORICAL, (int) $previousmapping->lineagestatus);
+        $this->assertSame(\local_rtcsync\local\delivery_activity_access::LINEAGE_HISTORICAL, (int) $previousmapping->lineagestatus);
         $this->assertSame(0, (int) $previousmapping->deliveryid);
         $this->assertStringContainsString('"id":-' . $previouscmid, (string) $previousmapping->managedavailability);
         $DB->set_field('user_enrolments', 'status', ENROL_USER_ACTIVE, [
@@ -1074,8 +1305,12 @@ final class student_history_test extends \advanced_testcase
         $this->setUser($student['user']);
         $history = new \local_rtcsync\local\student_history();
         $results = $history->visible_results();
-        $this->assertSame(['Previous delivery released result'], array_column($results['results'], 'item'));
-        $this->assertSame(81.0, $results['results'][0]['grade']);
+        $this->assertSame(
+            ['Previous delivery released result'],
+            array_column($results['results'], 'item'),
+            'Moving to another delivery must retain the previously released, exactly mapped result.'
+        );
+        $this->assertSame([81.0], array_column($results['results'], 'grade'));
         $moduleinfo = get_fast_modinfo($course, (int) $student['user']->id);
         $this->assertFalse($moduleinfo->get_cm($cmid)->uservisible);
         $this->assertTrue($moduleinfo->get_cm((int) $newquiz->cmid)->uservisible);
@@ -1114,6 +1349,7 @@ final class student_history_test extends \advanced_testcase
         set_config('enableavailability', 1);
         $student = $this->createHistoryStudent('delivery-scope-switch');
         $course = $student['course'];
+        $this->assertStringStartsWith('rtc-subject:', (string) $course->idnumber);
         $DB->delete_records('local_rtcsync_history', [
             'userid' => (int) $student['user']->id,
             'courseid' => (int) $course->id,
@@ -1153,8 +1389,11 @@ final class student_history_test extends \advanced_testcase
             'grade' => 100,
         ], ['availability' => $this->groupingAvailability([(int) $currentgrouping->id])]);
         $this->assertTrue(\local_rtcsync\local\delivery_activity_access::prepare_course((int) $course->id));
-        $this->reconcileHistoryModule($course, (int) $previousquiz->cmid, 'historical', 771);
-        $this->reconcileHistoryModule($course, (int) $currentquiz->cmid, 'current', 772);
+        $this->reconcileHistoryModule($course, (int) $previousquiz->cmid, 'historical', 771, [[
+            'cmid' => (int) $currentquiz->cmid,
+            'decision' => 'current',
+            'deliveryid' => 772,
+        ]]);
 
         $manualinstance = $DB->get_record('enrol', [
             'courseid' => (int) $course->id,
@@ -1177,6 +1416,18 @@ final class student_history_test extends \advanced_testcase
         $previousgrade->itemname = 'Previous delivery released result';
         $previousgrade->update();
         $previousgrade->update_final_grade((int) $student['user']->id, 81.0, 'student-history-test');
+
+        $currentgrade = \grade_item::fetch([
+            'courseid' => (int) $course->id,
+            'itemtype' => 'mod',
+            'itemmodule' => 'quiz',
+            'iteminstance' => (int) $currentquiz->id,
+            'itemnumber' => 0,
+        ]);
+        $this->assertNotFalse($currentgrade);
+        $currentgrade->itemname = 'Current delivery released result';
+        $currentgrade->update();
+        $currentgrade->update_final_grade((int) $student['user']->id, 93.0, 'student-history-test');
         \local_rtcsync\local\student_history::sync_marker(
             (int) $student['user']->id,
             (int) $course->id,
@@ -1184,6 +1435,14 @@ final class student_history_test extends \advanced_testcase
             'delivery_participation',
             9711,
             771
+        );
+        \local_rtcsync\local\student_history::sync_marker(
+            (int) $student['user']->id,
+            (int) $course->id,
+            1,
+            'delivery_participation',
+            9712,
+            772
         );
 
         $initial = \local_rtcsync_external::sync_student_delivery_scope([
@@ -1245,11 +1504,16 @@ final class student_history_test extends \advanced_testcase
             'suspend' => 0,
         ]);
 
-        \local_rtcsync\local\delivery_activity_access::require_student_module_access(
-            (int) $course->id,
-            (int) $previousquiz->cmid,
-            (int) $student['user']->id
-        );
+        try {
+            \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+                (int) $course->id,
+                (int) $previousquiz->cmid,
+                (int) $student['user']->id
+            );
+            $this->fail('A previous delivery activity must stay hidden after the next delivery activates.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('activityiscurrentlyhidden', $exception->errorcode);
+        }
 
         // The backend writes effective scope before it reactivates the
         // learner's manual enrolment. Moodle cannot add the staged group while
@@ -1359,6 +1623,56 @@ final class student_history_test extends \advanced_testcase
             'groupid' => (int) $currentgroup->id,
         ], (int) $student['user']->id));
 
+        $this->setUser($student['user']);
+        $history = new \local_rtcsync\local\student_history();
+        $history->require_current_rtc_student($this->rtcStudentIdentity($student['user']));
+        $resultsaftertransfer = $history->visible_results()['results'];
+        $this->assertSame(
+            ['Previous delivery released result', 'Current delivery released result'],
+            array_column($resultsaftertransfer, 'item'),
+            'A same-subject transfer retains the old result and releases the exact verified current result.'
+        );
+        $this->assertSame([81.0, 93.0], array_column($resultsaftertransfer, 'grade'));
+
+        // The activity guard already treats any second delivery mapping as an
+        // ambiguity, including an unverified row. Released-result SQL must
+        // apply that same rule instead of using only the verified current row.
+        $ambiguousmappingid = $DB->insert_record('local_rtcsync_deliverycmhist', (object) [
+            'cmid' => (int) $currentquiz->cmid,
+            'courseid' => (int) $course->id,
+            'deliveryid' => 773,
+            'timecreated' => time(),
+            'lineageverified' => 0,
+            'lineagemanifestid' => null,
+        ]);
+        try {
+            \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+                (int) $course->id,
+                (int) $currentquiz->cmid,
+                (int) $student['user']->id
+            );
+            $this->fail('An ambiguous activity mapping must fail closed after transfer.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('activityiscurrentlyhidden', $exception->errorcode);
+        }
+        $this->assertFalse(\local_rtcsync\local\delivery_activity_access::student_module_content_is_in_current_delivery(
+            (int) $course->id,
+            (int) $currentquiz->cmid,
+            (int) $student['user']->id
+        ));
+        $resultswithambiguity = $history->visible_results()['results'];
+        $this->assertSame(
+            ['Previous delivery released result'],
+            array_column($resultswithambiguity, 'item'),
+            'An unverified conflicting delivery mapping cannot release the shared activity grade.'
+        );
+        $DB->delete_records('local_rtcsync_deliverycmhist', ['id' => $ambiguousmappingid]);
+        \local_rtcsync\local\delivery_activity_access::require_student_module_access(
+            (int) $course->id,
+            (int) $currentquiz->cmid,
+            (int) $student['user']->id
+        );
+
         // Core require_login can keep an already-authenticated session alive
         // after SMS causes Moodle to suspend the account. Recheck stored account
         // status in the delivery guard and clear delivery group visibility.
@@ -1431,6 +1745,7 @@ final class student_history_test extends \advanced_testcase
             'idnumber' => 'rtc-delivery-class-group:773:1',
         ]);
         groups_assign_grouping((int) $nextgrouping->id, (int) $nextgroup->id);
+        $this->setAdminUser();
         \local_rtcsync_external::enrol_user([
             'courseid' => (int) $course->id,
             'userid' => (int) $student['user']->id,
@@ -1519,8 +1834,12 @@ final class student_history_test extends \advanced_testcase
         $this->setUser($student['user']);
         $history = new \local_rtcsync\local\student_history();
         $results = $history->visible_results();
-        $this->assertSame(['Previous delivery released result'], array_column($results['results'], 'item'));
-        $this->assertSame(81.0, $results['results'][0]['grade']);
+        $this->assertSame(
+            ['Previous delivery released result', 'Current delivery released result'],
+            array_column($results['results'], 'item'),
+            'A later delivery must retain every previously released, exactly mapped result.'
+        );
+        $this->assertSame([81.0, 93.0], array_column($results['results'], 'grade'));
     }
 
     public function test_delivery_course_stays_locked_until_bounded_module_backfill_finishes(): void
@@ -1625,8 +1944,11 @@ final class student_history_test extends \advanced_testcase
             'name' => 'Delivery resource',
         ], ['availability' => $this->groupingAvailability([(int) $resourcegrouping->id])]);
 
-        $this->reconcileHistoryModule($course, (int) $page->cmid, 'current', 771);
-        $this->reconcileHistoryModule($course, (int) $resource->cmid, 'current', 772);
+        $this->reconcileHistoryModule($course, (int) $page->cmid, 'current', 771, [[
+            'cmid' => (int) $resource->cmid,
+            'decision' => 'current',
+            'deliveryid' => 772,
+        ]]);
 
         $pagemapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $page->cmid], '*', MUST_EXIST);
         $resourcemapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $resource->cmid], '*', MUST_EXIST);

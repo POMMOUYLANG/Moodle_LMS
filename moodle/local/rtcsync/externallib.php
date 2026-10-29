@@ -136,7 +136,12 @@ class local_rtcsync_external extends external_api
                 'email' => new external_value(PARAM_EMAIL, 'Email address.'),
                 'firstname' => new external_value(PARAM_TEXT, 'First name.'),
                 'lastname' => new external_value(PARAM_TEXT, 'Last name.'),
-                'idnumber' => new external_value(PARAM_RAW, 'Stable RTC user idnumber.', VALUE_DEFAULT, ''),
+                'idnumber' => new external_value(
+                    PARAM_RAW,
+                    'Stable RTC user idnumber in rtc-user:<users.id> format.',
+                    VALUE_DEFAULT,
+                    ''
+                ),
                 'phone1' => new external_value(PARAM_TEXT, 'Phone number.', VALUE_DEFAULT, ''),
                 'suspended' => new external_value(PARAM_INT, 'Suspended flag.', VALUE_DEFAULT, 0),
                 'profile_fields' => new external_multiple_structure(
@@ -158,41 +163,213 @@ class local_rtcsync_external extends external_api
 
         $params = self::validate_parameters(self::upsert_user_parameters(), ['user' => $user]);
         $user = $params['user'];
+        if (preg_match('/\Artc-user:[1-9][0-9]*\z/', trim((string) $user['idnumber'])) !== 1) {
+            throw new invalid_parameter_exception(
+                'RTC user idnumber must use the canonical rtc-user:<positive users.id> format.'
+            );
+        }
 
         $systemcontext = context_system::instance();
         self::validate_context($systemcontext);
 
+        $requestedidnumber = trim((string) $user['idnumber']);
+        $stableusermatches = $DB->get_records('user', [
+            'idnumber' => $requestedidnumber,
+            'deleted' => 0,
+            'mnethostid' => $CFG->mnet_localhost_id,
+        ], '', '*', 0, 2);
+        if (count($stableusermatches) > 1) {
+            throw new invalid_parameter_exception(
+                'The stable RTC user idnumber matches multiple local Moodle accounts.'
+            );
+        }
+        $stablemarkermatches = $DB->get_records_sql(
+            "SELECT u.*
+               FROM {local_rtcsync_user} managed
+               JOIN {user} u ON u.id = managed.userid
+              WHERE managed.idnumber = :idnumber
+                AND u.deleted = 0
+                AND u.mnethostid = :mnethostid",
+            [
+                'idnumber' => $requestedidnumber,
+                'mnethostid' => (int) $CFG->mnet_localhost_id,
+            ],
+            0,
+            2
+        );
+        if (count($stablemarkermatches) > 1) {
+            throw new invalid_parameter_exception(
+                'The stable RTC user idnumber is marked on multiple local Moodle accounts.'
+            );
+        }
+        $userbystableid = $stableusermatches ? reset($stableusermatches) : false;
+        $userbymarker = $stablemarkermatches ? reset($stablemarkermatches) : false;
+        if ($userbystableid && $userbymarker
+                && (int) $userbystableid->id !== (int) $userbymarker->id) {
+            throw new invalid_parameter_exception(
+                'The stable RTC user idnumber and managed-user marker identify different Moodle accounts.'
+            );
+        }
+        $stablemapping = $userbystableid ?: $userbymarker;
+
         $existing = false;
+        $resolution = '';
         if (!empty($user['moodleid'])) {
             $existing = $DB->get_record('user', [
                 'id' => (int) $user['moodleid'],
                 'deleted' => 0,
                 'mnethostid' => $CFG->mnet_localhost_id,
             ], '*', IGNORE_MISSING);
+            if (!$existing) {
+                throw new invalid_parameter_exception(
+                    'The supplied Moodle user mapping no longer resolves to an active local account.'
+                );
+            }
+            $resolution = 'moodleid';
+            if ($stablemapping && (int) $stablemapping->id !== (int) $existing->id) {
+                throw new invalid_parameter_exception(
+                    'The supplied Moodle user mapping conflicts with the stable RTC user mapping.'
+                );
+            }
         }
-        if (!$existing && trim($user['idnumber']) !== '') {
-            $existing = $DB->get_record('user', [
-                'idnumber' => trim($user['idnumber']),
-                'deleted' => 0,
-                'mnethostid' => $CFG->mnet_localhost_id,
-            ], '*', IGNORE_MISSING);
+        if (!$existing && $stablemapping) {
+            $existing = $stablemapping;
+            if ($existing) {
+                $resolution = $userbystableid ? 'idnumber' : 'marker';
+            }
         }
         if (!$existing) {
             $existing = core_user::get_user_by_username($user['username'], '*', null, IGNORE_MISSING);
             if ($existing && !empty($existing->deleted)) {
                 $existing = false;
             }
+            if ($existing) {
+                $resolution = 'username';
+            }
         }
         if (!$existing) {
-            $existing = $DB->get_record('user', [
-                'email' => $user['email'],
-                'deleted' => 0,
-                'mnethostid' => $CFG->mnet_localhost_id,
-            ], '*', IGNORE_MISSING);
+            $emailmatches = $DB->get_records_select(
+                'user',
+                'LOWER(email) = :email AND deleted = 0 AND mnethostid = :mnethostid',
+                [
+                    'email' => core_text::strtolower(trim($user['email'])),
+                    'mnethostid' => (int) $CFG->mnet_localhost_id,
+                ],
+                '',
+                '*',
+                0,
+                2
+            );
+            if (count($emailmatches) > 1) {
+                throw new invalid_parameter_exception(
+                    'The RTC user email matches multiple local Moodle accounts.'
+                );
+            }
+            $existing = $emailmatches ? reset($emailmatches) : false;
+            if ($existing) {
+                $resolution = 'email';
+            }
         }
 
         if ($existing) {
-            local_rtcsync_require_managed_user((int) $existing->id);
+            $managedmarker = $DB->get_record(
+                'local_rtcsync_user',
+                ['userid' => (int) $existing->id],
+                '*',
+                IGNORE_MISSING
+            );
+            $storedidnumber = trim((string) $existing->idnumber);
+            $markeridnumber = trim((string) ($managedmarker->idnumber ?? ''));
+            $requestedidnumber = trim((string) $user['idnumber']);
+            $incomingstableid = str_starts_with($requestedidnumber, 'rtc-user:');
+            $storedstableid = str_starts_with($storedidnumber, 'rtc-user:');
+            $markerprovesincoming = $markeridnumber === $requestedidnumber;
+
+            if ($managedmarker) {
+                local_rtcsync_require_managed_user((int) $existing->id);
+            } else if ($resolution !== 'moodleid' || !$incomingstableid) {
+                throw new invalid_parameter_exception(
+                    'An unmanaged Moodle account requires an explicit stable RTC user mapping before adoption.'
+                );
+            }
+
+            if ($incomingstableid) {
+                $otherstablematches = $DB->get_records('user', [
+                    'idnumber' => $requestedidnumber,
+                    'deleted' => 0,
+                    'mnethostid' => $CFG->mnet_localhost_id,
+                ], '', 'id', 0, 2);
+                foreach (array_keys($otherstablematches) as $matcheduserid) {
+                    if ((int) $matcheduserid !== (int) $existing->id) {
+                        throw new invalid_parameter_exception(
+                            'The stable RTC user idnumber is already assigned to another Moodle account.'
+                        );
+                    }
+                }
+                $othermarkermatches = $DB->get_records('local_rtcsync_user', [
+                    'idnumber' => $requestedidnumber,
+                ], '', 'userid', 0, 2);
+                foreach (array_keys($othermarkermatches) as $matcheduserid) {
+                    if ((int) $matcheduserid !== (int) $existing->id) {
+                        throw new invalid_parameter_exception(
+                            'The stable RTC user idnumber is already marked on another Moodle account.'
+                        );
+                    }
+                }
+            }
+
+            if (($storedstableid && $storedidnumber !== $requestedidnumber)
+                    || (str_starts_with($markeridnumber, 'rtc-user:')
+                        && $markeridnumber !== $requestedidnumber)) {
+                throw new invalid_parameter_exception(
+                    'The supplied Moodle mapping conflicts with the account’s stable RTC user identity.'
+                );
+            }
+            if ($managedmarker && $markeridnumber !== $storedidnumber
+                    && !($markerprovesincoming && !$storedstableid)) {
+                throw new invalid_parameter_exception(
+                    'The managed-user marker conflicts with the Moodle account identity.'
+                );
+            }
+            if ($incomingstableid && !$storedstableid
+                    && $resolution !== 'moodleid'
+                    && !$markerprovesincoming) {
+                throw new invalid_parameter_exception(
+                    'A legacy ID-card account requires an explicit Moodle mapping or an existing stable RTC identity marker.'
+                );
+            }
+
+            $usernamecandidate = core_user::get_user_by_username(
+                core_text::strtolower(trim((string) $user['username'])),
+                '*',
+                null,
+                IGNORE_MISSING
+            );
+            if ($usernamecandidate && empty($usernamecandidate->deleted)
+                    && (int) $usernamecandidate->id !== (int) $existing->id) {
+                throw new invalid_parameter_exception(
+                    'The supplied username belongs to a different Moodle account than the stable RTC mapping.'
+                );
+            }
+            $emailcandidates = $DB->get_records_select(
+                'user',
+                'LOWER(email) = :email AND deleted = 0 AND mnethostid = :mnethostid',
+                [
+                    'email' => core_text::strtolower(trim((string) $user['email'])),
+                    'mnethostid' => (int) $CFG->mnet_localhost_id,
+                ],
+                '',
+                'id',
+                0,
+                2
+            );
+            foreach (array_keys($emailcandidates) as $matcheduserid) {
+                if ((int) $matcheduserid !== (int) $existing->id) {
+                    throw new invalid_parameter_exception(
+                        'The supplied email belongs to a different Moodle account than the stable RTC mapping.'
+                    );
+                }
+            }
         }
 
         $record = (object) [
@@ -1013,8 +1190,13 @@ class local_rtcsync_external extends external_api
         $transaction = $DB->start_delegated_transaction();
         $existingitem = grade_item::fetch([
             'courseid' => (int) $course->id,
-            'idnumber' => $idnumber,
+            'idnumber' => $idnumber !== '' ? $idnumber : 'rtc-final-score',
         ]);
+        if ($existingitem && (string) $existingitem->itemtype !== 'manual') {
+            throw new invalid_parameter_exception(
+                'RTC score items must be manual grade items; activity grades require their own reviewed delivery lineage.'
+            );
+        }
         $item = self::ensure_grade_item(
             (int) $course->id,
             $idnumber,
@@ -1881,6 +2063,14 @@ class local_rtcsync_external extends external_api
     ): grade_item {
         $idnumber = $idnumber ?: 'rtc-final-score';
         $item = grade_item::fetch(['courseid' => $courseid, 'idnumber' => $idnumber]);
+
+        // Check at the final lookup immediately before any grade item write,
+        // including when a concurrent Moodle edit races the earlier preflight.
+        if ($item && (string) $item->itemtype !== 'manual') {
+            throw new invalid_parameter_exception(
+                'RTC score items must be manual grade items; activity grades require their own reviewed delivery lineage.'
+            );
+        }
 
         if (!$item) {
             $item = new grade_item([

@@ -333,6 +333,13 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
             941001,
             (int) $target['deliveryid']
         );
+        foreach ([909998, 909999] as $legacyDeliveryId) {
+            $this->getDataGenerator()->create_grouping([
+                'courseid' => (int) $target['course']->id,
+                'name' => 'Archived delivery ' . $legacyDeliveryId,
+                'idnumber' => 'rtc-delivery-grouping:' . $legacyDeliveryId,
+            ]);
+        }
         foreach ([909998, 909999] as $ambiguousdeliveryid) {
             student_history::sync_marker(
                 (int) $user->id,
@@ -929,7 +936,7 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
         $this->assertSame('RTC Data Owner', (string) $record->approvedby);
         $this->assertSame('DATA-REVIEW-TEST', (string) $record->approvalref);
         $this->assertSame(strtotime($manifest['review']['approved_at']), (int) $record->approvedat);
-        $this->assertSame(str_repeat('a', 64), (string) $record->sourcehash);
+        $this->assertSame((string) $manifest['source_snapshot_sha256'], (string) $record->sourcehash);
         $this->assertSame(2026102700, (int) $record->sourceversion);
         $this->assertSame('local-test-operator', (string) $record->operator);
         $this->assertSame($json, (string) $record->manifestjson);
@@ -1229,7 +1236,7 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
         $DB->set_field('course_modules', 'idnumber', $privateidnumber, ['id' => (int) $target['cm']->id]);
         $target['cm']->idnumber = $privateidnumber;
         $student = $this->getDataGenerator()->create_user([
-            'username' => 'PRIVATE_LEARNER_SENTINEL',
+            'username' => 'private_learner_sentinel',
             'email' => 'private-learner-sentinel@example.test',
         ]);
         $gradeitem = new \grade_item([
@@ -1285,7 +1292,7 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
         $this->assertSame($this->sourceSnapshotHash(), $result['source_artifact_verification']['sha256']);
         $encodedresult = json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         foreach ([
-            'PRIVATE_LEARNER_SENTINEL',
+            'private_learner_sentinel',
             'private-learner-sentinel@example.test',
             '73.25',
             'PRIVATE_GRADE_ITEM_NAME_SENTINEL',
@@ -1581,6 +1588,11 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
         $this->assertSame($childpreview['plan_sha256'], $repeat['plan_sha256']);
         $this->assertSame(1, $DB->count_records('local_rtcsync_lineageaudit', [
             'manifestid' => 'amendment-history-resolution',
+            'recordtype' => 'module',
+        ]));
+        $this->assertSame(1, $DB->count_records('local_rtcsync_lineageaudit', [
+            'manifestid' => 'amendment-history-resolution',
+            'recordtype' => 'gradeitem',
         ]));
         try {
             $this->applyManifest($childjson, str_repeat('f', 64));
@@ -1657,7 +1669,7 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
         $incomplete['grade_items'] = [];
         $incompletepreview = delivery_lineage_reconciliation::preview(json_encode($incomplete));
         $this->assertFalse($incompletepreview['valid']);
-        $this->assertStringContainsString('must be explicitly resolved', implode(' ', $incompletepreview['errors']));
+        $this->assertStringContainsString('Manifest omits unresolved delivery-grade mapping', implode(' ', $incompletepreview['errors']));
 
         $DB->set_field('local_rtcsync_deliverycm', 'lineagestatus', delivery_activity_access::LINEAGE_UNREVIEWED, [
             'cmid' => (int) $target['cm']->id,

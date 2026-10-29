@@ -137,6 +137,17 @@ final class student_history
      */
     public function require_current_rtc_student(array $rtcuser): void
     {
+        global $USER;
+
+        $this->require_current_rtc_student_identity($rtcuser);
+        if (!$this->has_valid_student_history_marker((int) $USER->id)) {
+            throw new \moodle_exception('studenthistorydenied', 'local_rtcsync');
+        }
+    }
+
+    /** Validate live RTC and Moodle identity without requiring a history marker. */
+    private function require_current_rtc_student_identity(array $rtcuser): void
+    {
         global $DB, $USER;
 
         if (empty($USER->id) || !empty($USER->deleted) || !empty($USER->suspended) || isguestuser()) {
@@ -155,7 +166,10 @@ final class student_history
             : \core_text::strtolower(trim((string) ($rtcuser['email'] ?? '')));
         $detail = is_array($rtcuser['user_detail'] ?? null) ? $rtcuser['user_detail'] : [];
         $idcard = trim((string) ($detail['id_card'] ?? ''));
-        $expectedidnumber = $idcard !== '' ? $idcard : 'rtc-user:' . (int) $smsuserid;
+        // ID cards can change or be reused. Only the immutable RTC user ID is
+        // the identity key; a legacy Moodle ID card is accepted only when the
+        // sync marker already binds this Moodle account to that exact RTC ID.
+        $expectedidnumber = $smsuserid ? 'rtc-user:' . (int) $smsuserid : '';
 
         $roles = $rtcuser['roles'] ?? $rtcuser['rtc_roles'] ?? [];
         if (!is_array($roles)) {
@@ -178,21 +192,56 @@ final class student_history
         $manageduser = $DB->get_record('local_rtcsync_user', ['userid' => (int) $USER->id], '*', IGNORE_MISSING);
         $moodleemail = \core_text::strtolower(trim((string) ($USER->email ?? '')));
         $moodleidnumber = trim((string) ($USER->idnumber ?? ''));
+        $managedidnumber = trim((string) ($manageduser->idnumber ?? ''));
+        $canonicalidentity = $expectedidnumber !== ''
+            && $moodleidnumber === $expectedidnumber
+            && $managedidnumber === $expectedidnumber;
+        $legacyidentity = $expectedidnumber !== ''
+            && $idcard !== ''
+            && $moodleidnumber === $idcard
+            && $managedidnumber === $expectedidnumber
+            && $DB->count_records('user', [
+                'idnumber' => $idcard,
+                'deleted' => 0,
+                'mnethostid' => (int) ($USER->mnethostid ?? 0),
+            ]) === 1;
 
         if (!$smsuserid
             || !validate_email($email)
             || $email !== $moodleemail
-            || $expectedidnumber === 'rtc-user:0'
-            || $expectedidnumber !== $moodleidnumber
             || !$manageduser
-            || trim((string) $manageduser->idnumber) !== $expectedidnumber
+            || (!$canonicalidentity && !$legacyidentity)
             || !in_array('student', $normalizedroles, true)) {
             throw new \moodle_exception('studenthistorydenied', 'local_rtcsync');
         }
 
-        if (!$this->has_valid_student_history_marker((int) $USER->id)) {
+    }
+
+    /** Fetch and validate live RTC identity for a current grade-bearing course request. */
+    public function require_current_rtc_student_session(?callable $fetchuserdetail = null): void
+    {
+        global $CFG, $SESSION;
+
+        $token = trim((string) ($SESSION->rtc_token ?? ''));
+        if ($token === '') {
             throw new \moodle_exception('studenthistorydenied', 'local_rtcsync');
         }
+
+        if ($fetchuserdetail === null) {
+            require_once($CFG->dirroot . '/local/rtc_sso.php');
+            $fetchuserdetail = 'rtc_sso_fetch_user_detail';
+        }
+
+        try {
+            $rtcuser = $fetchuserdetail($token);
+        } catch (\Throwable $exception) {
+            $rtcuser = null;
+        }
+        if (!is_array($rtcuser)) {
+            throw new \moodle_exception('studenthistorydenied', 'local_rtcsync');
+        }
+
+        $this->require_current_rtc_student_identity($rtcuser);
     }
 
     /**
@@ -242,6 +291,9 @@ final class student_history
             "'rtc-delivery-grouping:'",
             $DB->sql_cast_to_char('history.deliveryid')
         );
+        // A Moodle module grade is one shared result. Match the activity guard:
+        // any second delivery history row makes that result ambiguous, even if
+        // the conflicting row is unverified and cannot independently release it.
         // user_program markers have no authoritative grade-item mapping. Only
         // delivery markers can authorize grade rows through exact item mappings.
         // Course visibility and enrolment status continue to block activities;
@@ -307,6 +359,20 @@ final class student_history
                     (gi.itemtype = :moduleitemtype
                      AND (deliverymodule.deliveryid = history.deliveryid
                           OR deliverymodulehistory.id IS NOT NULL)
+                     AND (deliverymodule.cmid IS NULL
+                          OR deliverymodule.deliveryid = history.deliveryid)
+                     AND NOT EXISTS (
+                         SELECT 1
+                           FROM {local_rtcsync_deliverycmhist} otherdeliveryhistory
+                          WHERE otherdeliveryhistory.cmid = cm.id
+                            AND otherdeliveryhistory.courseid = c.id
+                            AND otherdeliveryhistory.deliveryid <> history.deliveryid
+                     )
+                     AND NOT EXISTS (
+                         SELECT 1
+                           FROM {local_rtcsync_deliverygrade} invalidmodulegrade
+                          WHERE invalidmodulegrade.gradeitemid = gi.id
+                     )
                      AND deliverygrouping.id IS NOT NULL)
                 )
                 AND (

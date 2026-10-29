@@ -24,6 +24,16 @@ $options = rtc_sso_secure_curl_options([
 rtc_sso_tls_expect_same(true, $options[CURLOPT_SSL_VERIFYPEER] ?? null, 'TLS peer verification');
 rtc_sso_tls_expect_same(2, $options[CURLOPT_SSL_VERIFYHOST] ?? null, 'TLS hostname verification');
 rtc_sso_tls_expect_same(false, $options[CURLOPT_FOLLOWLOCATION] ?? null, 'redirect following');
+rtc_sso_tls_expect_same(
+    'rtc-user:42',
+    rtc_sso_stable_user_idnumber(['id' => 42]),
+    'canonical stable RTC user idnumber'
+);
+rtc_sso_tls_expect_same(
+    null,
+    rtc_sso_stable_user_idnumber(['id' => 0]),
+    'invalid RTC user identity rejection'
+);
 
 putenv('RTC_API_BASE_URL=https://api.staging.example.test:8443');
 putenv('RTC_SSO_STRICT_API_BASE_URLS=true');
@@ -56,6 +66,15 @@ foreach (['rtc_sso_fetch_user_detail', 'rtc_sso_fetch_login_token', 'rtc_sso_rev
     if (!preg_match('/curl_setopt_array\s*\(\s*\$ch\s*,\s*rtc_sso_secure_curl_options\s*\(/', $body)) {
         throw new RuntimeException($function . ' does not use the shared secure cURL options.');
     }
+}
+
+$autologinstart = strpos($source, 'function rtc_sso_autologin_to_moodle(');
+$autologinnext = strpos($source, "\nfunction ", $autologinstart + 1);
+$autologinbody = substr($source, $autologinstart, $autologinnext === false ? null : $autologinnext - $autologinstart);
+if (!str_contains($autologinbody, '$newuser->idnumber = $stableidnumber;')
+        || !str_contains($autologinbody, 'managed.idnumber = :idnumber')
+        || !str_contains($autologinbody, 'stable RTC identity maps to multiple Moodle users')) {
+    throw new RuntimeException('RTC SSO must create and resolve Moodle accounts through the stable RTC user mapping.');
 }
 
 $templatepath = dirname(__DIR__, 4) . '/docker/moodle-staging-config.template.php';

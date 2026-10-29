@@ -49,6 +49,26 @@ final class externallib_test extends \advanced_testcase
         return $user;
     }
 
+    /** Create a managed account using the legacy pre-stable-ID convention. */
+    private function createLegacyManagedUser(string $username, string $email, string $idcard): \stdClass
+    {
+        global $DB;
+
+        $user = $this->getDataGenerator()->create_user([
+            'username' => $username,
+            'email' => $email,
+            'idnumber' => $idcard,
+        ]);
+        $DB->insert_record('local_rtcsync_user', (object) [
+            'userid' => (int) $user->id,
+            'idnumber' => $idcard,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+
+        return $user;
+    }
+
     /**
      * Build an RTC subject course for write-path tests.
      *
@@ -134,15 +154,15 @@ final class externallib_test extends \advanced_testcase
         $this->setAdminUser();
 
         $included = $this->getDataGenerator()->create_user([
-            'idnumber' => 'rtc-user:included',
+            'idnumber' => 'rtc-user:73001',
         ]);
         $this->getDataGenerator()->create_user([
-            'idnumber' => 'rtc-user:unrelated',
+            'idnumber' => 'rtc-user:73002',
         ]);
 
         $result = \local_rtcsync_external::get_managed_state(
             'users',
-            ['rtc-user:included'],
+            ['rtc-user:73001'],
             0,
             100
         );
@@ -150,7 +170,7 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame(1, $result['total']);
         $this->assertCount(1, $result['records']);
         $this->assertSame((int) $included->id, $result['records'][0]['moodle_id']);
-        $this->assertSame('rtc-user:included', $result['records'][0]['idnumber']);
+        $this->assertSame('rtc-user:73001', $result['records'][0]['idnumber']);
     }
 
     public function test_managed_user_inventory_uses_marker_for_sms_id_card_idnumbers(): void
@@ -158,17 +178,11 @@ final class externallib_test extends \advanced_testcase
         $this->resetAfterTest();
         $this->setAdminUser();
 
-        $managed = \local_rtcsync_external::upsert_user([
-            'moodleid' => 0,
-            'username' => 'rtc-managed-card',
-            'email' => 'rtc-managed-card@example.test',
-            'firstname' => 'Managed',
-            'lastname' => 'Card',
-            'idnumber' => 'CARD-001',
-            'phone1' => '',
-            'suspended' => 0,
-            'profile_fields' => [],
-        ]);
+        $managed = $this->createLegacyManagedUser(
+            'rtc-managed-card',
+            'rtc-managed-card@example.test',
+            'CARD-001'
+        );
         $this->getDataGenerator()->create_user([
             'idnumber' => 'CARD-999',
         ]);
@@ -182,7 +196,7 @@ final class externallib_test extends \advanced_testcase
 
         $this->assertSame(1, $result['total']);
         $this->assertCount(1, $result['records']);
-        $this->assertSame((int) $managed['id'], $result['records'][0]['moodle_id']);
+        $this->assertSame((int) $managed->id, $result['records'][0]['moodle_id']);
         $this->assertSame('CARD-001', $result['records'][0]['idnumber']);
     }
 
@@ -221,7 +235,7 @@ final class externallib_test extends \advanced_testcase
             'email' => 'rtc-batch-contract@example.test',
             'firstname' => 'Batch',
             'lastname' => 'Contract',
-            'idnumber' => 'rtc-user:batch-contract',
+            'idnumber' => 'rtc-user:73010',
             'phone1' => '',
             'suspended' => 0,
             'profile_fields' => [
@@ -240,7 +254,7 @@ final class externallib_test extends \advanced_testcase
             'email' => 'rtc-batch-contract@example.test',
             'firstname' => 'Batch',
             'lastname' => 'Contract',
-            'idnumber' => 'rtc-user:batch-contract',
+            'idnumber' => 'rtc-user:73010',
             'phone1' => '',
             'suspended' => 0,
             'profile_fields' => [
@@ -264,7 +278,7 @@ final class externallib_test extends \advanced_testcase
             );
         }
         $user = $this->createManagedUser([
-            'idnumber' => 'rtc-user:hod-category',
+            'idnumber' => 'rtc-user:73011',
         ]);
 
         $result = \local_rtcsync_external::sync_category_roles([
@@ -373,7 +387,7 @@ final class externallib_test extends \advanced_testcase
         $this->setAdminUser();
 
         $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:inventory']);
-        $student = $this->createManagedUser(['idnumber' => 'rtc-user:inventory']);
+        $student = $this->createManagedUser(['idnumber' => 'rtc-user:73012']);
 
         \local_rtcsync_external::upsert_class([
             'idnumber' => 'rtc-class:inventory',
@@ -608,7 +622,7 @@ final class externallib_test extends \advanced_testcase
             'email' => 'rtc.lifecycle@example.test',
             'firstname' => 'RTC',
             'lastname' => 'Lifecycle',
-            'idnumber' => 'rtc-user:lifecycle',
+            'idnumber' => 'rtc-user:73013',
             'phone1' => '012345678',
             'suspended' => 0,
             'profile_fields' => [],
@@ -622,7 +636,7 @@ final class externallib_test extends \advanced_testcase
 
         $this->assertSame($created['id'], $suspended['id']);
         $this->assertSame(1, $DB->count_records('user', [
-            'idnumber' => 'rtc-user:lifecycle',
+            'idnumber' => 'rtc-user:73013',
             'deleted' => 0,
         ]));
 
@@ -646,6 +660,362 @@ final class externallib_test extends \advanced_testcase
         );
     }
 
+    public function test_user_upsert_requires_a_canonical_numeric_rtc_user_idnumber(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::upsert_user([
+            'moodleid' => 0,
+            'username' => 'rtc-idnumber-contract@example.test',
+            'email' => 'rtc-idnumber-contract@example.test',
+            'firstname' => 'RTC',
+            'lastname' => 'Student',
+            'idnumber' => 'ID-CARD-IS-NOT-STABLE',
+            'phone1' => '',
+            'suspended' => 0,
+            'profile_fields' => [],
+        ]);
+    }
+
+    public function test_user_upsert_rejects_duplicate_stable_idnumber_matches(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:70001']);
+        $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:70001']);
+
+        $this->expectException(\invalid_parameter_exception::class);
+        \local_rtcsync_external::upsert_user([
+            'moodleid' => 0,
+            'username' => 'rtc-duplicate-idnumber@example.test',
+            'email' => 'rtc-duplicate-idnumber@example.test',
+            'firstname' => 'RTC',
+            'lastname' => 'Student',
+            'idnumber' => 'rtc-user:70001',
+            'phone1' => '',
+            'suspended' => 0,
+            'profile_fields' => [],
+        ]);
+    }
+
+    public function test_user_upsert_rejects_a_stale_mapping_to_a_different_stable_rtc_user(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $created = \local_rtcsync_external::upsert_user([
+            'moodleid' => 0,
+            'username' => 'rtc-stable-map@example.test',
+            'email' => 'rtc-stable-map@example.test',
+            'firstname' => 'Stable',
+            'lastname' => 'Mapping',
+            'idnumber' => 'rtc-user:7101',
+            'phone1' => '',
+            'suspended' => 0,
+            'profile_fields' => [],
+        ]);
+
+        try {
+            \local_rtcsync_external::upsert_user([
+                'moodleid' => (int) $created['id'],
+                'username' => 'rtc-stable-map@example.test',
+                'email' => 'rtc-stable-map@example.test',
+                'firstname' => 'Must',
+                'lastname' => 'Not Reassign',
+                'idnumber' => 'rtc-user:7102',
+                'phone1' => '',
+                'suspended' => 0,
+                'profile_fields' => [],
+            ]);
+            $this->fail('A Moodle mapping must not be reassigned from one stable RTC user to another.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('stable RTC user identity', $exception->getMessage());
+        }
+
+        $this->assertSame('rtc-user:7101', $DB->get_field('user', 'idnumber', ['id' => (int) $created['id']]));
+        $this->assertSame('rtc-user:7101', $DB->get_field(
+            'local_rtcsync_user',
+            'idnumber',
+            ['userid' => (int) $created['id']]
+        ));
+
+        try {
+            \local_rtcsync_external::upsert_user([
+                'moodleid' => (int) $created['id'],
+                'username' => 'rtc-stable-map@example.test',
+                'email' => 'rtc-stable-map@example.test',
+                'firstname' => 'Must',
+                'lastname' => 'Not Downgrade',
+                'idnumber' => 'LEGACY-CARD-7101',
+                'phone1' => '',
+                'suspended' => 0,
+                'profile_fields' => [],
+            ]);
+            $this->fail('A stable RTC user idnumber must not be downgraded to an ID card.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('canonical rtc-user:', $exception->getMessage());
+        }
+        $this->assertSame('rtc-user:7101', $DB->get_field('user', 'idnumber', ['id' => (int) $created['id']]));
+    }
+
+    public function test_user_upsert_rejects_login_fields_owned_by_another_stable_account(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $target = $this->createManagedUser([
+            'username' => 'rtc-login-target@example.test',
+            'email' => 'rtc-login-target@example.test',
+            'idnumber' => 'rtc-user:7103',
+        ]);
+        $other = $this->createManagedUser([
+            'username' => 'rtc-login-other@example.test',
+            'email' => 'rtc-login-other@example.test',
+            'idnumber' => 'rtc-user:7104',
+        ]);
+
+        try {
+            \local_rtcsync_external::upsert_user([
+                'moodleid' => 0,
+                'username' => (string) $other->username,
+                'email' => (string) $other->email,
+                'firstname' => 'Must',
+                'lastname' => 'Not Cross-Link',
+                'idnumber' => 'rtc-user:7103',
+                'phone1' => '',
+                'suspended' => 1,
+                'profile_fields' => [],
+            ]);
+            $this->fail('Login fields belonging to another Moodle user must not be applied to a stable identity.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('username belongs to a different Moodle account', $exception->getMessage());
+        }
+
+        $this->assertSame('rtc-login-target@example.test', $DB->get_field('user', 'username', ['id' => (int) $target->id]));
+        $this->assertSame('rtc-login-target@example.test', $DB->get_field('user', 'email', ['id' => (int) $target->id]));
+        $this->assertSame(0, (int) $DB->get_field('user', 'suspended', ['id' => (int) $target->id]));
+        $this->assertSame('rtc-user:7104', $DB->get_field('user', 'idnumber', ['id' => (int) $other->id]));
+    }
+
+    public function test_user_upsert_does_not_infer_a_legacy_id_card_link_from_email(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $legacy = $this->createLegacyManagedUser(
+            'rtc-legacy-card@example.test',
+            'rtc-legacy-card@example.test',
+            'LEGACY-CARD-7201'
+        );
+
+        try {
+            \local_rtcsync_external::upsert_user([
+                'moodleid' => 0,
+                'username' => 'rtc-legacy-card@example.test',
+                'email' => 'rtc-legacy-card@example.test',
+                'firstname' => 'RTC',
+                'lastname' => 'Student',
+                'idnumber' => 'rtc-user:7201',
+                'phone1' => '',
+                'suspended' => 0,
+                'profile_fields' => [],
+            ]);
+            $this->fail('A legacy card account needs a stable mapping before it can be linked.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('explicit Moodle mapping', $exception->getMessage());
+        }
+
+        $this->assertSame('LEGACY-CARD-7201', $DB->get_field('user', 'idnumber', ['id' => (int) $legacy->id]));
+        $this->assertSame('LEGACY-CARD-7201', $DB->get_field(
+            'local_rtcsync_user',
+            'idnumber',
+            ['userid' => (int) $legacy->id]
+        ));
+    }
+
+    public function test_user_upsert_migrates_a_legacy_id_card_only_with_an_explicit_moodle_mapping(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $legacy = $this->createLegacyManagedUser(
+            'rtc-legacy-mapped@example.test',
+            'rtc-legacy-mapped@example.test',
+            'LEGACY-CARD-7202'
+        );
+
+        $migrated = \local_rtcsync_external::upsert_user([
+            'moodleid' => (int) $legacy->id,
+            'username' => 'rtc-legacy-mapped@example.test',
+            'email' => 'rtc-legacy-mapped@example.test',
+            'firstname' => 'RTC',
+            'lastname' => 'Student',
+            'idnumber' => 'rtc-user:7202',
+            'phone1' => '',
+            'suspended' => 0,
+            'profile_fields' => [],
+        ]);
+
+        $this->assertSame((int) $legacy->id, $migrated['id']);
+        $this->assertSame('rtc-user:7202', $DB->get_field('user', 'idnumber', ['id' => (int) $legacy->id]));
+        $this->assertSame('rtc-user:7202', $DB->get_field(
+            'local_rtcsync_user',
+            'idnumber',
+            ['userid' => (int) $legacy->id]
+        ));
+    }
+
+    public function test_user_upsert_resolves_legacy_account_from_exact_stable_marker_after_email_change(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $legacy = $this->createLegacyManagedUser(
+            'rtc-legacy-marker@example.test',
+            'rtc-legacy-marker@example.test',
+            'LEGACY-CARD-7204'
+        );
+        $DB->set_field('local_rtcsync_user', 'idnumber', 'rtc-user:7204', ['userid' => (int) $legacy->id]);
+
+        $migrated = \local_rtcsync_external::upsert_user([
+            'moodleid' => 0,
+            'username' => 'rtc-renamed-marker@example.test',
+            'email' => 'rtc-renamed-marker@example.test',
+            'firstname' => 'RTC',
+            'lastname' => 'Student',
+            'idnumber' => 'rtc-user:7204',
+            'phone1' => '',
+            'suspended' => 0,
+            'profile_fields' => [],
+        ]);
+
+        $this->assertSame((int) $legacy->id, $migrated['id']);
+        $this->assertSame('rtc-user:7204', $migrated['idnumber']);
+        $this->assertSame(1, $DB->count_records('user', ['idnumber' => 'rtc-user:7204', 'deleted' => 0]));
+        $this->assertSame(1, $DB->count_records('local_rtcsync_user', ['idnumber' => 'rtc-user:7204']));
+    }
+
+    public function test_user_upsert_rejects_duplicate_stable_markers_without_mutating_either_account(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $first = $this->createLegacyManagedUser(
+            'rtc-duplicate-marker-one@example.test',
+            'rtc-duplicate-marker-one@example.test',
+            'LEGACY-CARD-7205A'
+        );
+        $second = $this->createLegacyManagedUser(
+            'rtc-duplicate-marker-two@example.test',
+            'rtc-duplicate-marker-two@example.test',
+            'LEGACY-CARD-7205B'
+        );
+        $DB->set_field('local_rtcsync_user', 'idnumber', 'rtc-user:7205', ['userid' => (int) $first->id]);
+        $DB->set_field('local_rtcsync_user', 'idnumber', 'rtc-user:7205', ['userid' => (int) $second->id]);
+
+        try {
+            \local_rtcsync_external::upsert_user([
+                'moodleid' => 0,
+                'username' => (string) $first->username,
+                'email' => (string) $first->email,
+                'firstname' => 'Must',
+                'lastname' => 'Not Adopt',
+                'idnumber' => 'rtc-user:7205',
+                'phone1' => '',
+                'suspended' => 1,
+                'profile_fields' => [],
+            ]);
+            $this->fail('Duplicate stable markers must be rejected as ambiguous.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('marked on multiple', $exception->getMessage());
+        }
+
+        $this->assertSame('LEGACY-CARD-7205A', $DB->get_field('user', 'idnumber', ['id' => (int) $first->id]));
+        $this->assertSame('LEGACY-CARD-7205B', $DB->get_field('user', 'idnumber', ['id' => (int) $second->id]));
+        $this->assertSame(0, (int) $DB->get_field('user', 'suspended', ['id' => (int) $first->id]));
+    }
+
+    public function test_user_upsert_rejects_stable_idnumber_and_marker_for_different_accounts(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $byidnumber = $this->getDataGenerator()->create_user([
+            'username' => 'rtc-conflicting-idnumber@example.test',
+            'email' => 'rtc-conflicting-idnumber@example.test',
+            'idnumber' => 'rtc-user:7206',
+        ]);
+        $bymarker = $this->createLegacyManagedUser(
+            'rtc-conflicting-marker@example.test',
+            'rtc-conflicting-marker@example.test',
+            'LEGACY-CARD-7206'
+        );
+        $DB->set_field('local_rtcsync_user', 'idnumber', 'rtc-user:7206', ['userid' => (int) $bymarker->id]);
+
+        try {
+            \local_rtcsync_external::upsert_user([
+                'moodleid' => 0,
+                'username' => (string) $bymarker->username,
+                'email' => (string) $bymarker->email,
+                'firstname' => 'Must',
+                'lastname' => 'Not Reassign',
+                'idnumber' => 'rtc-user:7206',
+                'phone1' => '',
+                'suspended' => 1,
+                'profile_fields' => [],
+            ]);
+            $this->fail('Stable user idnumber and marker references to different Moodle accounts must conflict.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('identify different Moodle accounts', $exception->getMessage());
+        }
+
+        $this->assertSame('rtc-user:7206', $DB->get_field('user', 'idnumber', ['id' => (int) $byidnumber->id]));
+        $this->assertSame('LEGACY-CARD-7206', $DB->get_field('user', 'idnumber', ['id' => (int) $bymarker->id]));
+        $this->assertSame(0, (int) $DB->get_field('user', 'suspended', ['id' => (int) $bymarker->id]));
+    }
+
+    public function test_user_upsert_can_adopt_an_unmarked_legacy_user_only_with_an_explicit_mapping(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $legacy = $this->getDataGenerator()->create_user([
+            'username' => 'rtc-legacy-unmarked@example.test',
+            'email' => 'rtc-legacy-unmarked@example.test',
+            'idnumber' => 'LEGACY-CARD-7203',
+        ]);
+
+        $migrated = \local_rtcsync_external::upsert_user([
+            'moodleid' => (int) $legacy->id,
+            'username' => 'rtc-legacy-unmarked@example.test',
+            'email' => 'rtc-legacy-unmarked@example.test',
+            'firstname' => 'RTC',
+            'lastname' => 'Student',
+            'idnumber' => 'rtc-user:7203',
+            'phone1' => '',
+            'suspended' => 0,
+            'profile_fields' => [],
+        ]);
+
+        $this->assertSame((int) $legacy->id, $migrated['id']);
+        $this->assertSame('rtc-user:7203', $DB->get_field('user', 'idnumber', ['id' => (int) $legacy->id]));
+        $this->assertSame('rtc-user:7203', $DB->get_field(
+            'local_rtcsync_user',
+            'idnumber',
+            ['userid' => (int) $legacy->id]
+        ));
+    }
+
     public function test_user_upsert_refuses_to_mutate_an_unmanaged_existing_account(): void
     {
         $this->resetAfterTest();
@@ -659,12 +1029,12 @@ final class externallib_test extends \advanced_testcase
         $this->expectException(\invalid_parameter_exception::class);
 
         \local_rtcsync_external::upsert_user([
-            'moodleid' => (int) $existing->id,
+            'moodleid' => 0,
             'username' => $existing->username,
             'email' => $existing->email,
             'firstname' => 'Must Not Change',
             'lastname' => $existing->lastname,
-            'idnumber' => 'CARD-MANUAL',
+            'idnumber' => 'rtc-user:74001',
             'phone1' => '',
             'suspended' => 1,
             'profile_fields' => [],
@@ -1228,6 +1598,62 @@ final class externallib_test extends \advanced_testcase
         $this->assertNull($mapping->lineagemanifestid);
     }
 
+    public function test_delivery_score_sync_rejects_an_existing_activity_grade_item(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:318']);
+        $this->createDeliveryGrouping($course, 716);
+        $user = $this->createManagedUser();
+        $quiz = $this->getDataGenerator()->create_module('quiz', [
+            'course' => (int) $course->id,
+            'name' => 'Existing activity grade',
+            'grade' => 100,
+        ]);
+        $item = \grade_item::fetch([
+            'courseid' => (int) $course->id,
+            'itemtype' => 'mod',
+            'itemmodule' => 'quiz',
+            'iteminstance' => (int) $quiz->id,
+            'itemnumber' => 0,
+        ]);
+        $this->assertNotFalse($item);
+        $item->idnumber = 'rtc-subject-score:318:delivery:716';
+        $item->itemname = 'Existing activity grade';
+        $item->update();
+        $item->update_final_grade((int) $user->id, 47.0, 'activity-grade-fixture');
+
+        try {
+            \local_rtcsync_external::upsert_grade([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'itemname' => 'RTC delivery result',
+                'idnumber' => 'rtc-subject-score:318:delivery:716',
+                'deliveryid' => 716,
+                'grade' => 91.0,
+            ]);
+            $this->fail('RTC sync must not reuse or rewrite a Moodle activity grade item.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('must be manual grade items', $exception->getMessage());
+        }
+
+        $unchanged = \grade_item::fetch(['id' => (int) $item->id]);
+        $grade = \grade_grade::fetch([
+            'itemid' => (int) $item->id,
+            'userid' => (int) $user->id,
+        ]);
+        $this->assertNotFalse($unchanged);
+        $this->assertNotFalse($grade);
+        $this->assertSame('mod', (string) $unchanged->itemtype);
+        $this->assertSame('Existing activity grade', (string) $unchanged->itemname);
+        $this->assertSame(47.0, (float) $grade->finalgrade);
+        $this->assertFalse($DB->record_exists('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+        ]));
+    }
+
     public function test_delivery_score_rejects_an_idnumber_for_another_delivery(): void
     {
         $this->resetAfterTest();
@@ -1657,7 +2083,7 @@ final class externallib_test extends \advanced_testcase
         $this->setAdminUser();
 
         $user = $this->createManagedUser([
-            'idnumber' => 'rtc-user:sysrole',
+            'idnumber' => 'rtc-user:73014',
         ]);
 
         \local_rtcsync_external::sync_system_roles([
@@ -1667,7 +2093,7 @@ final class externallib_test extends \advanced_testcase
 
         $result = \local_rtcsync_external::get_managed_state(
             'systemroles',
-            ['rtc-user:sysrole'],
+            ['rtc-user:73014'],
             0,
             100
         );

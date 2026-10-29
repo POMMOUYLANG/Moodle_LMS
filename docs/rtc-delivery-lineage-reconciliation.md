@@ -82,12 +82,17 @@ or grouping.
 
 ## Dry-run and apply
 
-Run from the Moodle code root as an operator authorized to invoke the local
-Moodle CLI against the intended target database. Dry-run is the default and is
-read-only. It prints mapping/disposition counts, target module and grade-item
-IDs to be quarantined, conflicts, declared provenance, and a `plan_sha256` that
+Run from the Moodle code root under an OS account authorized to access this
+Moodle installation and its intended target database. If a Moodle auth plugin
+maps a CLI user, that account is recorded as the actor; the `--operator` name
+and approval fields remain declarations, not verified identities. Dry-run is
+the default and is read-only. It prints mapping/disposition counts, target
+module and grade-item IDs to be quarantined, conflicts, declared provenance,
+and a `plan_sha256` that
 covers the manifest hash and live target identities, groupings, availability,
-and mapping state. It does not return learner names or grade values:
+and mapping state. It does not return learner names or grade values. Manifest,
+amendment, and evidence JSON inputs are limited to 8 MiB; the source snapshot
+is hashed as a stream and its path and contents are not retained.
 
 For Windows PowerShell, invoke the existing CLI from the Moodle code root.
 This previews against the supplied source snapshot, stops on a nonzero exit or

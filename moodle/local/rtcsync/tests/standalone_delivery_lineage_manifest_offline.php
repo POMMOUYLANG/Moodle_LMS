@@ -85,6 +85,33 @@ offline_manifest_check($valid['valid'], 'valid v1 manifest is accepted structura
 offline_manifest_check($valid['checks_not_performed']['complete_target_inventory_coverage'] === 'requires_moodle_dry_run',
     'offline validity does not claim complete live target coverage');
 
+$rootduplicatejson = str_replace(
+    '"schema_version":1,',
+    '"schema_version":1,"schema_version":1,',
+    $validjson,
+    $rootduplicatecount
+);
+$nestedduplicatejson = str_replace(
+    '"decision":"quarantine"',
+    '"decision":"quarantine","decision":"historical"',
+    $validjson,
+    $nestedduplicatecount
+);
+$escapedduplicatejson = str_replace(
+    '"schema_version":1,',
+    '"schema_version":1,"schema\\u005fversion":1,',
+    $validjson,
+    $escapedduplicatecount
+);
+offline_manifest_check($rootduplicatecount === 1 && $nestedduplicatecount === 1 && $escapedduplicatecount === 1,
+    'duplicate-key fixtures alter exactly one root, nested, and escaped-name member');
+foreach ([$rootduplicatejson, $nestedduplicatejson, $escapedduplicatejson] as $duplicatekeyjson) {
+    $duplicatekeyresult = delivery_lineage_manifest_offline_validator::validate($duplicatekeyjson);
+    offline_manifest_check(!$duplicatekeyresult['valid']
+            && offline_manifest_has_code($duplicatekeyresult, 'duplicate_json_object_key'),
+        'duplicate object member names are rejected at every nesting level');
+}
+
 $parent = offline_manifest_sample();
 $parent['manifest_id'] = 'offline-amendment-parent';
 $parent['entries'][0]['decision'] = 'quarantine';
@@ -108,6 +135,16 @@ $childjson = offline_manifest_encode($child);
 $validchild = delivery_lineage_manifest_offline_validator::validate($childjson, $parentjson);
 offline_manifest_check($validchild['valid'] && $validchild['amendment_parent_file_checked'],
     'valid v2 amendment and exact direct parent quarantine coverage are accepted');
+$parentduplicatejson = str_replace(
+    '"manifest_id":"offline-amendment-parent",',
+    '"manifest_id":"offline-amendment-parent","manifest_id":"offline-amendment-parent",',
+    $parentjson,
+    $parentduplicatecount
+);
+$parentduplicateresult = delivery_lineage_manifest_offline_validator::validate($childjson, $parentduplicatejson);
+offline_manifest_check($parentduplicatecount === 1 && !$parentduplicateresult['valid']
+        && offline_manifest_has_code($parentduplicateresult, 'parent_manifest_structure_invalid'),
+    'duplicate object member names in an amendment parent invalidate its review coverage');
 
 $wrongversion = offline_manifest_sample();
 $wrongversion['schema_version'] = 99;

@@ -400,6 +400,16 @@ function rtc_sso_normalize_verified_email(string $email): string
     return $normalized;
 }
 
+/** Return the canonical Moodle idnumber for a verified RTC API user. */
+function rtc_sso_stable_user_idnumber(array $rtcuser): ?string
+{
+    $smsuserid = filter_var($rtcuser['id'] ?? null, FILTER_VALIDATE_INT, [
+        'options' => ['min_range' => 1],
+    ]);
+
+    return $smsuserid ? 'rtc-user:' . (int) $smsuserid : null;
+}
+
 function rtc_sso_verified_roles(array $rtcuser, array $detail): array
 {
     $roles = $rtcuser['rtc_roles'] ?? [];
@@ -493,6 +503,11 @@ function rtc_sso_autologin_to_moodle(string $token): bool
             return false;
         }
 
+        $stableidnumber = rtc_sso_stable_user_idnumber($rtcuser);
+        if ($stableidnumber === null) {
+            rtc_sso_log_debug('Auto-login failed: RTC user has no valid stable identity.');
+            return false;
+        }
         $email = rtc_sso_normalize_verified_email((string) ($rtcuser['email'] ?? ''));
         $name = trim((string) ($rtcuser['name'] ?? 'User'));
         $detail = $rtcuser['user_detail'] ?? [];
@@ -510,26 +525,82 @@ function rtc_sso_autologin_to_moodle(string $token): bool
 
         $stage = 'resolve Moodle user';
         $username = core_text::strtolower($email);
-        $muser = core_user::get_user_by_username($username, '*', null, IGNORE_MISSING);
-        if ($muser && !empty($muser->deleted)) {
-            $muser = false;
+        $stableusers = $DB->get_records('user', [
+            'idnumber' => $stableidnumber,
+            'deleted' => 0,
+            'mnethostid' => $CFG->mnet_localhost_id,
+        ], '', '*', 0, 2);
+        $stablemarkers = $DB->get_records_sql(
+            "SELECT u.*
+               FROM {local_rtcsync_user} managed
+               JOIN {user} u ON u.id = managed.userid
+              WHERE managed.idnumber = :idnumber
+                AND u.deleted = 0
+                AND u.mnethostid = :mnethostid",
+            [
+                'idnumber' => $stableidnumber,
+                'mnethostid' => (int) $CFG->mnet_localhost_id,
+            ],
+            0,
+            2
+        );
+        if (count($stableusers) > 1 || count($stablemarkers) > 1) {
+            rtc_sso_log_debug('Auto-login failed: stable RTC identity maps to multiple Moodle users.');
+            return false;
         }
 
+        $userbystableid = $stableusers ? reset($stableusers) : false;
+        $userbymarker = $stablemarkers ? reset($stablemarkers) : false;
+        if ($userbystableid && $userbymarker && (int) $userbystableid->id !== (int) $userbymarker->id) {
+            rtc_sso_log_debug('Auto-login failed: RTC user idnumber and managed marker conflict.');
+            return false;
+        }
+        $muser = $userbystableid ?: $userbymarker;
+
         if (!$muser) {
-            $muser = $DB->get_record(
-                'user',
-                ['email' => $email, 'mnethostid' => $CFG->mnet_localhost_id, 'deleted' => 0],
-                '*',
-                IGNORE_MISSING
-            );
+            // Do not adopt an old ID-card or email match without a durable RTC
+            // user-ID mapping. Email and ID cards can both be reassigned.
+            $usernamecandidate = core_user::get_user_by_username($username, '*', null, IGNORE_MISSING);
+            if ($usernamecandidate && !empty($usernamecandidate->deleted)) {
+                $usernamecandidate = false;
+            }
+            $emailcandidates = $DB->get_records('user', [
+                'email' => $email,
+                'mnethostid' => $CFG->mnet_localhost_id,
+                'deleted' => 0,
+            ], '', 'id', 0, 2);
+            if ($usernamecandidate || $emailcandidates) {
+                rtc_sso_log_debug('Auto-login failed: an existing Moodle account has no stable RTC identity mapping.');
+                return false;
+            }
         }
 
         if ($muser) {
+            if (rtc_sso_normalize_verified_email((string) ($muser->email ?? '')) !== $email) {
+                rtc_sso_log_debug('Auto-login failed: stable RTC mapping has a different Moodle email.');
+                return false;
+            }
+            $managedmarker = $DB->get_record(
+                'local_rtcsync_user',
+                ['userid' => (int) $muser->id],
+                '*',
+                IGNORE_MISSING
+            );
+            if ($managedmarker && trim((string) $managedmarker->idnumber) !== $stableidnumber) {
+                rtc_sso_log_debug('Auto-login failed: Moodle managed marker conflicts with the stable RTC identity.');
+                return false;
+            }
+            if (!$managedmarker && trim((string) ($muser->idnumber ?? '')) !== $stableidnumber) {
+                rtc_sso_log_debug('Auto-login failed: legacy Moodle ID has no stable RTC mapping.');
+                return false;
+            }
+
             $stage = 'update Moodle user';
             $updaterecord = new stdClass();
             $updaterecord->id = $muser->id;
             $updaterecord->firstname = $firstname ?: ($muser->firstname ?: 'User');
             $updaterecord->lastname = $lastname ?: ($muser->lastname ?: 'RTC');
+            $updaterecord->idnumber = $stableidnumber;
             $updaterecord->phone1 = $phone;
             $updaterecord->timemodified = time();
 
@@ -545,7 +616,7 @@ function rtc_sso_autologin_to_moodle(string $token): bool
             $newuser->email = $email;
             $newuser->firstname = $firstname ?: 'User';
             $newuser->lastname = $lastname ?: 'RTC';
-            $newuser->idnumber = $idcard;
+            $newuser->idnumber = $stableidnumber;
             $newuser->phone1 = $phone;
             $newuser->phone2 = '';
             $newuser->institution = '';
@@ -565,6 +636,24 @@ function rtc_sso_autologin_to_moodle(string $token): bool
             $muser = $DB->get_record('user', ['id' => $newuser->id], '*', MUST_EXIST);
 
             rtc_sso_log_debug("Created new Moodle user: {$email} (id={$muser->id})");
+        }
+
+        // Complete the login with the canonical idnumber written above.
+        $muser = $DB->get_record('user', ['id' => (int) $muser->id], '*', MUST_EXIST);
+        $managedmarker = $DB->get_record(
+            'local_rtcsync_user',
+            ['userid' => (int) $muser->id],
+            '*',
+            IGNORE_MISSING
+        );
+        if (!$managedmarker) {
+            $now = time();
+            $DB->insert_record('local_rtcsync_user', (object) [
+                'userid' => (int) $muser->id,
+                'idnumber' => $stableidnumber,
+                'timecreated' => $now,
+                'timemodified' => $now,
+            ]);
         }
 
         $stage = 'synchronize verified RTC roles';

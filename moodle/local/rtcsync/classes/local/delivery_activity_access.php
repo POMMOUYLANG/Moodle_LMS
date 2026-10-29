@@ -930,6 +930,57 @@ final class delivery_activity_access
     }
 
     /**
+     * Keep invalid RTC delivery associations on nonmanual grade items hidden.
+     *
+     * Delivery-score lineage is supported only for manual items. Moodle's
+     * activity overviews render module grades outside the grade-report redirect,
+     * so an old or malformed association must stay hidden there as well.
+     * Gradebook staff with moodle/grade:viewhidden retain their review access.
+     */
+    public static function quarantine_nonmanual_delivery_grade_items(int $courseid): void
+    {
+        global $CFG, $DB;
+
+        if ($courseid <= 1
+                || !$DB->get_manager()->table_exists('local_rtcsync_deliverygrade')) {
+            return;
+        }
+
+        $items = $DB->get_records_sql(
+            "SELECT gi.id
+               FROM {grade_items} gi
+               JOIN {local_rtcsync_deliverygrade} deliverygrade
+                 ON deliverygrade.gradeitemid = gi.id
+              WHERE gi.courseid = :courseid
+                AND gi.itemtype <> :manualitemtype
+                AND gi.hidden <> :alwayshidden",
+            [
+                'courseid' => $courseid,
+                'manualitemtype' => 'manual',
+                'alwayshidden' => 1,
+            ]
+        );
+        if (!$items) {
+            return;
+        }
+
+        require_once($CFG->libdir . '/grade/grade_item.php');
+        foreach ($items as $record) {
+            $item = \grade_item::fetch(['id' => (int) $record->id]);
+            if (!$item
+                    || (int) $item->courseid !== $courseid
+                    || (string) $item->itemtype === 'manual'
+                    || (int) $item->hidden === 1) {
+                continue;
+            }
+
+            // Keep the grade record for authorized review, but prevent Moodle
+            // learner views from displaying a grade with unsupported lineage.
+            $item->set_hidden(1, false);
+        }
+    }
+
+    /**
      * Whether the requested module belongs to the current Student delivery
      * and has a live, persisted delivery guard.
      */

@@ -19,6 +19,7 @@ final class delivery_lineage_reconciliation_verifier
 
         $manifest = json_decode($json, true);
         if (!is_array($manifest) || json_last_error() !== JSON_ERROR_NONE
+                || delivery_lineage_manifest_offline_validator::has_duplicate_object_keys($json)
                 || !is_string($manifest['manifest_id'] ?? null)
                 || trim($manifest['manifest_id']) !== $manifestid
                 || !self::manifest_has_supported_contract($manifest)) {
@@ -658,8 +659,13 @@ final class delivery_lineage_reconciliation_verifier
         if ($providedjson !== null && $storedjson !== '' && !hash_equals($storedjson, $providedjson)) {
             $errors[] = 'requested_manifest_content_mismatch';
         }
+        $hasduplicatekeys = $manifestjson !== ''
+            && delivery_lineage_manifest_offline_validator::has_duplicate_object_keys($manifestjson);
+        if ($hasduplicatekeys) {
+            $errors[] = 'chain_manifest_duplicate_json_object_key';
+        }
         $manifest = $declaration ?? json_decode($manifestjson, true);
-        if (!is_array($manifest) || !self::manifest_has_supported_contract($manifest)
+        if ($hasduplicatekeys || !is_array($manifest) || !self::manifest_has_supported_contract($manifest)
                 || (string) ($manifest['manifest_id'] ?? '') !== (string) $record->manifestid
                 || (string) ($manifest['course_idnumber'] ?? '') !== (string) $record->courseidnumber
                 || strtolower((string) ($manifest['source_snapshot_sha256'] ?? ''))
@@ -1342,7 +1348,7 @@ final class delivery_lineage_reconciliation_verifier
                         : ['current', 'historical', 'quarantine', 'archive', 'dispose'], true)
                     || !is_array($entry['delivery_ids']) || !array_is_list($entry['delivery_ids'])
                     || !is_string($entry['reason']) || trim($entry['reason']) === ''
-                    || core_text::strlen($entry['reason']) > 2000) {
+                    || \core_text::strlen($entry['reason']) > 2000) {
                 return false;
             }
             if (in_array($entry['decision'], ['current', 'historical'], true)) {
@@ -1363,7 +1369,7 @@ final class delivery_lineage_reconciliation_verifier
                         || !is_int($identity['cmid']) || $identity['cmid'] <= 0
                         || !is_int($identity['instanceid']) || $identity['instanceid'] <= 0
                         || !is_string($identity['modname']) || !preg_match('/^[a-z][a-z0-9_]{0,99}$/', trim($identity['modname']))
-                        || !is_string($identity['idnumber']) || core_text::strlen($identity['idnumber']) > 100) {
+                        || !is_string($identity['idnumber']) || \core_text::strlen($identity['idnumber']) > 100) {
                     return false;
                 }
             }
@@ -1378,7 +1384,7 @@ final class delivery_lineage_reconciliation_verifier
                     || !is_int($entry['delivery_id'])
                     || ($entry['decision'] === 'map' ? $entry['delivery_id'] <= 0 : $entry['delivery_id'] !== 0)
                     || !is_string($entry['reason']) || trim($entry['reason']) === ''
-                    || core_text::strlen($entry['reason']) > 2000) {
+                    || \core_text::strlen($entry['reason']) > 2000) {
                 return false;
             }
             foreach (['source', 'target'] as $side) {
@@ -1391,7 +1397,7 @@ final class delivery_lineage_reconciliation_verifier
                         || !is_int($identity['itemid']) || $identity['itemid'] <= 0
                         || $identity['itemtype'] !== 'manual' || $identity['itemmodule'] !== ''
                         || $identity['iteminstance'] !== 0 || !is_string($identity['idnumber'])
-                        || core_text::strlen($identity['idnumber']) > 255) {
+                        || \core_text::strlen($identity['idnumber']) > 255) {
                     return false;
                 }
             }

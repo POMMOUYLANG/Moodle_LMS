@@ -74,7 +74,7 @@ final class delivery_lineage_reconciliation
             throw new \invalid_parameter_exception('Apply requires the SHA-256 plan printed by a successful dry run.');
         }
         $operator = trim(clean_param($operator, PARAM_TEXT));
-        if ($operator === '' || core_text::strlen($operator) > 100) {
+        if ($operator === '' || \core_text::strlen($operator) > 100) {
             throw new \invalid_parameter_exception('The importing operator is required and must be at most 100 characters.');
         }
 
@@ -479,6 +479,10 @@ final class delivery_lineage_reconciliation
             $errors[] = 'Manifest must be valid JSON with an object at the root.';
             return self::prepared_result(null, $errors, $manifesthash, $manifestid, $courseid, $modules, $gradeitems, $snapshot);
         }
+        if (delivery_lineage_manifest_offline_validator::has_duplicate_object_keys($json)) {
+            $errors[] = 'Manifest JSON object keys must be unique.';
+            return self::prepared_result(null, $errors, $manifesthash, $manifestid, $courseid, $modules, $gradeitems, $snapshot);
+        }
 
         $required = [
             'schema_version', 'manifest_id', 'course_idnumber', 'source_snapshot_sha256',
@@ -552,8 +556,8 @@ final class delivery_lineage_reconciliation
         if ($approvaltime === false || $approvaltime <= 0) {
             $errors[] = 'review.approved_at must be a valid UTC timestamp in YYYY-MM-DDTHH:MM:SSZ form.';
         }
-        if (core_text::strlen(trim((string) ($review['approved_by'] ?? ''))) > 255
-                || core_text::strlen(trim((string) ($review['approval_reference'] ?? ''))) > 255) {
+        if (\core_text::strlen(trim((string) ($review['approved_by'] ?? ''))) > 255
+                || \core_text::strlen(trim((string) ($review['approval_reference'] ?? ''))) > 255) {
             $errors[] = 'Reviewer and approval reference fields are limited to 255 characters.';
         }
 
@@ -607,6 +611,7 @@ final class delivery_lineage_reconciliation
                 $parentjson = (string) ($parentmanifest->manifestjson ?? '');
                 $decodedparent = json_decode($parentjson, true);
                 if ($parentjson === ''
+                        || delivery_lineage_manifest_offline_validator::has_duplicate_object_keys($parentjson)
                         || !hash_equals(strtolower((string) $parentmanifest->manifesthash), hash('sha256', $parentjson))
                         || !is_array($decodedparent)
                         || !is_int($decodedparent['schema_version'] ?? null)
@@ -823,7 +828,7 @@ final class delivery_lineage_reconciliation
                 $errors[] = "$prefix disposition decisions cannot carry delivery IDs.";
             }
             $reason = is_string($entry['reason'] ?? null) ? trim($entry['reason']) : '';
-            if ($reason === '' || core_text::strlen($reason) > 2000) {
+            if ($reason === '' || \core_text::strlen($reason) > 2000) {
                 $errors[] = "$prefix.reason is required and limited to 2,000 characters.";
             }
             if (!is_array($source) || !is_array($target) || !in_array($decision, $alloweddecisions, true)) {
@@ -996,7 +1001,7 @@ final class delivery_lineage_reconciliation
                 $errors[] = "$prefix disposition decisions must use delivery_id 0 and cannot assign lineage.";
             }
             $reason = is_string($entry['reason'] ?? null) ? trim($entry['reason']) : '';
-            if ($reason === '' || core_text::strlen($reason) > 2000) {
+            if ($reason === '' || \core_text::strlen($reason) > 2000) {
                 $errors[] = "$prefix.reason is required and limited to 2,000 characters.";
             }
             if (!is_array($source) || !is_array($target) || !in_array($decision, $alloweddecisions, true)) {
@@ -1179,7 +1184,7 @@ final class delivery_lineage_reconciliation
         if (!preg_match('/^[a-z][a-z0-9_]{0,99}$/', $modname)) {
             $errors[] = "$prefix.modname must be a Moodle module name.";
         }
-        if (!is_string($identity['idnumber'] ?? null) || core_text::strlen($identity['idnumber']) > 100) {
+        if (!is_string($identity['idnumber'] ?? null) || \core_text::strlen($identity['idnumber']) > 100) {
             $errors[] = "$prefix.idnumber must be the exact course-module idnumber (empty is allowed).";
         }
         if (!is_int($identity['cmid'] ?? null) || !is_int($identity['instanceid'] ?? null)
@@ -1219,7 +1224,7 @@ final class delivery_lineage_reconciliation
                 || !is_string($identity['itemtype'] ?? null)
                 || !is_string($identity['itemmodule'] ?? null)
                 || !is_int($identity['iteminstance'] ?? null) || $identity['iteminstance'] < 0
-                || !is_string($identity['idnumber'] ?? null) || core_text::strlen($identity['idnumber']) > 255) {
+                || !is_string($identity['idnumber'] ?? null) || \core_text::strlen($identity['idnumber']) > 255) {
             $errors[] = "$prefix must include itemid, itemtype, itemmodule, iteminstance, and exact idnumber.";
             return null;
         }

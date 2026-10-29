@@ -21,6 +21,128 @@ final class delivery_lineage_manifest_offline_validator
         return self::validate_document($json, $parentjson, false);
     }
 
+    /** Return true when any JSON object repeats a member name after string decoding. */
+    public static function has_duplicate_object_keys(string $json): bool
+    {
+        $offset = 0;
+        $duplicate = false;
+        self::scan_json_value($json, $offset, $duplicate);
+        return $duplicate;
+    }
+
+    /** Scan valid JSON recursively, comparing decoded object key names. */
+    private static function scan_json_value(string $json, int &$offset, bool &$duplicate): void
+    {
+        self::skip_json_whitespace($json, $offset);
+        $length = strlen($json);
+        if ($offset >= $length) {
+            return;
+        }
+
+        $character = $json[$offset];
+        if ($character === '{') {
+            $offset++;
+            $keys = [];
+            while ($offset < $length) {
+                self::skip_json_whitespace($json, $offset);
+                if (($json[$offset] ?? '') === '}') {
+                    $offset++;
+                    return;
+                }
+
+                $rawkey = self::read_json_string($json, $offset);
+                $key = json_decode($rawkey);
+                if (is_string($key)) {
+                    $key = "\0" . bin2hex($key);
+                    if (isset($keys[$key])) {
+                        $duplicate = true;
+                    }
+                    $keys[$key] = true;
+                }
+
+                self::skip_json_whitespace($json, $offset);
+                if (($json[$offset] ?? '') === ':') {
+                    $offset++;
+                }
+                self::scan_json_value($json, $offset, $duplicate);
+                self::skip_json_whitespace($json, $offset);
+                if (($json[$offset] ?? '') === ',') {
+                    $offset++;
+                    continue;
+                }
+                if (($json[$offset] ?? '') === '}') {
+                    $offset++;
+                }
+                return;
+            }
+            return;
+        }
+
+        if ($character === '[') {
+            $offset++;
+            while ($offset < $length) {
+                self::skip_json_whitespace($json, $offset);
+                if (($json[$offset] ?? '') === ']') {
+                    $offset++;
+                    return;
+                }
+                self::scan_json_value($json, $offset, $duplicate);
+                self::skip_json_whitespace($json, $offset);
+                if (($json[$offset] ?? '') === ',') {
+                    $offset++;
+                    continue;
+                }
+                if (($json[$offset] ?? '') === ']') {
+                    $offset++;
+                }
+                return;
+            }
+            return;
+        }
+
+        if ($character === '"') {
+            self::read_json_string($json, $offset);
+            return;
+        }
+
+        while ($offset < $length && strpos(",]} \t\r\n", $json[$offset]) === false) {
+            $offset++;
+        }
+    }
+
+    /** Consume one JSON string token and return its exact encoded bytes. */
+    private static function read_json_string(string $json, int &$offset): string
+    {
+        $start = $offset;
+        $length = strlen($json);
+        if (($json[$offset] ?? '') !== '"') {
+            $offset = min($offset + 1, $length);
+            return '';
+        }
+        $offset++;
+        while ($offset < $length) {
+            if ($json[$offset] === '\\') {
+                $offset = min($offset + 2, $length);
+                continue;
+            }
+            if ($json[$offset] === '"') {
+                $offset++;
+                break;
+            }
+            $offset++;
+        }
+        return substr($json, $start, $offset - $start);
+    }
+
+    /** Skip the four whitespace bytes permitted between JSON tokens. */
+    private static function skip_json_whitespace(string $json, int &$offset): void
+    {
+        $length = strlen($json);
+        while ($offset < $length && strpos(" \t\r\n", $json[$offset]) !== false) {
+            $offset++;
+        }
+    }
+
     /**
      * Validate one document. The parent-only mode validates its shape and quarantine records
      * without pretending to authenticate its own earlier chain links.
@@ -32,6 +154,9 @@ final class delivery_lineage_manifest_offline_validator
         if (json_last_error() !== JSON_ERROR_NONE || !$manifest instanceof \stdClass) {
             self::add($diagnostics, 'manifest', 0, 0, 'manifest_json_object_required');
             return self::result($diagnostics, null, false, false);
+        }
+        if (self::has_duplicate_object_keys($json)) {
+            self::add($diagnostics, 'manifest', 0, 0, 'duplicate_json_object_key');
         }
 
         $root = get_object_vars($manifest);

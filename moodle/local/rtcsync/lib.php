@@ -37,13 +37,15 @@ function local_rtcsync_extend_navigation_course(
  * @param mixed $cm Course-module info, when the request has a module context.
  * @param mixed $setwantsurltome Whether the current URL should be retained.
  * @param mixed $preventredirect Whether redirects are disabled.
+ * @param callable|null $identityfetch Optional RTC identity fetcher for focused tests.
  */
 function local_rtcsync_after_require_login(
     $courseorid = null,
     $autologinguest = null,
     $cm = null,
     $setwantsurltome = null,
-    $preventredirect = null
+    $preventredirect = null,
+    ?callable $identityfetch = null
 ): void {
     global $PAGE, $USER;
 
@@ -54,6 +56,43 @@ function local_rtcsync_after_require_login(
     \local_rtcsync\local\delivery_activity_access::reconcile_user_delivery_group_memberships(
         (int) $USER->id
     );
+
+    $courseid = is_object($cm) && !empty($cm->course)
+        ? (int) $cm->course
+        : (is_object($courseorid)
+            ? (int) ($courseorid->id ?? 0)
+            : (is_numeric($courseorid) ? (int) $courseorid : 0));
+
+    $isrestrictedmanagedstudent = static function(int $targetcourseid) use ($USER): bool {
+        $userid = (int) $USER->id;
+        if (!\local_rtcsync\local\delivery_activity_access::is_managed_student_course_member(
+                $targetcourseid,
+                $userid
+            )
+                || !\local_rtcsync\local\delivery_activity_access::is_active_manual_student(
+                    $targetcourseid,
+                    $userid
+                )) {
+            return false;
+        }
+
+        $context = context_course::instance($targetcourseid);
+        if (has_capability('moodle/grade:viewall', $context, $userid)
+                || has_capability('moodle/grade:viewhidden', $context, $userid)) {
+            return false;
+        }
+
+        return true;
+    };
+    $revalidatelearneridentity = static function(int $targetcourseid) use (
+        $isrestrictedmanagedstudent,
+        $identityfetch
+    ): void {
+        if (!$isrestrictedmanagedstudent($targetcourseid)) {
+            return;
+        }
+        (new \local_rtcsync\local\student_history())->require_current_rtc_student_session($identityfetch);
+    };
 
     // Keep self-only core grade reports from exposing unreleased gradebook
     // details outside the Released results surface. This also covers the
@@ -81,14 +120,20 @@ function local_rtcsync_after_require_login(
             (int) $cm->id,
             (int) $USER->id
         );
+        if (plugin_supports('mod', (string) ($cm->modname ?? ''), FEATURE_GRADE_HAS_GRADE, false)
+                || plugin_supports('mod', (string) ($cm->modname ?? ''), FEATURE_GRADE_OUTCOMES, false)) {
+            if ($isrestrictedmanagedstudent((int) $cm->course)) {
+                \local_rtcsync\local\delivery_activity_access::quarantine_nonmanual_delivery_grade_items(
+                    (int) $cm->course
+                );
+            }
+            $revalidatelearneridentity((int) $cm->course);
+        }
         return;
     }
 
     // Some content-bearing search routes authenticate only at course scope,
     // then rely on course modinfo when filtering activity results.
-    $courseid = is_object($courseorid)
-        ? (int) ($courseorid->id ?? 0)
-        : (is_numeric($courseorid) ? (int) $courseorid : 0);
     if ($courseid <= 1
             && !empty($PAGE->url)
             && str_ends_with($PAGE->url->get_path(), '/mod/forum/user.php')) {
@@ -122,6 +167,15 @@ function local_rtcsync_after_require_login(
             $courseid,
             (int) $USER->id
         );
+
+        // Moodle's activity-overview page renders individual module grades
+        // outside the standard grade-report endpoints.
+        if (!empty($PAGE->url) && str_ends_with($PAGE->url->get_path(), '/course/overview.php')) {
+            if ($isrestrictedmanagedstudent($courseid)) {
+                \local_rtcsync\local\delivery_activity_access::quarantine_nonmanual_delivery_grade_items($courseid);
+            }
+            $revalidatelearneridentity($courseid);
+        }
     }
 }
 

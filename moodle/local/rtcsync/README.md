@@ -100,6 +100,10 @@ The `local_rtcsync_upsert_grade` payload accepts `deliveryid`. Positive IDs requ
 
 The student Released results page uses bidirectional keyset pagination with a maximum of 50 grade rows per request. This keeps deep history pages reachable without increasing SQL offset work; cursor values only choose the page position and every query remains scoped to the signed-in Moodle user.
 
+## RTC User Identity Reconciliation
+
+The canonical Moodle user `idnumber` and `local_rtcsync_user.idnumber` are `rtc-user:<RTC users.id>`. ID cards, names, and email addresses are not stable RTC identity keys. SSO resolves an existing account only through that canonical idnumber or a managed marker with the exact canonical idnumber; it creates new RTC users with the canonical value and marker. A legacy ID-card account is migrated by the sync API only when it receives an explicit Moodle user mapping or already has a marker for the exact stable RTC ID. Duplicate, conflicting, or card/email-only matches fail closed. The plugin relies on the `moodleid` supplied by the sync call and does not independently verify the provenance of the backend mapping. Before migrating an old account without a stable marker, the data owner must confirm the stored RTC-to-Moodle mapping or repair it from authoritative records; do not link it by matching personal details. Released results require the canonical marker. A legacy Moodle idnumber is tolerated only while it uniquely matches the current ID card and its marker already proves the same stable RTC user; changed or duplicate legacy cards remain denied until the account is migrated.
+
 ## Moodle Setup
 
 1. Install this folder as `local/rtcsync` in the Moodle codebase.

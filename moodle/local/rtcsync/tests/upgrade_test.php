@@ -163,7 +163,7 @@ final class upgrade_test extends \advanced_testcase
         $cmid = (int) $module->cmid;
         $DB->set_field('course_modules', 'groupingid', (int) $grouping->id, ['id' => $cmid]);
         $now = time();
-        $DB->insert_record('local_rtcsync_deliverycm', (object) [
+        $deliverymapping = (object) [
             'cmid' => $cmid,
             'courseid' => (int) $course->id,
             'deliveryid' => $deliveryid,
@@ -174,7 +174,14 @@ final class upgrade_test extends \advanced_testcase
             'managedavailability' => null,
             'timecreated' => $now,
             'timemodified' => $now,
-        ]);
+        ];
+        $existingmapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => $cmid], '*', IGNORE_MISSING);
+        if ($existingmapping) {
+            $deliverymapping->id = (int) $existingmapping->id;
+            $DB->update_record('local_rtcsync_deliverycm', $deliverymapping);
+        } else {
+            $DB->insert_record('local_rtcsync_deliverycm', $deliverymapping);
+        }
         $DB->insert_record('local_rtcsync_deliverygrade', (object) [
             'gradeitemid' => (int) $item->id,
             'courseid' => (int) $course->id,
@@ -297,14 +304,26 @@ final class upgrade_test extends \advanced_testcase
         $DB->set_field('local_rtcsync_deliverygrade', 'lineagemanifestid', 'pre-transition-manifest', [
             'gradeitemid' => (int) $item->id,
         ]);
-        $DB->insert_record('local_rtcsync_deliverycourse', (object) [
+        $deliverycourse = (object) [
             'courseid' => (int) $course->id,
             'coursevisible' => 1,
             'ready' => 1,
             'lastcmid' => $cmid,
             'timecreated' => $now,
             'timemodified' => $now,
-        ]);
+        ];
+        $existingdeliverycourse = $DB->get_record(
+            'local_rtcsync_deliverycourse',
+            ['courseid' => (int) $course->id],
+            '*',
+            IGNORE_MISSING
+        );
+        if ($existingdeliverycourse) {
+            $deliverycourse->id = (int) $existingdeliverycourse->id;
+            $DB->update_record('local_rtcsync_deliverycourse', $deliverycourse);
+        } else {
+            $DB->insert_record('local_rtcsync_deliverycourse', $deliverycourse);
+        }
         $DB->set_field('course', 'visible', 1, ['id' => (int) $course->id]);
 
         foreach ([

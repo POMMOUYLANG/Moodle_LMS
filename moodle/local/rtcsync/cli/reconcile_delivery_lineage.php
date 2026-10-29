@@ -61,16 +61,32 @@ if ($options['help']) {
         . "  --verify-current        With --check-evidence, compare against current target verification.\n"
         . "  --expected-evidence-sha256=<hash> Optional separately retained checksum for bundle checking.\n"
         . "  -h, --help              Show this help.\n\n"
-        . "Run as an operator authorized to invoke this Moodle CLI. Apply options are rejected during dry-run.\n"
+        . "Run under an OS account authorized to access this Moodle installation. Moodle records an actor only when\n"
+        . "a CLI auth plugin maps one. The --operator and approval fields are declarations, not verified identities.\n"
+        . "Apply options are rejected during dry-run.\n"
         . "Apply only after reviewing a successful preview; the exact plan_sha256 is required.\n"
         . "Repeated provenance must match the manifest; these declarations are recorded, not authenticated.\n"
         . "Dry-run may inspect the source backup; apply requires it and rechecks it under the course lock.\n"
+        . "Manifest and evidence JSON files are limited to 8 MiB.\n"
         . "Only its SHA-256 digest is stored. A digest match does not authenticate the backup, source, reviewer, or approval.\n"
         . "The evidence checksum is unsigned. Preserve its expected digest separately to detect file replacement.\n"
         . "Verification exit codes: 0 import audit and current chain head match, 1 chain/target drift, 2 invalid or incomplete verification."
     );
     exit(0);
 }
+
+$readmanifestfile = static function(string $path): string {
+    $handle = @fopen($path, 'rb');
+    if ($handle === false) {
+        cli_error('A manifest file is unreadable or exceeds the supported size limit.', 2);
+    }
+    $contents = stream_get_contents($handle, 8388609);
+    fclose($handle);
+    if ($contents === false || strlen($contents) > 8388608) {
+        cli_error('A manifest file is unreadable or exceeds the supported size limit.', 2);
+    }
+    return $contents;
+};
 
 $parentmanifestpath = trim((string) $options['parent-manifest']);
 if (!$options['check-manifest'] && $parentmanifestpath !== '') {
@@ -96,18 +112,6 @@ if ($options['check-manifest']) {
     if ($manifestpath === '' || !is_file($manifestpath)) {
         cli_error('--check-manifest requires a readable --manifest JSON file.', 2);
     }
-    $readmanifestfile = static function(string $path): string {
-        $handle = @fopen($path, 'rb');
-        if ($handle === false) {
-            cli_error('A manifest file is unreadable or exceeds the supported size limit.', 2);
-        }
-        $contents = stream_get_contents($handle, 8388609);
-        fclose($handle);
-        if ($contents === false || strlen($contents) > 8388608) {
-            cli_error('A manifest file is unreadable or exceeds the supported size limit.', 2);
-        }
-        return $contents;
-    };
     $manifestjson = $readmanifestfile($manifestpath);
     $parentjson = null;
     if ($parentmanifestpath !== '') {
@@ -257,10 +261,7 @@ if ($checkevidencepath !== '') {
         if (!is_file($manifestpath)) {
             cli_error('A readable reviewed manifest file is required for current verification.', 2);
         }
-        $manifestjson = file_get_contents($manifestpath);
-        if ($manifestjson === false) {
-            cli_error('Unable to read the reviewed manifest file.', 2);
-        }
+        $manifestjson = $readmanifestfile($manifestpath);
         $manifestid = (string) $checkedbundle['bundle']['evidence']['import']['manifest_id'];
         $currentverification = delivery_lineage_reconciliation_verifier::verify($manifestid, $manifestjson);
         if ($currentverification['status'] === 'invalid') {
@@ -306,10 +307,7 @@ $manifestpath = trim((string) $options['manifest']);
 if ($manifestpath === '' || !is_file($manifestpath)) {
     cli_error('A readable --manifest JSON file is required.', $options['verify'] ? 2 : 1);
 }
-$manifestjson = file_get_contents($manifestpath);
-if ($manifestjson === false) {
-    cli_error('Unable to read the manifest file.', $options['verify'] ? 2 : 1);
-}
+$manifestjson = $readmanifestfile($manifestpath);
 
 if ($options['apply'] && $options['verify']) {
     cli_error('--apply and --verify are mutually exclusive.', 2);
