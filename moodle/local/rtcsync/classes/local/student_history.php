@@ -24,6 +24,8 @@ final class student_history
      * @param int $historyaccess 1 to retain history; 0 to clear one source.
      * @param string $sourcetype Source record kind.
      * @param int $sourceid SMS source record ID.
+     * @param int $expectedscoperevision Required for delivery-participation clears; zero means omitted.
+     * @return array{applied:int, scoperevision:int}
      */
     public static function sync_marker(
         int $userid,
@@ -31,17 +33,27 @@ final class student_history
         int $historyaccess,
         string $sourcetype,
         int $sourceid,
-        int $deliveryid
-    ): void {
-        delivery_activity_access::with_course_access_lock($courseid, static function() use (
+        int $deliveryid,
+        int $expectedscoperevision = 0
+    ): array {
+        return delivery_activity_access::with_course_access_lock($courseid, static function() use (
             $userid,
             $courseid,
             $historyaccess,
             $sourcetype,
             $sourceid,
-            $deliveryid
-        ): void {
-            self::sync_marker_locked($userid, $courseid, $historyaccess, $sourcetype, $sourceid, $deliveryid);
+            $deliveryid,
+            $expectedscoperevision
+        ): array {
+            return self::sync_marker_locked(
+                $userid,
+                $courseid,
+                $historyaccess,
+                $sourcetype,
+                $sourceid,
+                $deliveryid,
+                $expectedscoperevision
+            );
         });
     }
 
@@ -50,6 +62,8 @@ final class student_history
      *
      * This method intentionally does not acquire a lock; use sync_marker()
      * unless the caller is performing a larger atomic course operation.
+     *
+     * @return array{applied:int, scoperevision:int}
      */
     public static function sync_marker_locked(
         int $userid,
@@ -57,8 +71,9 @@ final class student_history
         int $historyaccess,
         string $sourcetype,
         int $sourceid,
-        int $deliveryid
-    ): void {
+        int $deliveryid,
+        int $expectedscoperevision = 0
+    ): array {
         global $DB;
 
         if (!in_array($historyaccess, [0, 1], true)) {
@@ -72,6 +87,10 @@ final class student_history
             throw new \invalid_parameter_exception('A delivery ID requires a history source.');
         }
 
+        $scopestate = $sourcetype === 'delivery_participation'
+            ? self::delivery_scope_state($userid, $courseid)
+            : ['revision' => 0, 'deliveryids' => null];
+
         if ($historyaccess === 1) {
             self::require_student_enrolment($userid, $courseid, $sourcetype, $deliveryid);
 
@@ -83,6 +102,14 @@ final class student_history
             ];
             $existing = $DB->get_record('local_rtcsync_history', $conditions, '*', IGNORE_MISSING);
             if ($existing) {
+                if ($sourcetype === 'delivery_participation'
+                        && $existing->deliveryid !== null
+                        && (int) $existing->deliveryid > 0
+                        && (int) $existing->deliveryid !== $deliveryid) {
+                    throw new \invalid_parameter_exception(
+                        'A delivery participation history source cannot be reassigned to another delivery.'
+                    );
+                }
                 $existing->deliveryid = $deliveryid;
                 $existing->timemodified = time();
                 $DB->update_record('local_rtcsync_history', $existing);
@@ -95,13 +122,38 @@ final class student_history
                 ]));
             }
 
-            return;
+            return [
+                'applied' => 1,
+                'scoperevision' => $scopestate['revision'],
+            ];
         }
 
         // Missing source metadata is a no-op. Never clear every history marker
         // for a Moodle user or course when an older sync caller omits it.
         if ($sourcetype !== '' && $sourceid > 0) {
             if ($sourcetype === 'delivery_participation' && $deliveryid > 0) {
+                if ($expectedscoperevision <= 0
+                        || $expectedscoperevision !== $scopestate['revision']
+                        || !is_array($scopestate['deliveryids'])
+                        || !in_array($deliveryid, $scopestate['deliveryids'], true)) {
+                    return [
+                        'applied' => 0,
+                        'scoperevision' => $scopestate['revision'],
+                    ];
+                }
+                $markerparams = [
+                    'userid' => $userid,
+                    'courseid' => $courseid,
+                    'sourcetype' => $sourcetype,
+                    'sourceid' => $sourceid,
+                    'deliveryid' => $deliveryid,
+                ];
+                $markerexists = $DB->record_exists_select(
+                    'local_rtcsync_history',
+                    'userid = :userid AND courseid = :courseid AND sourcetype = :sourcetype'
+                        . ' AND sourceid = :sourceid AND (deliveryid = :deliveryid OR deliveryid IS NULL)',
+                    $markerparams
+                );
                 // Before delivery IDs were stored, upgraded delivery markers
                 // retain a NULL value and cannot grant history access. A clear
                 // request is still exact by its user/course/source identity,
@@ -119,15 +171,78 @@ final class student_history
                     ]
                 );
             } else {
-                $DB->delete_records('local_rtcsync_history', [
+                $markerconditions = [
                     'userid' => $userid,
                     'courseid' => $courseid,
                     'sourcetype' => $sourcetype,
                     'sourceid' => $sourceid,
                     'deliveryid' => $deliveryid,
-                ]);
+                ];
+                $markerexists = $DB->record_exists('local_rtcsync_history', $markerconditions);
+                $DB->delete_records('local_rtcsync_history', $markerconditions);
+            }
+            return [
+                'applied' => (int) $markerexists,
+                'scoperevision' => $scopestate['revision'],
+            ];
+        }
+
+        return [
+            'applied' => 0,
+            'scoperevision' => $scopestate['revision'],
+        ];
+    }
+
+    /**
+     * Read the effective versioned scope used to authorize delivery history clears.
+     * Invalid scopes return no delivery IDs; a missing scope returns revision zero.
+     *
+     * @return array{revision:int, deliveryids:?array<int, int>}
+     */
+    private static function delivery_scope_state(
+        int $userid,
+        int $courseid
+    ): array {
+        global $DB;
+
+        $manager = $DB->get_manager();
+        $table = new \xmldb_table('local_rtcsync_studentscope');
+        if (!$manager->table_exists($table)
+                || !$manager->field_exists($table, new \xmldb_field('revision'))
+                || !$manager->field_exists($table, new \xmldb_field('deliveryids'))) {
+            return ['revision' => 0, 'deliveryids' => null];
+        }
+
+        $scope = $DB->get_record('local_rtcsync_studentscope', [
+            'courseid' => $courseid,
+            'userid' => $userid,
+        ], 'revision, deliveryids', IGNORE_MISSING);
+        if (!$scope) {
+            return ['revision' => 0, 'deliveryids' => null];
+        }
+
+        $revision = max(0, (int) $scope->revision);
+        if ($revision < delivery_activity_access::MIN_STUDENT_SCOPE_REVISION) {
+            return ['revision' => $revision, 'deliveryids' => null];
+        }
+
+        $deliveryids = json_decode((string) $scope->deliveryids, true);
+        if (!is_array($deliveryids) || !array_is_list($deliveryids)) {
+            return ['revision' => $revision, 'deliveryids' => null];
+        }
+        foreach ($deliveryids as $scopedeliveryid) {
+            if (!is_int($scopedeliveryid) || $scopedeliveryid <= 0) {
+                return ['revision' => $revision, 'deliveryids' => null];
             }
         }
+
+        $deliveryids = array_values(array_unique($deliveryids));
+        sort($deliveryids, SORT_NUMERIC);
+
+        return [
+            'revision' => $revision,
+            'deliveryids' => $deliveryids,
+        ];
     }
 
     /**

@@ -55,7 +55,7 @@ $functions = [
         'classname' => 'local_rtcsync_external',
         'methodname' => 'sync_history_marker',
         'classpath' => 'local/rtcsync/externallib.php',
-        'description' => 'Synchronize one source-scoped, read-only student history marker without changing enrolment.',
+        'description' => 'Synchronize one source-scoped, read-only student history marker; delivery-participation clears require the current delivery-scope revision.',
         'type' => 'write',
         'capabilities' => 'enrol/manual:enrol',
     ],

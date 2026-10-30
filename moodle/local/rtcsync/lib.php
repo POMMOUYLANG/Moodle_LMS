@@ -94,10 +94,9 @@ function local_rtcsync_after_require_login(
         (new \local_rtcsync\local\student_history())->require_current_rtc_student_session($identityfetch);
     };
 
-    // Keep self-only core grade reports from exposing unreleased gradebook
-    // details outside the Released results surface. This also covers the
-    // course profile's mode=grade route, which does not pass through a report
-    // plugin index file.
+    // Keep self-only grade surfaces from exposing unreleased gradebook details
+    // outside Released results. This includes course activities overview and
+    // the course profile's mode=grade route, which bypass report plugin indexes.
     if (!empty($PAGE->url)
             && \local_rtcsync\local\grade_report_redirect::should_redirect(
                 $PAGE->url->get_path(),

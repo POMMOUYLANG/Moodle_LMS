@@ -717,5 +717,10 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         upgrade_plugin_savepoint(true, 2026103100, 'local', 'rtcsync');
     }
 
+    if ($oldversion < 2026103101) {
+        // Revision-aware delivery-history clear contract; no schema change required.
+        upgrade_plugin_savepoint(true, 2026103101, 'local', 'rtcsync');
+    }
+
     return true;
 }

@@ -60,7 +60,7 @@ class get_feedback extends external_api {
      * @return array Feedback and user details
      */
     public static function execute(int $courseid, int $userid, int $itemid): array {
-        global $OUTPUT, $CFG;
+        global $OUTPUT, $CFG, $USER;
 
         $params = self::validate_parameters(
             self::execute_parameters(),
@@ -75,6 +75,21 @@ class get_feedback extends external_api {
         parent::validate_context($context);
 
         require_capability('gradereport/grader:view', $context);
+
+        // This AJAX endpoint has only a course context, so the normal module
+        // delivery guard cannot scope the grade item being viewed. Managed
+        // Students must use Released results for grade feedback as well.
+        if (class_exists('\\local_rtcsync\\local\\delivery_activity_access')
+                && \local_rtcsync\local\delivery_activity_access::should_restrict_grade_report(
+                    (int) $USER->id,
+                    (int) $params['courseid']
+                )) {
+            throw new \moodle_exception(
+                'studenthistoryreportonly',
+                'local_rtcsync',
+                new \moodle_url('/local/rtcsync/student_history.php')
+            );
+        }
 
         $gtree = new \grade_tree($params['courseid'], false, false, null, !$CFG->enableoutcomes);
         $gradeitem = $gtree->get_item($params['itemid']);

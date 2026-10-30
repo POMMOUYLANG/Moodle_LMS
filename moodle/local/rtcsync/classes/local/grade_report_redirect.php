@@ -5,7 +5,7 @@ namespace local_rtcsync\local;
 defined('MOODLE_INTERNAL') || die();
 
 /**
- * Identifies grade-report requests that should use the Released results page.
+ * Identifies learner grade surfaces that should use the Released results page.
  *
  * The request classifier is kept independent of Moodle's database and login
  * state so the report-route policy can be checked by a standalone regression
@@ -36,7 +36,7 @@ final class grade_report_redirect {
     }
 
     /**
-     * Get the managed-course scope for a self-only report URL.
+     * Get the managed-course scope for a self-only grade surface URL.
      *
      * @param string $path Request path, including any Moodle subdirectory prefix.
      * @param array $params URL parameters.
@@ -56,6 +56,11 @@ final class grade_report_redirect {
 
         if (str_ends_with($path, '/grade/report/index.php')) {
             // This page only dispatches to the current course's selected report.
+            return self::positive_course_id($params);
+        }
+
+        if (str_ends_with($path, '/course/overview.php')) {
+            // The activities overview renders module grade items for the signed-in learner.
             return self::positive_course_id($params);
         }
 

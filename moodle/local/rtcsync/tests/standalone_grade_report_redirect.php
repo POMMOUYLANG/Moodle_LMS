@@ -75,6 +75,20 @@ grade_report_expect_routed(
     'Course grade-report dispatcher'
 );
 grade_report_expect_routed(
+    '/moodle/course/overview.php',
+    ['id' => '17'],
+    $viewerid,
+    17,
+    'Course activities overview uses the signed-in learner grade policy'
+);
+grade_report_expect_routed(
+    '/course/overview.php',
+    ['id' => 'not-a-course'],
+    $viewerid,
+    null,
+    'Invalid course activities overview parameter does not redirect'
+);
+grade_report_expect_routed(
     '/grade/report/user/index.php',
     ['id' => 17],
     $viewerid,
@@ -129,6 +143,39 @@ if ($userreportaccessposition === false
         || $userreportguardposition < $userreportdeniedposition) {
     throw new RuntimeException('The core user grade report must preserve its self-only redirect after authorization checks.');
 }
+
+// The grader feedback AJAX API has course context only, and is mirrored into
+// Moodle's public document root. Keep the managed-learner check before reads
+// from the grade tree in both copies.
+$feedbacksourcepaths = [
+    __DIR__ . '/../../../grade/classes/external/get_feedback.php',
+    __DIR__ . '/../../../public/grade/classes/external/get_feedback.php',
+];
+$feedbacksources = [];
+foreach ($feedbacksourcepaths as $feedbacksourcepath) {
+    $feedbacksource = file_get_contents($feedbacksourcepath);
+    if (!is_string($feedbacksource)) {
+        throw new RuntimeException('Unable to read a core grade feedback external API source copy.');
+    }
+    $feedbacksources[] = $feedbacksource;
+    $gradercapabilityposition = strpos($feedbacksource, 'require_capability(\'gradereport/grader:view\', $context);');
+    $managedfeedbackguardposition = strpos($feedbacksource, 'should_restrict_grade_report(');
+    $feedbackgradefetchposition = strpos($feedbacksource, '$grade = $gradeitem->get_grade(');
+    $managedfeedbackguard = $managedfeedbackguardposition === false || $feedbackgradefetchposition === false
+        ? ''
+        : substr($feedbacksource, $managedfeedbackguardposition, $feedbackgradefetchposition - $managedfeedbackguardposition);
+    if ($gradercapabilityposition === false
+            || $managedfeedbackguardposition === false
+            || $feedbackgradefetchposition === false
+            || $managedfeedbackguardposition < $gradercapabilityposition
+            || $managedfeedbackguardposition > $feedbackgradefetchposition
+            || strpos($managedfeedbackguard, '(int) $USER->id') === false
+            || strpos($managedfeedbackguard, '(int) $params[\'courseid\']') === false
+            || strpos($managedfeedbackguard, 'studenthistoryreportonly') === false) {
+        throw new RuntimeException('Core grade feedback must apply the managed-learner policy before reading feedback.');
+    }
+}
+grade_report_expect_same($feedbacksources[0], $feedbacksources[1], 'core grade feedback source mirrors');
 
 grade_report_expect_routed(
     '/course/user.php',

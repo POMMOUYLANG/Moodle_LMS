@@ -34,6 +34,31 @@ rtc_sso_tls_expect_same(
     rtc_sso_stable_user_idnumber(['id' => 0]),
     'invalid RTC user identity rejection'
 );
+rtc_sso_tls_expect_same(
+    true,
+    rtc_sso_moodle_user_can_login((object) ['auth' => 'manual', 'deleted' => 0, 'suspended' => 0]),
+    'active local Moodle account eligibility'
+);
+rtc_sso_tls_expect_same(
+    false,
+    rtc_sso_moodle_user_can_login((object) ['auth' => 'manual', 'deleted' => 0, 'suspended' => 1]),
+    'suspended local Moodle account rejection'
+);
+rtc_sso_tls_expect_same(
+    false,
+    rtc_sso_moodle_user_can_login((object) ['auth' => 'manual', 'deleted' => 1, 'suspended' => 0]),
+    'deleted local Moodle account rejection'
+);
+rtc_sso_tls_expect_same(
+    false,
+    rtc_sso_moodle_user_can_login((object) ['auth' => 'nologin', 'deleted' => 0, 'suspended' => 0]),
+    'nologin local Moodle account rejection'
+);
+rtc_sso_tls_expect_same(
+    false,
+    rtc_sso_moodle_user_can_login((object) ['auth' => 'manual']),
+    'incomplete local Moodle account rejection'
+);
 
 putenv('RTC_API_BASE_URL=https://api.staging.example.test:8443');
 putenv('RTC_SSO_STRICT_API_BASE_URLS=true');
@@ -71,9 +96,19 @@ foreach (['rtc_sso_fetch_user_detail', 'rtc_sso_fetch_login_token', 'rtc_sso_rev
 $autologinstart = strpos($source, 'function rtc_sso_autologin_to_moodle(');
 $autologinnext = strpos($source, "\nfunction ", $autologinstart + 1);
 $autologinbody = substr($source, $autologinstart, $autologinnext === false ? null : $autologinnext - $autologinstart);
+$initialaccountcheck = strpos($autologinbody, 'if ($muser && !rtc_sso_moodle_user_can_login($muser))');
+$userupdate = strpos($autologinbody, "\$stage = 'update Moodle user';");
+$finalaccountcheck = strrpos($autologinbody, 'if (!rtc_sso_moodle_user_can_login($muser))');
+$sessioncompletion = strpos($autologinbody, 'complete_user_login($muser);');
 if (!str_contains($autologinbody, '$newuser->idnumber = $stableidnumber;')
         || !str_contains($autologinbody, 'managed.idnumber = :idnumber')
-        || !str_contains($autologinbody, 'stable RTC identity maps to multiple Moodle users')) {
+        || !str_contains($autologinbody, 'stable RTC identity maps to multiple Moodle users')
+        || $initialaccountcheck === false
+        || $userupdate === false
+        || $initialaccountcheck > $userupdate
+        || $finalaccountcheck === false
+        || $sessioncompletion === false
+        || $finalaccountcheck > $sessioncompletion) {
     throw new RuntimeException('RTC SSO must create and resolve Moodle accounts through the stable RTC user mapping.');
 }
 

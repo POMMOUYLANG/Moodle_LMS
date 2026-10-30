@@ -115,6 +115,21 @@ final class student_history_test extends \advanced_testcase
         return 800000000 + (int) $user->id;
     }
 
+    /** Store an effective delivery scope for focused history-marker tests. */
+    private function createHistoryDeliveryScope(\stdClass $user, \stdClass $course, array $deliveryids, int $revision): void
+    {
+        global $DB;
+
+        $DB->insert_record('local_rtcsync_studentscope', (object) [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'deliveryids' => json_encode(array_values($deliveryids), JSON_THROW_ON_ERROR),
+            'revision' => $revision,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+    }
+
     /** Add an exact delivery mapping for a fixture grade item. */
     private function mapHistoryGradeItem(\stdClass $course, \grade_item $item, int $deliveryid): void
     {
@@ -2281,14 +2296,19 @@ final class student_history_test extends \advanced_testcase
             77
         );
 
-        \local_rtcsync\local\student_history::sync_marker(
+        $revision = 20261031000000000;
+        $this->createHistoryDeliveryScope($student['user'], $student['course'], [77], $revision);
+        $result = \local_rtcsync\local\student_history::sync_marker(
             (int) $student['user']->id,
             (int) $student['course']->id,
             0,
             'delivery_participation',
             9001,
-            77
+            77,
+            $revision
         );
+        $this->assertSame(1, $result['applied']);
+        $this->assertSame($revision, $result['scoperevision']);
 
         $this->assertTrue($DB->record_exists('local_rtcsync_history', [
             'userid' => (int) $student['user']->id,
@@ -2310,6 +2330,11 @@ final class student_history_test extends \advanced_testcase
 
         $this->resetAfterTest();
         $student = $this->createHistoryStudent('legacy-source-clear');
+        $this->getDataGenerator()->create_grouping([
+            'courseid' => (int) $student['course']->id,
+            'name' => 'Legacy history delivery',
+            'idnumber' => 'rtc-delivery-grouping:77',
+        ]);
         $DB->insert_record('local_rtcsync_history', (object) [
             'userid' => (int) $student['user']->id,
             'courseid' => (int) $student['course']->id,
@@ -2320,13 +2345,16 @@ final class student_history_test extends \advanced_testcase
             'timemodified' => time(),
         ]);
 
+        $revision = 20261031000000000;
+        $this->createHistoryDeliveryScope($student['user'], $student['course'], [77], $revision);
         \local_rtcsync\local\student_history::sync_marker(
             (int) $student['user']->id,
             (int) $student['course']->id,
             0,
             'delivery_participation',
             9002,
-            77
+            77,
+            $revision
         );
 
         $this->assertFalse($DB->record_exists('local_rtcsync_history', [

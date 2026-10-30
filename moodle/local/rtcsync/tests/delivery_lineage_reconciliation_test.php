@@ -242,8 +242,8 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
                 'manifest_schema_version' => 1,
                 'course_id' => 12345,
                 'applied_at' => 100,
-                'installed_plugin_version' => 2026103100,
-                'database_schema_version' => 2026103100,
+                'installed_plugin_version' => 2026103101,
+                'database_schema_version' => 2026103101,
             ],
             'lineage_chain' => [[
                 'manifest_id' => $manifestid,

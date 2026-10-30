@@ -1088,6 +1088,7 @@ final class externallib_test extends \advanced_testcase
         $this->resetAfterTest();
         $this->setAdminUser();
         set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
+        set_config('enableavailability', 1);
         $course = $this->createManagedCourse();
         $this->createDeliveryGrouping($course, 77);
         $user = $this->createManagedUser();
@@ -1096,6 +1097,14 @@ final class externallib_test extends \advanced_testcase
             'userid' => (int) $user->id,
             'role_shortname' => 'student',
             'suspend' => 1,
+        ]);
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        $revision = 20261031000000000;
+        \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'deliveryids' => [77],
+            'revision' => $revision,
         ]);
         $instance = $DB->get_record('enrol', [
             'courseid' => (int) $course->id,
@@ -1126,13 +1135,28 @@ final class externallib_test extends \advanced_testcase
             'historysourceid' => 202,
             'deliveryid' => 77,
         ]);
-        \local_rtcsync_external::sync_history_marker([
+        $clear = \local_rtcsync_external::sync_history_marker([
             'courseid' => (int) $course->id,
             'userid' => (int) $user->id,
             'historyaccess' => 0,
             'historysourcetype' => 'delivery_participation',
             'historysourceid' => 202,
             'deliveryid' => 77,
+            'expectedscoperevision' => $revision,
+        ]);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'user_program',
+            'historysourceid' => 102,
+        ]);
+        $userprogramclear = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 0,
+            'historysourcetype' => 'user_program',
+            'historysourceid' => 102,
         ]);
 
         $enrolmentafter = $DB->get_record('user_enrolments', [
@@ -1145,6 +1169,10 @@ final class externallib_test extends \advanced_testcase
         ], 'id ASC');
 
         $this->assertSame(1, $first['historyaccess']);
+        $this->assertSame(1, $clear['applied']);
+        $this->assertSame($revision, $clear['scoperevision']);
+        $this->assertSame(1, $userprogramclear['applied']);
+        $this->assertSame(0, $userprogramclear['scoperevision']);
         $this->assertSame(ENROL_USER_SUSPENDED, (int) $enrolmentafter->status);
         $this->assertEquals($enrolmentbefore, $enrolmentafter);
         $this->assertEquals($rolesbefore, $rolesafter);
@@ -1153,6 +1181,12 @@ final class externallib_test extends \advanced_testcase
             'courseid' => (int) $course->id,
             'sourcetype' => 'user_program',
             'sourceid' => 101,
+        ]));
+        $this->assertFalse($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'user_program',
+            'sourceid' => 102,
         ]));
         $this->assertFalse($DB->record_exists('local_rtcsync_history', [
             'userid' => (int) $user->id,
@@ -1268,6 +1302,428 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame(77, (int) $result['deliveryid']);
     }
 
+    public function test_delivery_history_source_cannot_be_reassigned_to_another_delivery(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 77);
+        $this->createDeliveryGrouping($course, 88);
+        $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
+
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9202,
+            'deliveryid' => 77,
+        ]);
+
+        try {
+            \local_rtcsync_external::sync_history_marker([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'historyaccess' => 1,
+                'historysourcetype' => 'delivery_participation',
+                'historysourceid' => 9202,
+                'deliveryid' => 88,
+            ]);
+            $this->fail('An existing participation source must not be silently remapped to another delivery.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('cannot be reassigned', $exception->getMessage());
+        }
+
+        $marker = $DB->get_record('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9202,
+        ], '*', MUST_EXIST);
+        $this->assertSame(77, (int) $marker->deliveryid);
+    }
+
+    public function test_stale_out_of_scope_delivery_history_clear_preserves_released_marker(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 77);
+        $this->createDeliveryGrouping($course, 88);
+        $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
+
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9203,
+            'deliveryid' => 77,
+        ]);
+        \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'deliveryids' => [88],
+            'revision' => 20261025000000000,
+        ]);
+
+        $staleClear = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9203,
+            'deliveryid' => 77,
+            'expectedscoperevision' => 20261025000000000,
+        ]);
+
+        $this->assertSame(0, $staleClear['applied']);
+        $this->assertSame(20261025000000000, $staleClear['scoperevision']);
+        $this->assertTrue($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9203,
+            'deliveryid' => 77,
+        ]));
+    }
+
+    public function test_delivery_history_clear_requires_matching_revision_and_in_scope_delivery(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 77);
+        $this->createDeliveryGrouping($course, 88);
+        $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+
+        $revision = 20261031000000000;
+        \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'deliveryids' => [77],
+            'revision' => $revision,
+        ]);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9204,
+            'deliveryid' => 77,
+        ]);
+
+        $missingrevision = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9204,
+            'deliveryid' => 77,
+        ]);
+        $this->assertSame(0, $missingrevision['applied']);
+        $this->assertSame($revision, $missingrevision['scoperevision']);
+        $this->assertTrue($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9204,
+            'deliveryid' => 77,
+        ]));
+
+        $rejected = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9204,
+            'deliveryid' => 77,
+            'expectedscoperevision' => $revision - 1,
+        ]);
+        $this->assertSame(0, $rejected['applied']);
+        $this->assertSame($revision, $rejected['scoperevision']);
+        $this->assertTrue($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9204,
+            'deliveryid' => 77,
+        ]));
+
+        $accepted = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9204,
+            'deliveryid' => 77,
+            'expectedscoperevision' => $revision,
+        ]);
+        $this->assertSame(1, $accepted['applied']);
+        $this->assertSame($revision, $accepted['scoperevision']);
+        $this->assertFalse($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9204,
+        ]));
+
+        $replay = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9204,
+            'deliveryid' => 77,
+            'expectedscoperevision' => $revision,
+        ]);
+        $this->assertSame(0, $replay['applied']);
+        $this->assertSame($revision, $replay['scoperevision']);
+    }
+
+    public function test_delivery_history_grants_remain_independent_of_current_scope_revision(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 77);
+        $this->createDeliveryGrouping($course, 88);
+        $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+        $revision = 20261031000000000;
+        \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'deliveryids' => [88],
+            'revision' => $revision,
+        ]);
+
+        $grant = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9205,
+            'deliveryid' => 77,
+            'expectedscoperevision' => $revision - 1,
+        ]);
+        $this->assertSame(1, $grant['applied']);
+        $this->assertSame($revision, $grant['scoperevision']);
+        $this->assertTrue($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9205,
+            'deliveryid' => 77,
+        ]));
+    }
+
+    public function test_minimum_delivery_scope_revision_requires_explicit_expected_revision(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 77);
+        $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+        $revision = 2026102505;
+        \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'deliveryids' => [77],
+            'revision' => $revision,
+        ]);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9206,
+            'deliveryid' => 77,
+        ]);
+
+        $omitted = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9206,
+            'deliveryid' => 77,
+        ]);
+        $this->assertSame(0, $omitted['applied']);
+        $this->assertSame($revision, $omitted['scoperevision']);
+        $this->assertTrue($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9206,
+        ]));
+
+        $explicit = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9206,
+            'deliveryid' => 77,
+            'expectedscoperevision' => $revision,
+        ]);
+        $this->assertSame(1, $explicit['applied']);
+        $this->assertSame($revision, $explicit['scoperevision']);
+        $this->assertFalse($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9206,
+        ]));
+    }
+
+    public function test_unsupported_stored_scope_revision_denies_activity_and_preserves_history_marker(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse(['showgrades' => 1]);
+        $grouping = $this->createDeliveryGrouping($course, 77);
+        $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
+        \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9207,
+            'deliveryid' => 77,
+        ]);
+
+        $group = $this->getDataGenerator()->create_group([
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-delivery-class-group:77:1',
+        ]);
+        groups_assign_grouping((int) $grouping->id, (int) $group->id);
+        groups_add_member((int) $group->id, (int) $user->id);
+        $DB->insert_record('local_rtcsync_studentscope', (object) [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'deliveryids' => '[77]',
+            'revision' => 1,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+        $subjectid = substr((string) $course->idnumber, strlen('rtc-subject:'));
+        \local_rtcsync_external::upsert_grade([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Retained delivery result',
+            'idnumber' => 'rtc-subject-score:' . $subjectid . ':delivery:77',
+            'deliveryid' => 77,
+            'grade' => 74.0,
+        ]);
+
+        $this->assertFalse(\local_rtcsync\local\delivery_activity_access::student_delivery_scope_allows(
+            (int) $course->id,
+            (int) $user->id,
+            77
+        ));
+        \local_rtcsync\local\delivery_activity_access::with_course_access_lock(
+            (int) $course->id,
+            static function() use ($course, $user): void {
+                \local_rtcsync\local\delivery_activity_access::reconcile_course_delivery_group_memberships_locked(
+                    (int) $course->id,
+                    (int) $user->id
+                );
+            }
+        );
+        $this->assertFalse($DB->record_exists('groups_members', [
+            'groupid' => (int) $group->id,
+            'userid' => (int) $user->id,
+        ]));
+
+        $history = new \local_rtcsync\local\student_history();
+        $this->setUser($user);
+        $resultsbeforeclear = $history->visible_results();
+        $this->assertSame(['Retained delivery result'], array_column($resultsbeforeclear['results'], 'item'));
+        $this->assertSame([74.0], array_column($resultsbeforeclear['results'], 'grade'));
+
+        $this->setAdminUser();
+        $clear = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9207,
+            'deliveryid' => 77,
+            'expectedscoperevision' => 1,
+        ]);
+        $this->assertSame(0, $clear['applied']);
+        $this->assertTrue($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9207,
+            'deliveryid' => 77,
+        ]));
+        $this->setUser($user);
+        $resultsafterclear = $history->visible_results();
+        $this->assertSame(['Retained delivery result'], array_column($resultsafterclear['results'], 'item'));
+    }
+
     public function test_student_delivery_scope_is_complete_versioned_and_order_independent(): void
     {
         global $DB;
@@ -1280,6 +1736,32 @@ final class externallib_test extends \advanced_testcase
         $this->createDeliveryGrouping($course, 78);
         $user = $this->createManagedUser();
         $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
+
+        $groupids = [];
+        foreach ([77, 78] as $deliveryid) {
+            $group = $this->getDataGenerator()->create_group([
+                'courseid' => (int) $course->id,
+                'idnumber' => 'rtc-delivery-class-group:' . $deliveryid . ':37',
+            ]);
+            $grouping = $DB->get_record('groupings', [
+                'courseid' => (int) $course->id,
+                'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
+            ], '*', MUST_EXIST);
+            groups_assign_grouping((int) $grouping->id, (int) $group->id);
+            $DB->insert_record('local_rtcsync_deliverymember', (object) [
+                'courseid' => (int) $course->id,
+                'groupid' => (int) $group->id,
+                'userid' => (int) $user->id,
+                'timecreated' => time(),
+            ]);
+            $groupids[$deliveryid] = (int) $group->id;
+        }
 
         $dayonefloor = 20261025000000000;
         $nextdayfloor = 20261026000000000;
@@ -1296,10 +1778,22 @@ final class externallib_test extends \advanced_testcase
             'courseid' => (int) $course->id,
             'userid' => (int) $user->id,
         ]));
+        foreach ([77, 78] as $deliveryid) {
+            $this->assertTrue($DB->record_exists('groups_members', [
+                'groupid' => $groupids[$deliveryid],
+                'userid' => (int) $user->id,
+            ]));
+        }
 
         $replay = \local_rtcsync_external::sync_student_delivery_scope($access);
         $this->assertSame(0, $replay['applied']);
         $this->assertSame([77, 78], $replay['deliveryids']);
+        foreach ([77, 78] as $deliveryid) {
+            $this->assertTrue($DB->record_exists('groups_members', [
+                'groupid' => $groupids[$deliveryid],
+                'userid' => (int) $user->id,
+            ]));
+        }
 
         $stale = \local_rtcsync_external::sync_student_delivery_scope([
             ...$access,
@@ -1309,6 +1803,12 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame(0, $stale['applied']);
         $this->assertSame($dayonefloor, $stale['revision']);
         $this->assertSame([77, 78], $stale['deliveryids']);
+        foreach ([77, 78] as $deliveryid) {
+            $this->assertTrue($DB->record_exists('groups_members', [
+                'groupid' => $groupids[$deliveryid],
+                'userid' => (int) $user->id,
+            ]));
+        }
 
         try {
             \local_rtcsync_external::sync_student_delivery_scope([
@@ -1327,6 +1827,14 @@ final class externallib_test extends \advanced_testcase
         ]);
         $this->assertSame(1, $replacement['applied']);
         $this->assertSame([78], $replacement['deliveryids']);
+        $this->assertFalse($DB->record_exists('groups_members', [
+            'groupid' => $groupids[77],
+            'userid' => (int) $user->id,
+        ]));
+        $this->assertTrue($DB->record_exists('groups_members', [
+            'groupid' => $groupids[78],
+            'userid' => (int) $user->id,
+        ]));
 
         $boundaryreplay = \local_rtcsync_external::sync_student_delivery_scope([
             ...$access,
@@ -1359,6 +1867,14 @@ final class externallib_test extends \advanced_testcase
         $course = $this->createManagedCourse();
         $this->createDeliveryGrouping($course, 801);
         $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        $revision = 20261031000000000;
+        \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'deliveryids' => [801],
+            'revision' => $revision,
+        ]);
         \local_rtcsync_external::enrol_user([
             'courseid' => (int) $course->id,
             'userid' => (int) $user->id,
@@ -1370,7 +1886,7 @@ final class externallib_test extends \advanced_testcase
             'deliveryid' => 801,
         ]);
 
-        \local_rtcsync_external::enrol_user([
+        $clearedenrolment = \local_rtcsync_external::enrol_user([
             'courseid' => (int) $course->id,
             'userid' => (int) $user->id,
             'role_shortname' => 'student',
@@ -1379,8 +1895,11 @@ final class externallib_test extends \advanced_testcase
             'historysourcetype' => 'delivery_participation',
             'historysourceid' => 9801,
             'deliveryid' => 801,
+            'expectedscoperevision' => $revision,
         ]);
 
+        $this->assertSame(1, $clearedenrolment['historyapplied']);
+        $this->assertSame($revision, $clearedenrolment['scoperevision']);
         $this->assertSame(ENROL_USER_ACTIVE, (int) $DB->get_field('user_enrolments', 'status', [
             'userid' => (int) $user->id,
         ]));
@@ -1420,14 +1939,17 @@ final class externallib_test extends \advanced_testcase
             9802,
             801
         );
-        \local_rtcsync_external::unenrol_user([
+        $clearedunenrolment = \local_rtcsync_external::unenrol_user([
             'courseid' => (int) $course->id,
             'userid' => (int) $user->id,
             'role_shortname' => 'student',
             'historysourcetype' => 'delivery_participation',
             'historysourceid' => 9802,
             'deliveryid' => 801,
+            'expectedscoperevision' => $revision,
         ]);
+        $this->assertSame(1, $clearedunenrolment['historyapplied']);
+        $this->assertSame($revision, $clearedunenrolment['scoperevision']);
         $this->assertFalse($DB->record_exists('user_enrolments', [
             'userid' => (int) $user->id,
             'enrolid' => (int) $DB->get_field('enrol', 'id', [
@@ -1440,6 +1962,82 @@ final class externallib_test extends \advanced_testcase
             'courseid' => (int) $course->id,
             'sourcetype' => 'delivery_participation',
             'sourceid' => 9802,
+        ]));
+    }
+
+    public function test_enrolment_clear_wrappers_report_rejected_scope_revisions_and_preserve_markers(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 802);
+        $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+
+        $revision = 20261031000000000;
+        \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'deliveryids' => [802],
+            'revision' => $revision,
+        ]);
+        foreach ([9811, 9812] as $sourceid) {
+            \local_rtcsync_external::sync_history_marker([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'historyaccess' => 1,
+                'historysourcetype' => 'delivery_participation',
+                'historysourceid' => $sourceid,
+                'deliveryid' => 802,
+            ]);
+        }
+
+        $staleenrolment = \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9811,
+            'deliveryid' => 802,
+            'expectedscoperevision' => $revision - 1,
+        ]);
+        $this->assertSame(0, $staleenrolment['historyapplied']);
+        $this->assertSame($revision, $staleenrolment['scoperevision']);
+        $this->assertTrue($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9811,
+            'deliveryid' => 802,
+        ]));
+
+        $omittedunenrolment = \local_rtcsync_external::unenrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9812,
+            'deliveryid' => 802,
+        ]);
+        $this->assertSame(1, $omittedunenrolment['removed']);
+        $this->assertSame(0, $omittedunenrolment['historyapplied']);
+        $this->assertSame($revision, $omittedunenrolment['scoperevision']);
+        $this->assertTrue($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9812,
+            'deliveryid' => 802,
         ]));
     }
 
@@ -1735,17 +2333,36 @@ final class externallib_test extends \advanced_testcase
 
         $this->resetAfterTest();
         $this->setAdminUser();
-        set_config('version', '2026102506', 'local_rtcsync');
+        set_config('version', '2026103101', 'local_rtcsync');
         set_config('enableavailability', 1);
         $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:preflight']);
 
         $result = \local_rtcsync_external::prepare_delivery_course((int) $course->id);
 
-        $this->assertSame('2026102506', $result['plugin_version']);
+        $this->assertSame('2026103101', $result['plugin_version']);
         $this->assertTrue($result['ready']);
         $this->assertTrue($DB->record_exists('local_rtcsync_deliverycourse', [
             'courseid' => (int) $course->id,
             'ready' => 1,
+        ]));
+    }
+
+    public function test_delivery_preflight_stays_closed_below_revisioned_history_contract_version(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('version', '2026103100', 'local_rtcsync');
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:preflight-old-contract']);
+
+        $result = \local_rtcsync_external::prepare_delivery_course((int) $course->id);
+
+        $this->assertSame('2026103100', $result['plugin_version']);
+        $this->assertFalse($result['ready']);
+        $this->assertFalse($DB->record_exists('local_rtcsync_deliverycourse', [
+            'courseid' => (int) $course->id,
         ]));
     }
 

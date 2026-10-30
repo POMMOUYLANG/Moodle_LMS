@@ -410,6 +410,17 @@ function rtc_sso_stable_user_idnumber(array $rtcuser): ?string
     return $smsuserid ? 'rtc-user:' . (int) $smsuserid : null;
 }
 
+/** Return whether the resolved local Moodle account is still eligible to log in. */
+function rtc_sso_moodle_user_can_login(stdClass $muser): bool
+{
+    if (!property_exists($muser, 'deleted') || !property_exists($muser, 'suspended')) {
+        return false;
+    }
+
+    $auth = empty($muser->auth) ? 'manual' : (string) $muser->auth;
+    return empty($muser->deleted) && empty($muser->suspended) && $auth !== 'nologin';
+}
+
 function rtc_sso_verified_roles(array $rtcuser, array $detail): array
 {
     $roles = $rtcuser['rtc_roles'] ?? [];
@@ -557,6 +568,12 @@ function rtc_sso_autologin_to_moodle(string $token): bool
         }
         $muser = $userbystableid ?: $userbymarker;
 
+        // RTC token validation does not override Moodle's local account suspension.
+        if ($muser && !rtc_sso_moodle_user_can_login($muser)) {
+            rtc_sso_log_debug('Auto-login failed: the mapped Moodle account is suspended or deleted.');
+            return false;
+        }
+
         if (!$muser) {
             // Do not adopt an old ID-card or email match without a durable RTC
             // user-ID mapping. Email and ID cards can both be reassigned.
@@ -640,6 +657,10 @@ function rtc_sso_autologin_to_moodle(string $token): bool
 
         // Complete the login with the canonical idnumber written above.
         $muser = $DB->get_record('user', ['id' => (int) $muser->id], '*', MUST_EXIST);
+        if (!rtc_sso_moodle_user_can_login($muser)) {
+            rtc_sso_log_debug('Auto-login failed: the mapped Moodle account became suspended or deleted.');
+            return false;
+        }
         $managedmarker = $DB->get_record(
             'local_rtcsync_user',
             ['userid' => (int) $muser->id],

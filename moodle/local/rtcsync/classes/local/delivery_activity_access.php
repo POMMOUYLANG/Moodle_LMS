@@ -22,7 +22,7 @@ final class delivery_activity_access
     public const LINEAGE_ARCHIVED = 4;
     public const LINEAGE_DISPOSED = 5;
     /** Minimum versioned contract revision accepted from SMS. */
-    private const MIN_STUDENT_SCOPE_REVISION = 2026102505;
+    public const MIN_STUDENT_SCOPE_REVISION = 2026102505;
     private const LOCK_TYPE = 'local_rtcsync_delivery_access';
     private const LOCK_WAIT_SECONDS = 1;
 
@@ -1254,7 +1254,7 @@ final class delivery_activity_access
         $scope = $DB->get_record('local_rtcsync_studentscope', [
             'courseid' => $courseid,
             'userid' => $userid,
-        ], 'deliveryids', IGNORE_MISSING);
+        ], 'revision, deliveryids', IGNORE_MISSING);
         if (!$scope) {
             return;
         }
@@ -1262,7 +1262,9 @@ final class delivery_activity_access
         self::reconcile_delivery_group_memberships_for_scope(
             $courseid,
             $userid,
-            (string) $scope->deliveryids
+            (int) $scope->revision < self::MIN_STUDENT_SCOPE_REVISION
+                ? '[]'
+                : (string) $scope->deliveryids
         );
     }
 
@@ -1521,8 +1523,8 @@ final class delivery_activity_access
         $scope = $DB->get_record('local_rtcsync_studentscope', [
             'courseid' => $courseid,
             'userid' => $userid,
-        ], 'deliveryids', IGNORE_MISSING);
-        if (!$scope) {
+        ], 'revision, deliveryids', IGNORE_MISSING);
+        if (!$scope || (int) $scope->revision < self::MIN_STUDENT_SCOPE_REVISION) {
             return null;
         }
 
