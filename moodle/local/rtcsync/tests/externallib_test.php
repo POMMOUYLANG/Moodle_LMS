@@ -660,6 +660,103 @@ final class externallib_test extends \advanced_testcase
         );
     }
 
+    public function test_user_upsert_rejects_invalid_suspension_before_mutating_existing_user(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $existing = $this->createManagedUser([
+            'username' => 'rtc-invalid-suspension-existing@example.test',
+            'email' => 'rtc-invalid-suspension-existing@example.test',
+            'idnumber' => 'rtc-user:73019',
+        ]);
+        $profilefieldid = local_rtcsync_ensure_profile_fields()['rtc_batch_code'];
+        local_rtcsync_save_profile_fields((int) $existing->id, [[
+            'shortname' => 'rtc_batch_code',
+            'value' => 'BEFORE-INVALID-SUSPENSION',
+        ]]);
+        $userbefore = $DB->get_record('user', ['id' => (int) $existing->id], '*', MUST_EXIST);
+        $markerbefore = $DB->get_record('local_rtcsync_user', ['userid' => (int) $existing->id], '*', MUST_EXIST);
+        $profilebefore = $DB->get_record('user_info_data', [
+            'userid' => (int) $existing->id,
+            'fieldid' => (int) $profilefieldid,
+        ], '*', MUST_EXIST);
+
+        foreach ([-1, 2] as $suspended) {
+            try {
+                \local_rtcsync_external::upsert_user([
+                    'moodleid' => (int) $existing->id,
+                    'username' => 'rtc-invalid-suspension-existing@example.test',
+                    'email' => 'rtc-invalid-suspension-existing@example.test',
+                    'firstname' => 'Must Not Change',
+                    'lastname' => 'Existing Account',
+                    'idnumber' => 'rtc-user:73019',
+                    'phone1' => '999999',
+                    'suspended' => $suspended,
+                    'profile_fields' => [[
+                        'shortname' => 'rtc_batch_code',
+                        'value' => 'AFTER-INVALID-SUSPENSION',
+                    ]],
+                ]);
+                $this->fail('Suspension value ' . $suspended . ' must be rejected before user mutation.');
+            } catch (\invalid_parameter_exception $exception) {
+                $this->assertSame('Suspended flag must be 0 or 1.', $exception->getMessage());
+            }
+
+            $this->assertEquals($userbefore, $DB->get_record('user', [
+                'id' => (int) $existing->id,
+            ], '*', MUST_EXIST));
+            $this->assertEquals($markerbefore, $DB->get_record('local_rtcsync_user', [
+                'userid' => (int) $existing->id,
+            ], '*', MUST_EXIST));
+            $this->assertEquals($profilebefore, $DB->get_record('user_info_data', [
+                'userid' => (int) $existing->id,
+                'fieldid' => (int) $profilefieldid,
+            ], '*', MUST_EXIST));
+        }
+    }
+
+    public function test_user_upsert_rejects_invalid_suspension_without_creating_account_or_marker(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        foreach ([-1, 2] as $index => $suspended) {
+            $suffix = $index === 0 ? 'negative' : 'above-one';
+            $username = 'rtc-invalid-suspension-' . $suffix . '@example.test';
+            $idnumber = 'rtc-user:' . (73020 + $index);
+            try {
+                \local_rtcsync_external::upsert_user([
+                    'moodleid' => 0,
+                    'username' => $username,
+                    'email' => $username,
+                    'firstname' => 'Must Not Create',
+                    'lastname' => 'Invalid Suspension',
+                    'idnumber' => $idnumber,
+                    'phone1' => '',
+                    'suspended' => $suspended,
+                    'profile_fields' => [],
+                ]);
+                $this->fail('Suspension value ' . $suspended . ' must be rejected before account creation.');
+            } catch (\invalid_parameter_exception $exception) {
+                $this->assertSame('Suspended flag must be 0 or 1.', $exception->getMessage());
+            }
+
+            $this->assertSame(0, $DB->count_records('user', [
+                'username' => $username,
+                'deleted' => 0,
+            ]));
+            $this->assertSame(0, $DB->count_records('user', [
+                'idnumber' => $idnumber,
+                'deleted' => 0,
+            ]));
+            $this->assertSame(0, $DB->count_records('local_rtcsync_user', ['idnumber' => $idnumber]));
+        }
+    }
+
     public function test_user_upsert_waits_for_stable_identity_lock_before_creating_account(): void
     {
         global $CFG, $DB;
@@ -2501,6 +2598,7 @@ final class externallib_test extends \advanced_testcase
             'idnumber' => 'rtc-subject-score:314:delivery:710',
             'deliveryid' => 710,
             'grade' => 75.0,
+            'hidden' => 0,
         ]);
         $updated = \local_rtcsync_external::upsert_grade([
             'courseid' => (int) $course->id,
@@ -2509,6 +2607,7 @@ final class externallib_test extends \advanced_testcase
             'idnumber' => 'rtc-subject-score:314:delivery:710',
             'deliveryid' => 710,
             'grade' => 81.0,
+            'hidden' => 1,
         ]);
         $second = \local_rtcsync_external::upsert_grade([
             'courseid' => (int) $course->id,
@@ -2517,6 +2616,7 @@ final class externallib_test extends \advanced_testcase
             'idnumber' => 'rtc-subject-score:314:delivery:711',
             'deliveryid' => 711,
             'grade' => 83.0,
+            'hidden' => 0,
         ]);
         $cleared = \local_rtcsync_external::upsert_grade([
             'courseid' => (int) $course->id,
@@ -2526,6 +2626,7 @@ final class externallib_test extends \advanced_testcase
             'deliveryid' => 710,
             'grade' => null,
             'clear' => 1,
+            'hidden' => 1,
         ]);
 
         $firstitem = \grade_item::fetch([
@@ -2538,6 +2639,8 @@ final class externallib_test extends \advanced_testcase
         ]);
         $this->assertNotFalse($firstitem);
         $this->assertNotFalse($seconditem);
+        $this->assertSame(1, (int) $firstitem->hidden, 'A valid hidden=1 update stays hidden through a clear.');
+        $this->assertSame(0, (int) $seconditem->hidden, 'A valid hidden=0 update stays visible.');
         $this->assertSame([
             'itemid' => (int) $firstitem->id,
             'courseid' => (int) $course->id,
@@ -2591,6 +2694,71 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame(1, (int) $DB->get_field('local_rtcsync_deliverygrade', 'lineageverified', [
             'gradeitemid' => (int) $second['itemid'],
         ]));
+    }
+
+    public function test_delivery_grade_rejects_invalid_hidden_flags_without_mutating_item_grade_or_mapping(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:316']);
+        $this->createDeliveryGrouping($course, 723);
+        $user = $this->createManagedUser();
+        $payload = [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Reviewed delivery score',
+            'idnumber' => 'rtc-subject-score:316:delivery:723',
+            'deliveryid' => 723,
+        ];
+        $created = \local_rtcsync_external::upsert_grade(array_merge($payload, [
+            'grade' => 74.0,
+            'grademax' => 100.0,
+            'hidden' => 0,
+        ]));
+        $itembefore = $DB->get_record('grade_items', ['id' => (int) $created['itemid']], '*', MUST_EXIST);
+        $gradebefore = $DB->get_record('grade_grades', [
+            'itemid' => (int) $itembefore->id,
+            'userid' => (int) $user->id,
+        ], '*', MUST_EXIST);
+        $mappingbefore = $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $itembefore->id,
+        ], '*', MUST_EXIST);
+
+        foreach ([-1, 2] as $hidden) {
+            try {
+                \local_rtcsync_external::upsert_grade(array_merge($payload, [
+                    'itemname' => 'Must not rename existing score',
+                    'grade' => 88.0,
+                    'grademax' => 200.0,
+                    'hidden' => $hidden,
+                ]));
+                $this->fail('Hidden flag ' . $hidden . ' must be rejected before grade mutation.');
+            } catch (\invalid_parameter_exception $exception) {
+                $this->assertSame('Hidden flag must be 0 or 1.', $exception->getMessage());
+            }
+
+            $this->assertEquals($itembefore, $DB->get_record('grade_items', [
+                'id' => (int) $itembefore->id,
+            ], '*', MUST_EXIST));
+            $this->assertEquals($gradebefore, $DB->get_record('grade_grades', [
+                'itemid' => (int) $itembefore->id,
+                'userid' => (int) $user->id,
+            ], '*', MUST_EXIST));
+            $this->assertEquals($mappingbefore, $DB->get_record('local_rtcsync_deliverygrade', [
+                'gradeitemid' => (int) $itembefore->id,
+            ], '*', MUST_EXIST));
+            $this->assertSame(1, $DB->count_records('grade_items', [
+                'courseid' => (int) $course->id,
+                'idnumber' => 'rtc-subject-score:316:delivery:723',
+            ]));
+            $this->assertSame(1, $DB->count_records('local_rtcsync_deliverygrade', [
+                'gradeitemid' => (int) $itembefore->id,
+                'courseid' => (int) $course->id,
+                'deliveryid' => 723,
+            ]));
+        }
     }
 
     public function test_grade_upsert_rejects_conflicting_clear_payloads_without_mutation(): void

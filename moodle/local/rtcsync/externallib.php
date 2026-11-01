@@ -145,7 +145,7 @@ class local_rtcsync_external extends external_api
                     ''
                 ),
                 'phone1' => new external_value(PARAM_TEXT, 'Phone number.', VALUE_DEFAULT, ''),
-                'suspended' => new external_value(PARAM_INT, 'Suspended flag.', VALUE_DEFAULT, 0),
+                'suspended' => new external_value(PARAM_INT, 'Suspended flag (0 or 1).', VALUE_DEFAULT, 0),
                 'profile_fields' => new external_multiple_structure(
                     new external_single_structure([
                         'shortname' => new external_value(PARAM_ALPHANUMEXT, 'RTC profile field shortname.'),
@@ -163,6 +163,9 @@ class local_rtcsync_external extends external_api
     {
         $params = self::validate_parameters(self::upsert_user_parameters(), ['user' => $user]);
         $user = $params['user'];
+        if (!in_array($user['suspended'], [0, 1], true)) {
+            throw new invalid_parameter_exception('Suspended flag must be 0 or 1.');
+        }
         if (preg_match('/\Artc-user:[1-9][0-9]*\z/', trim((string) $user['idnumber'])) !== 1) {
             throw new invalid_parameter_exception(
                 'RTC user idnumber must use the canonical rtc-user:<positive users.id> format.'
@@ -1234,7 +1237,7 @@ class local_rtcsync_external extends external_api
                     VALUE_DEFAULT,
                     0
                 ),
-                'hidden' => new external_value(PARAM_INT, 'Hide grade item flag.', VALUE_DEFAULT, 0),
+                'hidden' => new external_value(PARAM_INT, 'Hide grade item flag (0 or 1).', VALUE_DEFAULT, 0),
             ]),
         ]);
     }
@@ -1245,6 +1248,9 @@ class local_rtcsync_external extends external_api
 
         $params = self::validate_parameters(self::upsert_grade_parameters(), ['grade' => $grade]);
         $grade = $params['grade'];
+        if (!in_array($grade['hidden'], [0, 1], true)) {
+            throw new invalid_parameter_exception('Hidden flag must be 0 or 1.');
+        }
         $clear = (int) $grade['clear'];
         if (!in_array($clear, [0, 1], true)) {
             throw new invalid_parameter_exception('Clear flag must be 0 or 1.');
