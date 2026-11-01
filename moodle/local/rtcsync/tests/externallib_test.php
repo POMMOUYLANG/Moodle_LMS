@@ -2887,7 +2887,7 @@ final class externallib_test extends \advanced_testcase
         ], '*', MUST_EXIST));
     }
 
-    public function test_delivery_score_rejects_stale_grade_mapping_before_any_update(): void
+    public function test_delivery_score_rejects_stale_grade_mapping_before_any_write(): void
     {
         global $DB;
 
@@ -2924,32 +2924,41 @@ final class externallib_test extends \advanced_testcase
             'gradeitemid' => (int) $item->id,
         ], '*', MUST_EXIST);
 
-        try {
-            \local_rtcsync_external::upsert_grade([
-                'courseid' => (int) $course->id,
-                'userid' => (int) $user->id,
-                'itemname' => 'Stale mapping overwrite attempt',
-                'idnumber' => 'rtc-subject-score:320:delivery:719',
-                'deliveryid' => 719,
-                'grade' => 88.0,
-                'grademax' => 200,
-            ]);
-            $this->fail('A stale grade-item delivery mapping must be rejected.');
-        } catch (\invalid_parameter_exception $exception) {
-            $this->assertStringContainsString('does not match the grade item’s stored delivery association', $exception->getMessage());
-        }
+        foreach ([
+            'write' => ['grade' => 88.0, 'clear' => 0],
+            'clear' => ['grade' => null, 'clear' => 1],
+        ] as $operation => $change) {
+            try {
+                \local_rtcsync_external::upsert_grade([
+                    'courseid' => (int) $course->id,
+                    'userid' => (int) $user->id,
+                    'itemname' => 'Stale mapping ' . $operation . ' attempt',
+                    'idnumber' => 'rtc-subject-score:320:delivery:719',
+                    'deliveryid' => 719,
+                    'grade' => $change['grade'],
+                    'grademax' => 200,
+                    'clear' => $change['clear'],
+                ]);
+                $this->fail('A stale grade-item delivery mapping must reject a ' . $operation . '.');
+            } catch (\invalid_parameter_exception $exception) {
+                $this->assertStringContainsString(
+                    'does not match the grade item’s stored delivery association',
+                    $exception->getMessage()
+                );
+            }
 
-        $unchangeditem = \grade_item::fetch(['id' => (int) $item->id]);
-        $this->assertNotFalse($unchangeditem);
-        $this->assertSame('Existing delivery 719 score', (string) $unchangeditem->itemname);
-        $this->assertSame(100.0, (float) $unchangeditem->grademax);
-        $this->assertSame(54.0, (float) $DB->get_field('grade_grades', 'finalgrade', [
-            'itemid' => (int) $item->id,
-            'userid' => (int) $user->id,
-        ]));
-        $this->assertEquals($mappingbefore, $DB->get_record('local_rtcsync_deliverygrade', [
-            'gradeitemid' => (int) $item->id,
-        ], '*', MUST_EXIST));
+            $unchangeditem = \grade_item::fetch(['id' => (int) $item->id]);
+            $this->assertNotFalse($unchangeditem);
+            $this->assertSame('Existing delivery 719 score', (string) $unchangeditem->itemname);
+            $this->assertSame(100.0, (float) $unchangeditem->grademax);
+            $this->assertSame(54.0, (float) $DB->get_field('grade_grades', 'finalgrade', [
+                'itemid' => (int) $item->id,
+                'userid' => (int) $user->id,
+            ]));
+            $this->assertEquals($mappingbefore, $DB->get_record('local_rtcsync_deliverygrade', [
+                'gradeitemid' => (int) $item->id,
+            ], '*', MUST_EXIST));
+        }
     }
 
     public function test_delivery_score_sync_rejects_an_existing_activity_grade_item(): void
