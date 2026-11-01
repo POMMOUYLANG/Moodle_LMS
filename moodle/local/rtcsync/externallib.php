@@ -161,8 +161,6 @@ class local_rtcsync_external extends external_api
 
     public static function upsert_user(array $user): array
     {
-        global $CFG, $DB;
-
         $params = self::validate_parameters(self::upsert_user_parameters(), ['user' => $user]);
         $user = $params['user'];
         if (preg_match('/\Artc-user:[1-9][0-9]*\z/', trim((string) $user['idnumber'])) !== 1) {
@@ -170,6 +168,21 @@ class local_rtcsync_external extends external_api
                 'RTC user idnumber must use the canonical rtc-user:<positive users.id> format.'
             );
         }
+
+        $requestedidnumber = trim((string) $user['idnumber']);
+        return self::with_user_identity_lock(
+            $requestedidnumber,
+            (int) $user['moodleid'],
+            static function() use ($user): array {
+                return self::upsert_user_locked($user);
+            }
+        );
+    }
+
+    /** Resolve or mutate a user while holding the lock for its canonical RTC identity. */
+    private static function upsert_user_locked(array $user): array
+    {
+        global $CFG, $DB;
 
         $systemcontext = context_system::instance();
         self::validate_context($systemcontext);
@@ -385,44 +398,54 @@ class local_rtcsync_external extends external_api
             'confirmed' => 1,
         ];
 
-        if ($existing) {
-            require_capability('moodle/user:update', $systemcontext);
-            $record->id = $existing->id;
-            $record->timemodified = time();
-            user_update_user($record, false);
-            $saved = $DB->get_record('user', ['id' => $existing->id], '*', MUST_EXIST);
-        } else {
-            require_capability('moodle/user:create', $systemcontext);
-            $record->auth = 'manual';
-            $record->confirmed = 1;
-            $record->mnethostid = $CFG->mnet_localhost_id;
-            $record->password = hash_internal_user_password(random_string(32));
-            $record->city = '';
-            $record->country = '';
-            $record->timezone = !empty($CFG->timezone) ? $CFG->timezone : '99';
-            $record->lang = !empty($CFG->lang) ? $CFG->lang : 'en';
-            $record->id = user_create_user($record, false);
-            $saved = $DB->get_record('user', ['id' => $record->id], '*', MUST_EXIST);
-        }
+        // Keep the Moodle identity, RTC profile, and ownership marker in one
+        // commit. A failed profile or marker write must not strand a partial
+        // migration where the stable idnumber and marker disagree.
+        $transaction = $DB->start_delegated_transaction();
+        try {
+            if ($existing) {
+                require_capability('moodle/user:update', $systemcontext);
+                $record->id = $existing->id;
+                $record->timemodified = time();
+                user_update_user($record, false);
+                $saved = $DB->get_record('user', ['id' => $existing->id], '*', MUST_EXIST);
+            } else {
+                require_capability('moodle/user:create', $systemcontext);
+                $record->auth = 'manual';
+                $record->confirmed = 1;
+                $record->mnethostid = $CFG->mnet_localhost_id;
+                $record->password = hash_internal_user_password(random_string(32));
+                $record->city = '';
+                $record->country = '';
+                $record->timezone = !empty($CFG->timezone) ? $CFG->timezone : '99';
+                $record->lang = !empty($CFG->lang) ? $CFG->lang : 'en';
+                $record->id = user_create_user($record, false);
+                $saved = $DB->get_record('user', ['id' => $record->id], '*', MUST_EXIST);
+            }
 
-        $profilesaved = local_rtcsync_save_profile_fields((int) $saved->id, $user['profile_fields'] ?? []);
-        $manageduser = $DB->get_record(
-            'local_rtcsync_user',
-            ['userid' => (int) $saved->id],
-            '*',
-            IGNORE_MISSING
-        );
-        $marker = (object) [
-            'userid' => (int) $saved->id,
-            'idnumber' => (string) $saved->idnumber,
-            'timemodified' => time(),
-        ];
-        if ($manageduser) {
-            $marker->id = (int) $manageduser->id;
-            $DB->update_record('local_rtcsync_user', $marker);
-        } else {
-            $marker->timecreated = time();
-            $DB->insert_record('local_rtcsync_user', $marker);
+            $profilesaved = local_rtcsync_save_profile_fields((int) $saved->id, $user['profile_fields'] ?? []);
+            $manageduser = $DB->get_record(
+                'local_rtcsync_user',
+                ['userid' => (int) $saved->id],
+                '*',
+                IGNORE_MISSING
+            );
+            $marker = (object) [
+                'userid' => (int) $saved->id,
+                'idnumber' => (string) $saved->idnumber,
+                'timemodified' => time(),
+            ];
+            if ($manageduser) {
+                $marker->id = (int) $manageduser->id;
+                $DB->update_record('local_rtcsync_user', $marker);
+            } else {
+                $marker->timecreated = time();
+                $DB->insert_record('local_rtcsync_user', $marker);
+            }
+
+            $transaction->allow_commit();
+        } catch (\Throwable $exception) {
+            $transaction->rollback($exception);
         }
 
         return [
@@ -434,6 +457,33 @@ class local_rtcsync_external extends external_api
             'suspended' => (int) $saved->suspended,
             'profile_fields_saved' => $profilesaved,
         ];
+    }
+
+    /** Serialize retries that create or migrate the same stable or mapped Moodle identity. */
+    private static function with_user_identity_lock(string $idnumber, int $moodleid, callable $callback)
+    {
+        // Neither the core nor plugin idnumber index is unique, so serialize the lookup with its writes.
+        $factory = \core\lock\lock_config::get_lock_factory('local_rtcsync_user_identity');
+        $lockkeys = [$idnumber];
+        if ($moodleid > 0) {
+            $lockkeys[] = 'moodle:' . $moodleid;
+        }
+        sort($lockkeys, SORT_STRING);
+        $locks = [];
+        try {
+            foreach ($lockkeys as $lockkey) {
+                $lock = $factory->get_lock($lockkey, 1);
+                if (!$lock) {
+                    throw new \moodle_exception('locktimeout');
+                }
+                $locks[] = $lock;
+            }
+            return $callback();
+        } finally {
+            foreach (array_reverse($locks) as $lock) {
+                $lock->release();
+            }
+        }
     }
 
     public static function upsert_user_returns(): external_single_structure
@@ -903,18 +953,6 @@ class local_rtcsync_external extends external_api
             // Acquire the course lock before opening the transaction, matching
             // active/suspended enrolment writes and preventing lock inversion.
             $transaction = $DB->start_delegated_transaction();
-            role_unassign((int) $role->id, (int) $enrolment['userid'], $context->id);
-
-            $remainingroles = $DB->record_exists('role_assignments', [
-                'userid' => (int) $enrolment['userid'],
-                'contextid' => $context->id,
-            ]);
-            if (!$remainingroles) {
-                $instance = $DB->get_record('enrol', ['courseid' => $course->id, 'enrol' => 'manual'], '*', IGNORE_MISSING);
-                if ($instance) {
-                    enrol_get_plugin('manual')->unenrol_user($instance, (int) $enrolment['userid']);
-                }
-            }
             if ($hasHistorySource) {
                 $syncmarker = $accesslockheld
                     ? [\local_rtcsync\local\student_history::class, 'sync_marker_locked']
@@ -928,6 +966,19 @@ class local_rtcsync_external extends external_api
                     $deliveryid,
                     $expectedscoperevision
                 );
+            }
+
+            role_unassign((int) $role->id, (int) $enrolment['userid'], $context->id);
+
+            $remainingroles = $DB->record_exists('role_assignments', [
+                'userid' => (int) $enrolment['userid'],
+                'contextid' => $context->id,
+            ]);
+            if (!$remainingroles) {
+                $instance = $DB->get_record('enrol', ['courseid' => $course->id, 'enrol' => 'manual'], '*', IGNORE_MISSING);
+                if ($instance) {
+                    enrol_get_plugin('manual')->unenrol_user($instance, (int) $enrolment['userid']);
+                }
             }
             $transaction->allow_commit();
         };
@@ -1232,6 +1283,22 @@ class local_rtcsync_external extends external_api
                 'RTC score items must be manual grade items; activity grades require their own reviewed delivery lineage.'
             );
         }
+        $existingdeliverymapping = $existingitem
+            ? $DB->get_record('local_rtcsync_deliverygrade', ['gradeitemid' => (int) $existingitem->id], '*', IGNORE_MISSING)
+            : false;
+        if ($existingdeliverymapping) {
+            if ($deliveryid <= 0) {
+                throw new invalid_parameter_exception(
+                    'A grade item with delivery lineage cannot be updated without its matching positive delivery ID.'
+                );
+            }
+            if ((int) $existingdeliverymapping->courseid !== (int) $course->id
+                    || (int) $existingdeliverymapping->deliveryid !== $deliveryid) {
+                throw new invalid_parameter_exception(
+                    'The requested delivery does not match the grade item’s stored delivery association.'
+                );
+            }
+        }
         $item = self::ensure_grade_item(
             (int) $course->id,
             $idnumber,
@@ -1241,13 +1308,16 @@ class local_rtcsync_external extends external_api
         );
 
         $value = (int) $grade['clear'] === 1 ? null : $grade['grade'];
-        $item->update_final_grade(
+        $gradeupdated = $item->update_final_grade(
             (int) $grade['userid'],
             $value,
             'local_rtcsync',
             $grade['feedback'],
             FORMAT_PLAIN
         );
+        if (!$gradeupdated) {
+            throw new \moodle_exception('gradeupdatefailed', 'local_rtcsync');
+        }
 
         if ($deliveryid > 0) {
             self::upsert_delivery_grade_mapping(

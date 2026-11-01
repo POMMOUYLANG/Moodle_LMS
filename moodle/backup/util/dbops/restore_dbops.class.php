@@ -1905,6 +1905,19 @@ abstract class restore_dbops {
      * @return bool True for success
      */
     public static function delete_course_content($courseid, ?array $options = null) {
+        // This is the common content-purge boundary for restore overwrite,
+        // course import, and related restore flows. Dispatch before removing
+        // any course records so listeners can safely cancel the operation.
+        $purgehook = new \core_course\hook\before_course_data_purge(
+            courseid: (int) $courseid,
+            operation: \core_course\hook\before_course_data_purge::OPERATION_RESTORE_OVERWRITE,
+            options: $options ?? [],
+        );
+        \core\di::get(\core\hook\manager::class)->dispatch($purgehook);
+        if ($purgehook->isPropagationStopped()) {
+            throw new \moodle_exception('coursepurgestopped', 'core');
+        }
+
         return remove_course_contents($courseid, false, $options);
     }
 

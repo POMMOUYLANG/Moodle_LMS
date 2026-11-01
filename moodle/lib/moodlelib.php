@@ -4680,6 +4680,18 @@ function delete_course($courseorid, $showfeedback = true) {
         return false;
     }
 
+    // Give plugins an early opportunity to prevent the purge. This must run
+    // before pre_course_delete callbacks because they may already delete data.
+    $purgehook = new \core_course\hook\before_course_data_purge(
+        courseid: (int) $courseid,
+        operation: \core_course\hook\before_course_data_purge::OPERATION_DELETE,
+        options: ['showfeedback' => $showfeedback],
+    );
+    \core\di::get(\core\hook\manager::class)->dispatch($purgehook);
+    if ($purgehook->isPropagationStopped()) {
+        throw new moodle_exception('coursepurgestopped', 'core');
+    }
+
     // Allow plugins to use this course before we completely delete it.
     if ($pluginsfunction = get_plugins_with_function('pre_course_delete')) {
         foreach ($pluginsfunction as $plugintype => $plugins) {
@@ -5085,6 +5097,19 @@ function reset_course_userdata($data) {
             'reset_options' => (array) $data
         )
     );
+
+    // Allow plugins to stop the reset before the reset event or any course
+    // metadata, activity, enrolment, or grade data is changed.
+    $purgehook = new \core_course\hook\before_course_data_purge(
+        courseid: (int) $data->id,
+        operation: \core_course\hook\before_course_data_purge::OPERATION_RESET,
+        options: (array) $data,
+    );
+    \core\di::get(\core\hook\manager::class)->dispatch($purgehook);
+    if ($purgehook->isPropagationStopped()) {
+        throw new moodle_exception('coursepurgestopped', 'core');
+    }
+
     $event = \core\event\course_reset_started::create($eventparams);
     $event->trigger();
 

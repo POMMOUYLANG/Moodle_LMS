@@ -4,6 +4,11 @@ defined('MOODLE_INTERNAL') || die();
 
 $callbacks = [
     [
+        'hook' => \core_course\hook\before_course_data_purge::class,
+        'callback' => \local_rtcsync\hook_callbacks::class . '::before_course_data_purge',
+        'priority' => 0,
+    ],
+    [
         'hook' => \core\hook\after_config::class,
         'callback' => \local_rtcsync\hook_callbacks::class . '::after_config',
         'priority' => 0,

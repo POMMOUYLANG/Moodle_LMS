@@ -3,6 +3,39 @@
 defined('MOODLE_INTERNAL') || die();
 
 /**
+ * Keep Moodle from deleting activity data that may back delivery history.
+ *
+ * Moodle removes module attempts and grade items after this callback. A
+ * delivery-lineage archive or disposal decision intentionally retains that
+ * content, so removal stays blocked while the course is delivery-aware.
+ *
+ * @param stdClass $cm Course-module record about to be deleted.
+ */
+function local_rtcsync_pre_course_module_delete(stdClass $cm): void {
+    global $DB;
+
+    if (empty($cm->course) || empty($cm->id)
+            || !\local_rtcsync\hook_callbacks::module_deletion_requires_protection(
+                (int) $cm->course,
+                (int) $cm->id
+            )) {
+        return;
+    }
+
+    // Moodle may queue this callback after marking a module for background
+    // deletion. Restore its normal visibility before rejecting that removal.
+    if (!empty($cm->deletioninprogress) && !empty($cm->id)) {
+        $DB->set_field('course_modules', 'deletioninprogress', 0, [
+            'id' => (int) $cm->id,
+            'course' => (int) $cm->course,
+        ]);
+        rebuild_course_cache((int) $cm->course, true);
+    }
+
+    throw new moodle_exception('deliverymoduledeletionblocked', 'local_rtcsync');
+}
+
+/**
  * Adds the formative synchronization control to the course navigation.
  */
 function local_rtcsync_extend_navigation_course(

@@ -455,6 +455,20 @@ class grade_item extends grade_object {
     public function delete_all_grades($source=null) {
         global $DB;
 
+        // Grade-item deletion and bulk reset can erase released delivery grades
+        // without going through course reset or course-content deletion.
+        if (!empty($this->courseid)) {
+            $purgehook = new \core_course\hook\before_course_data_purge(
+                courseid: (int) $this->courseid,
+                operation: \core_course\hook\before_course_data_purge::OPERATION_GRADE_ITEM_GRADES_DELETE,
+                options: ['gradeitemid' => (int) $this->id],
+            );
+            \core\di::get(\core\hook\manager::class)->dispatch($purgehook);
+            if ($purgehook->isPropagationStopped()) {
+                throw new \moodle_exception('coursepurgestopped', 'core');
+            }
+        }
+
         try {
             $transaction = $DB->start_delegated_transaction();
 

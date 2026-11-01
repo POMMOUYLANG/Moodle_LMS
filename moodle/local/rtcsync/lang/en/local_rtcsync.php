@@ -53,4 +53,7 @@ $string['studenthistoryitem'] = 'Grade item';
 $string['studenthistorygrade'] = 'Released result';
 $string['studenthistorydenied'] = 'Released results are unavailable for this account.';
 $string['studenthistoryreportonly'] = 'Use Released results to view grades for your current and previous deliveries.';
+$string['gradeupdatefailed'] = 'Moodle did not apply the RTC grade update. Check the grade item and grade locks, then retry synchronization.';
+$string['deliverymoduledeletionblocked'] = 'This activity is in a delivery-aware course. Deleting it would remove Moodle attempts and grades, so RTC Sync has blocked the deletion. Keep the activity in Moodle; an archive or disposal decision does not authorize deleting its content.';
+$string['deliveryhistorymarkermismatch'] = 'The stored delivery history marker is bound to a different delivery. No marker was cleared.';
 $string['taskdeliveryactivitybackfill'] = 'Secure delivery-managed course activities';

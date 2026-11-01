@@ -387,6 +387,11 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
         $this->assertSame(delivery_activity_access::LINEAGE_UNREVIEWED, (int) $mapping->lineagestatus);
         $this->assertSame(0, (int) $mapping->deliveryid);
         $this->assertSame(-(int) $target['cm']->id, (int) $mapping->groupingid);
+        $this->assertSame(2, $DB->count_records('local_rtcsync_deliverycmhist', [
+            'cmid' => (int) $target['cm']->id,
+            'courseid' => (int) $target['course']->id,
+            'lineageverified' => 0,
+        ]));
         $currentclaim = delivery_lineage_reconciliation::preview($this->manifest($target, 'current'));
         $this->assertFalse($currentclaim['valid']);
         $this->assertStringContainsString('already has historical associations', implode(' ', $currentclaim['errors']));
@@ -410,6 +415,92 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
             'cmid = :cmid AND courseid = :courseid AND lineageverified = 0',
             ['cmid' => (int) $target['cm']->id, 'courseid' => (int) $target['course']->id]
         ));
+
+        $parent = json_decode($this->manifest(
+            $target,
+            'quarantine',
+            [],
+            'reused-multihistory-quarantine-root'
+        ), true);
+        $parent['grade_items'][] = $this->gradeQuarantineEntry($target, $manualitem);
+        $parentjson = (string) json_encode($parent, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $parentpreview = delivery_lineage_reconciliation::preview($parentjson);
+        $this->assertTrue($parentpreview['valid'], implode('; ', $parentpreview['errors']));
+        $this->assertSame(1, $parentpreview['disposition_counts']['quarantined_modules']);
+        $this->assertSame(1, $parentpreview['disposition_counts']['quarantined_grade_items']);
+        $parentapplied = $this->applyManifest($parentjson, $parentpreview['plan_sha256']);
+        $this->assertTrue($parentapplied['applied']);
+
+        $parentauditbefore = clone $DB->get_record('local_rtcsync_lineageaudit', [
+            'manifestid' => 'reused-multihistory-quarantine-root',
+            'recordtype' => 'module',
+            'targetid' => (int) $target['cm']->id,
+        ], '*', MUST_EXIST);
+        $historyafterparent = $DB->get_records('local_rtcsync_deliverycmhist', [
+            'cmid' => (int) $target['cm']->id,
+            'courseid' => (int) $target['course']->id,
+        ], 'deliveryid ASC');
+        $this->assertCount(2, $historyafterparent);
+        foreach ($historyafterparent as $historyrow) {
+            $this->assertSame(0, (int) $historyrow->lineageverified);
+            $this->assertEmpty($historyrow->lineagemanifestid);
+        }
+        $mapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $target['cm']->id], '*', MUST_EXIST);
+        $this->assertSame(delivery_activity_access::LINEAGE_QUARANTINED, (int) $mapping->lineagestatus);
+        $this->assertSame('reused-multihistory-quarantine-root', (string) $mapping->lineagemanifestid);
+        $this->assertFalse(delivery_activity_access::student_module_content_is_in_current_delivery(
+            (int) $target['course']->id,
+            (int) $target['cm']->id,
+            (int) $user->id
+        ));
+
+        $this->setUser($user);
+        $results = (new student_history())->visible_results();
+        $this->assertSame([], $results['results'], 'Quarantined activity and manual grades remain out of Released results.');
+
+        $childjson = $this->amendmentManifest($parentjson, 'reused-multihistory-quarantine-child');
+        $childpreview = delivery_lineage_reconciliation::preview($childjson);
+        $this->assertTrue($childpreview['valid'], implode('; ', $childpreview['errors']));
+        $this->assertSame('reused-multihistory-quarantine-root', $childpreview['amendment']['parent_manifest_id']);
+        $childapplied = $this->applyManifest($childjson, $childpreview['plan_sha256']);
+        $this->assertTrue($childapplied['applied']);
+
+        $parentauditafter = $DB->get_record('local_rtcsync_lineageaudit', [
+            'id' => (int) $parentauditbefore->id,
+        ], '*', MUST_EXIST);
+        $this->assertEquals($parentauditbefore, $parentauditafter, 'The amendment must not rewrite the original quarantine audit.');
+        $childaudit = $DB->get_record('local_rtcsync_lineageaudit', [
+            'manifestid' => 'reused-multihistory-quarantine-child',
+            'recordtype' => 'module',
+            'targetid' => (int) $target['cm']->id,
+        ], '*', MUST_EXIST);
+        $this->assertSame((string) $parentauditbefore->entryhash, (string) $childaudit->parententryhash);
+        $this->assertSame(2, $DB->count_records('local_rtcsync_lineageaudit', [
+            'recordtype' => 'module',
+            'targetid' => (int) $target['cm']->id,
+        ]));
+        $historyafterchild = $DB->get_records('local_rtcsync_deliverycmhist', [
+            'cmid' => (int) $target['cm']->id,
+            'courseid' => (int) $target['course']->id,
+        ], 'deliveryid ASC');
+        $this->assertEquals($historyafterparent, $historyafterchild, 'Quarantine amendments must leave every history row unresolved.');
+        $mapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $target['cm']->id], '*', MUST_EXIST);
+        $this->assertSame(delivery_activity_access::LINEAGE_QUARANTINED, (int) $mapping->lineagestatus);
+        $this->assertSame('reused-multihistory-quarantine-child', (string) $mapping->lineagemanifestid);
+        $this->assertFalse(delivery_activity_access::student_module_content_is_in_current_delivery(
+            (int) $target['course']->id,
+            (int) $target['cm']->id,
+            (int) $user->id
+        ));
+        $verifiedchild = delivery_lineage_reconciliation_verifier::verify(
+            'reused-multihistory-quarantine-child',
+            $childjson
+        );
+        $this->assertSame('match', $verifiedchild['status'], json_encode($verifiedchild['issues']));
+        $this->assertSame(
+            ['reused-multihistory-quarantine-root', 'reused-multihistory-quarantine-child'],
+            array_column($verifiedchild['lineage_chain'], 'manifest_id')
+        );
 
         $this->setUser($user);
         $results = (new student_history())->visible_results();

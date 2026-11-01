@@ -2309,6 +2309,23 @@ abstract class enrol_plugin {
             return;
         }
 
+        // The last course unenrolment removes all of this user's grade rows.
+        // Let installed features veto that purge before roles or enrolment data
+        // are changed.
+        $purgehook = new \core_course\hook\before_course_data_purge(
+            courseid: (int) $courseid,
+            operation: \core_course\hook\before_course_data_purge::OPERATION_USER_UNENROL,
+            options: [
+                'userid' => (int) $userid,
+                'userenrolmentid' => (int) $ue->id,
+                'enrolid' => (int) $instance->id,
+            ],
+        );
+        \core\di::get(\core\hook\manager::class)->dispatch($purgehook);
+        if ($purgehook->isPropagationStopped()) {
+            throw new \moodle_exception('coursepurgestopped', 'core');
+        }
+
         // Dispatch the hook for pre user unenrolment actions.
         $hook = new \core_enrol\hook\before_user_enrolment_removed(
             enrolinstance: $instance,

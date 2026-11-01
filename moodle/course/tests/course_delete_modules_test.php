@@ -67,6 +67,43 @@ final class course_delete_modules_test extends \advanced_testcase {
         $this->assertCount(0, $coursedmodules);
     }
 
+    /** Verify the stoppable purge hook runs before module data and grades are removed. */
+    public function test_course_module_delete_can_be_cancelled_before_module_side_effects(): void {
+        global $CFG, $DB;
+
+        require_once($CFG->dirroot . '/course/lib.php');
+
+        $this->resetAfterTest();
+        $course = $this->getDataGenerator()->create_course();
+        $assign = $this->getDataGenerator()->create_module('assign', ['course' => $course]);
+
+        $receivedhook = null;
+        $this->redirectHook(
+            \core_course\hook\before_course_data_purge::class,
+            static function (\core_course\hook\before_course_data_purge $hook) use (&$receivedhook): void {
+                $receivedhook = $hook;
+                $hook->stop_propagation();
+            }
+        );
+
+        try {
+            course_delete_module($assign->cmid);
+            $this->fail('Activity deletion must stop when a purge listener cancels it.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('coursepurgestopped', $exception->errorcode);
+        }
+
+        $this->assertInstanceOf(\core_course\hook\before_course_data_purge::class, $receivedhook);
+        $this->assertSame((int) $course->id, $receivedhook->courseid);
+        $this->assertSame(
+            \core_course\hook\before_course_data_purge::OPERATION_ACTIVITY_DELETE,
+            $receivedhook->operation
+        );
+        $this->assertSame(['cmid' => (int) $assign->cmid], $receivedhook->options);
+        $this->assertTrue($DB->record_exists('course_modules', ['id' => $assign->cmid]));
+        $this->assertTrue($DB->record_exists('assign', ['id' => $assign->id]));
+    }
+
     /**
      * Test with failed and successful cms
      */

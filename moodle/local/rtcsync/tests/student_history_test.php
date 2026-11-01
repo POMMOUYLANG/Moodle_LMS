@@ -1207,9 +1207,11 @@ final class student_history_test extends \advanced_testcase
 
     public function test_reassigning_a_module_keeps_history_read_only_and_requires_a_new_activity_instance(): void
     {
-        global $DB, $PAGE;
+        global $CFG, $DB, $PAGE;
 
         $this->resetAfterTest();
+        require_once($CFG->dirroot . '/course/lib.php');
+        require_once($CFG->dirroot . '/mod/quiz/locallib.php');
         set_config('enableavailability', 1);
         $student = $this->createHistoryStudent('module-remap-history');
         $course = $student['course'];
@@ -1267,6 +1269,18 @@ final class student_history_test extends \advanced_testcase
         $gradeitem->itemname = 'Previous delivery released result';
         $gradeitem->update();
         $gradeitem->update_final_grade((int) $student['user']->id, 81.0, 'student-history-test');
+
+        $questiongenerator = $this->getDataGenerator()->get_plugin_generator('core_question');
+        $questioncategory = $questiongenerator->create_question_category([
+            'contextid' => \context_module::instance((int) $quiz->cmid)->id,
+        ]);
+        $question = $questiongenerator->create_question('shortanswer', null, [
+            'category' => (int) $questioncategory->id,
+        ]);
+        quiz_add_quiz_question((int) $question->id, $quiz);
+        $quizsettings = \mod_quiz\quiz_settings::create((int) $quiz->id, (int) $student['user']->id);
+        $attempt = quiz_prepare_and_start_new_attempt($quizsettings, 1, null, false, [], [], (int) $student['user']->id);
+
         \local_rtcsync\local\student_history::sync_marker(
             (int) $student['user']->id,
             (int) $course->id,
@@ -1302,7 +1316,53 @@ final class student_history_test extends \advanced_testcase
             'courseid' => (int) $course->id,
             'deliveryid' => 771,
         ]));
+        $historicalmanifestid = (string) $current->lineagemanifestid;
 
+        $this->setAdminUser();
+        try {
+            course_delete_module($cmid);
+            $this->fail('A delivery-aware activity with historical lineage must not be deleted.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('coursepurgestopped', $exception->errorcode);
+        }
+        $DB->set_field('course_modules', 'deletioninprogress', 1, ['id' => $cmid]);
+        try {
+            course_delete_module($cmid);
+            $this->fail('A queued deletion of a delivery-aware activity must also be rejected.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('coursepurgestopped', $exception->errorcode);
+        }
+        $this->assertTrue($DB->record_exists('course_modules', ['id' => $cmid]));
+        $this->assertSame(0, (int) $DB->get_field('course_modules', 'deletioninprogress', ['id' => $cmid]));
+        $this->assertSame(1, $DB->count_records('quiz_attempts', [
+            'id' => (int) $attempt->id,
+            'quiz' => (int) $quiz->id,
+        ]));
+        $this->assertTrue($DB->record_exists('grade_items', ['id' => (int) $gradeitem->id]));
+        $this->assertSame(81.0, (float) $DB->get_field('grade_grades', 'finalgrade', [
+            'itemid' => (int) $gradeitem->id,
+            'userid' => (int) $student['user']->id,
+        ]));
+        $this->assertSame(0, (int) $DB->get_field('local_rtcsync_deliverycm', 'deliveryid', ['cmid' => $cmid]));
+        $this->assertSame(
+            \local_rtcsync\local\delivery_activity_access::LINEAGE_HISTORICAL,
+            (int) $DB->get_field('local_rtcsync_deliverycm', 'lineagestatus', ['cmid' => $cmid])
+        );
+        $this->assertSame(1, (int) $DB->get_field('local_rtcsync_deliverycmhist', 'lineageverified', [
+            'cmid' => $cmid,
+            'courseid' => (int) $course->id,
+            'deliveryid' => 771,
+        ]));
+        $this->assertSame($historicalmanifestid, (string) $DB->get_field(
+            'local_rtcsync_deliverycm',
+            'lineagemanifestid',
+            ['cmid' => $cmid]
+        ));
+        $this->assertSame($historicalmanifestid, (string) $DB->get_field('local_rtcsync_deliverycmhist', 'lineagemanifestid', [
+            'cmid' => $cmid,
+            'courseid' => (int) $course->id,
+            'deliveryid' => 771,
+        ]));
         // A transfer removes the old delivery membership and adds the learner
         // to B. The old activity stays closed because its attempt state is
         // shared by Moodle's activity instance; a fresh B instance is usable.

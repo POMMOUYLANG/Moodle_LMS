@@ -3869,6 +3869,47 @@ final class courselib_test extends advanced_testcase {
         $this->assertEmpty($usersroles);
     }
 
+    /** Verify a stopped course-purge hook aborts reset before the reset event or mutations. */
+    public function test_course_reset_can_be_cancelled_before_any_reset_work(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+
+        $course = $this->getDataGenerator()->create_course();
+        $user = $this->getDataGenerator()->create_user();
+        $roleid = (int) $DB->get_field('role', 'id', ['shortname' => 'student'], MUST_EXIST);
+        $this->getDataGenerator()->enrol_user($user->id, $course->id, $roleid);
+        $coursecontext = \context_course::instance($course->id);
+        assign_capability('mod/forum:viewdiscussion', CAP_PREVENT, $roleid, $coursecontext->id);
+        $this->assertFalse(has_capability('mod/forum:viewdiscussion', $coursecontext, $user->id));
+
+        $receivedhook = null;
+        $this->redirectHook(
+            \core_course\hook\before_course_data_purge::class,
+            static function (\core_course\hook\before_course_data_purge $hook) use (&$receivedhook): void {
+                $receivedhook = $hook;
+                $hook->stop_propagation();
+            }
+        );
+
+        try {
+            reset_course_userdata((object) [
+                'id' => $course->id,
+                'reset_roles_overrides' => true,
+            ]);
+            $this->fail('Course reset must stop when a purge listener cancels it.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('coursepurgestopped', $exception->errorcode);
+        }
+
+        $this->assertInstanceOf(\core_course\hook\before_course_data_purge::class, $receivedhook);
+        $this->assertSame((int) $course->id, $receivedhook->courseid);
+        $this->assertSame(\core_course\hook\before_course_data_purge::OPERATION_RESET, $receivedhook->operation);
+        $this->assertSame($course->id, $receivedhook->options['id']);
+        $this->assertTrue($receivedhook->options['reset_roles_overrides']);
+        $this->assertFalse(has_capability('mod/forum:viewdiscussion', $coursecontext, $user->id));
+    }
+
     public function test_course_check_module_updates_since(): void {
         global $CFG, $DB, $USER;
         require_once($CFG->dirroot . '/mod/glossary/lib.php');

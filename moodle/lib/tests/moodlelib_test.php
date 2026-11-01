@@ -3763,6 +3763,40 @@ EOF;
         $this->assertFalse(note_load($note->id));
     }
 
+    /** Verify a stopped course-purge hook aborts deletion before callbacks or content removal. */
+    public function test_delete_course_can_be_cancelled_before_any_destructive_work(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+        $course = $this->getDataGenerator()->create_course();
+        $user = $this->getDataGenerator()->create_user();
+        $notes = $this->getDataGenerator()->get_plugin_generator('core_notes');
+        $note = $notes->create_instance(['courseid' => $course->id, 'userid' => $user->id]);
+
+        $receivedhook = null;
+        $this->redirectHook(
+            \core_course\hook\before_course_data_purge::class,
+            static function (\core_course\hook\before_course_data_purge $hook) use (&$receivedhook): void {
+                $receivedhook = $hook;
+                $hook->stop_propagation();
+            }
+        );
+
+        try {
+            delete_course($course->id, false);
+            $this->fail('Course deletion must stop when a purge listener cancels it.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('coursepurgestopped', $exception->errorcode);
+        }
+
+        $this->assertInstanceOf(\core_course\hook\before_course_data_purge::class, $receivedhook);
+        $this->assertSame((int) $course->id, $receivedhook->courseid);
+        $this->assertSame(\core_course\hook\before_course_data_purge::OPERATION_DELETE, $receivedhook->operation);
+        $this->assertSame(['showfeedback' => false], $receivedhook->options);
+        $this->assertTrue($DB->record_exists('course', ['id' => $course->id]));
+        $this->assertNotFalse(note_load($note->id));
+    }
+
     /**
      * Test function username_load_fields_from_object().
      */

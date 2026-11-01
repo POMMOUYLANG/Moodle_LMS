@@ -141,6 +141,21 @@ final class student_history
                         'scoperevision' => $scopestate['revision'],
                     ];
                 }
+
+                // A different stored delivery for this exact source is a data
+                // conflict, not an already-cleared idempotent replay.
+                $existingmarker = $DB->get_record('local_rtcsync_history', [
+                    'userid' => $userid,
+                    'courseid' => $courseid,
+                    'sourcetype' => $sourcetype,
+                    'sourceid' => $sourceid,
+                ], '*', IGNORE_MISSING);
+                if ($existingmarker
+                        && $existingmarker->deliveryid !== null
+                        && (int) $existingmarker->deliveryid !== $deliveryid) {
+                    throw new \moodle_exception('deliveryhistorymarkermismatch', 'local_rtcsync');
+                }
+
                 $markerparams = [
                     'userid' => $userid,
                     'courseid' => $courseid,

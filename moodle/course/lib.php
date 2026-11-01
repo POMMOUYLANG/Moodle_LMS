@@ -703,6 +703,24 @@ function set_coursemodule_name($cmid, $name) {
  * @since Moodle 2.5
  */
 function course_delete_module($cmid, $async = false) {
+    global $CFG, $DB;
+
+    // Resolve and guard the module before asynchronous deletion can flag it or
+    // synchronous deletion can load module code or invoke delete callbacks.
+    if (!$cm = $DB->get_record('course_modules', ['id' => $cmid])) {
+        return true;
+    }
+
+    $purgehook = new \core_course\hook\before_course_data_purge(
+        courseid: (int) $cm->course,
+        operation: \core_course\hook\before_course_data_purge::OPERATION_ACTIVITY_DELETE,
+        options: ['cmid' => (int) $cm->id],
+    );
+    \core\di::get(\core\hook\manager::class)->dispatch($purgehook);
+    if ($purgehook->isPropagationStopped()) {
+        throw new \moodle_exception('coursepurgestopped', 'core');
+    }
+
     // Check the 'course_module_background_deletion_recommended' hook first.
     // Only use asynchronous deletion if at least one plugin returns true and if async deletion has been requested.
     // Both are checked because plugins should not be allowed to dictate the deletion behaviour, only support/decline it.
@@ -717,17 +735,10 @@ function course_delete_module($cmid, $async = false) {
         }
     }
 
-    global $CFG, $DB;
-
     require_once($CFG->libdir.'/gradelib.php');
     require_once($CFG->libdir.'/questionlib.php');
     require_once($CFG->dirroot.'/blog/lib.php');
     require_once($CFG->dirroot.'/calendar/lib.php');
-
-    // Get the course module.
-    if (!$cm = $DB->get_record('course_modules', array('id' => $cmid))) {
-        return true;
-    }
 
     // Get the module context.
     $modcontext = context_module::instance($cm->id);

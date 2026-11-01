@@ -70,6 +70,68 @@ its results remain unavailable. `archive` and `dispose` record the reviewed
 retention decision and lock the module; they do not delete Moodle content or
 grades.
 
+Deleting an activity from a delivery-aware course would remove its Moodle
+attempts and grade items. The stoppable purge hook now blocks individual
+activity deletion when RTC delivery or history evidence exists, including
+history-only modules without a course marker. The older
+`pre_course_module_delete` callback remains as a fallback and clears any queued
+deletion flag before rejecting removal. Keep these activities in Moodle while
+their records are retained. The current archive and disposal manifest
+decisions do not authorize hard deletion or provide a per-record grade/attempt
+export for a later deletion workflow.
+
+Whole-course deletion follows this core order: `delete_course()` invokes
+`pre_course_delete` callbacks, dispatches `before_course_deleted`, starts
+course-deletion cleanup, then calls `remove_course_contents()`. The Recycle bin
+callback runs before local-plugin callbacks because Moodle enumerates the
+`tool` plugin type before `local`. It deletes existing course-bin items unless
+the course has `deletesource = 'restore'`. A local `pre_course_delete` veto
+would therefore run after that deletion and could leave the course intact but
+its recycle-bin records purged. The later `before_course_deleted` hook's stop
+state is not checked by core.
+
+The local Moodle core patch adds the stoppable
+`core_course\hook\before_course_data_purge` hook. `delete_course()` dispatches
+it and checks cancellation before `pre_course_delete` callbacks, so the Recycle
+bin and other plugin callbacks do not run first. Restore-overwrite and related
+course-import flows dispatch at `restore_dbops::delete_course_content()` before
+`remove_course_contents()`. Course reset dispatches before
+`course_reset_started` and before reset mutations, because observer exceptions
+are logged and do not cancel reset. `course_delete_module()` dispatches before
+async deletion is queued or module deletion callbacks run. Grade item deletion
+and bulk grade clearing dispatch from `grade_item::delete_all_grades()` before
+grade rows or grade history files are changed. The hook carries course ID,
+operation (`delete`, `restore_overwrite`, `reset`, `activity_delete`, or
+`grade_item_grades_delete`), and selected options. Its exception uses the core
+`coursepurgestopped` language string.
+
+For whole-course deletion, restore overwrite, and reset, RTC Sync stops the
+operation when course delivery state, current or historical module lineage,
+grade lineage, retained Released-results history, student delivery scope or
+membership, manifest or per-record audit provenance, an RTC delivery grouping,
+or an RTC delivery-score identifier exists. A missing RTC state table also
+stops these course-wide operations. For individual activity deletion and
+grade-item clearing, the guard checks the target module or grade item, its
+owned grade items, linked module history, stable RTC score identifier, and
+per-record audit provenance; unrelated records in the same course remain
+operable. Missing tables required for that scoped check stop the operation.
+Unresolved history is covered even without a course marker. This guard
+preserves data and does not authorize deletion or export; archive and disposal
+decisions still leave the Moodle activity, attempts, and grades in place.
+
+This is a local Moodle core patch, not behavior supplied by the plugin alone.
+Deployment requires this patch or an upstream equivalent that emits the
+stoppable hook and honors its stopped state before the same five destructive
+boundaries. A hook only inside `remove_course_contents()` is insufficient
+because reset does not use that function. Until the core hook is present,
+delivery-aware course deletion, restore-overwrite, and reset must remain
+operationally blocked while their attempts, grades, or Released history must be
+retained. The local core change is in `moodle/course/classes/hook/before_course_data_purge.php`,
+`moodle/lib/moodlelib.php`, `moodle/course/lib.php`,
+`moodle/backup/util/dbops/restore_dbops.class.php`,
+`moodle/lib/grade/grade_item.php`, and `moodle/lang/en/moodle.php`; RTC Sync subscribes in
+`moodle/local/rtcsync/db/hooks.php`.
+
 Unmapped records omitted from a manifest are not promoted. Every unresolved
 module stays quarantined by backfill or its observer. Legacy/manual grade
 items without a verified `deliverygrade` association remain absent from

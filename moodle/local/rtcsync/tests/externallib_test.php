@@ -660,6 +660,89 @@ final class externallib_test extends \advanced_testcase
         );
     }
 
+    public function test_user_upsert_waits_for_stable_identity_lock_before_creating_account(): void
+    {
+        global $CFG, $DB;
+
+        $this->resetAfterTest();
+        $CFG->lock_factory = '\\core\\lock\\file_lock_factory';
+        $this->setAdminUser();
+        $idnumber = 'rtc-user:73014';
+        $lockfactory = \core\lock\lock_config::get_lock_factory('local_rtcsync_user_identity');
+        $lock = $lockfactory->get_lock($idnumber, 0);
+        $this->assertNotFalse($lock);
+
+        $timedout = false;
+        try {
+            \local_rtcsync_external::upsert_user([
+                'moodleid' => 0,
+                'username' => 'rtc.identity-lock@example.test',
+                'email' => 'rtc.identity-lock@example.test',
+                'firstname' => 'RTC',
+                'lastname' => 'Identity Lock',
+                'idnumber' => $idnumber,
+                'phone1' => '',
+                'suspended' => 0,
+                'profile_fields' => [],
+            ]);
+        } catch (\moodle_exception $exception) {
+            $timedout = $exception->errorcode === 'locktimeout';
+        } finally {
+            $lock->release();
+        }
+
+        $this->assertTrue($timedout, 'A competing upsert must not pass the stable-identity lookup and create path.');
+        $this->assertSame(0, $DB->count_records('user', [
+            'idnumber' => $idnumber,
+            'deleted' => 0,
+        ]));
+        $this->assertSame(0, $DB->count_records('local_rtcsync_user', ['idnumber' => $idnumber]));
+    }
+
+    public function test_user_upsert_waits_for_explicit_moodle_mapping_lock_before_migration(): void
+    {
+        global $CFG, $DB;
+
+        $this->resetAfterTest();
+        $CFG->lock_factory = '\\core\\lock\\file_lock_factory';
+        $this->setAdminUser();
+        $legacy = $this->createLegacyManagedUser(
+            'rtc.identity-migration-lock@example.test',
+            'rtc.identity-migration-lock@example.test',
+            'LEGACY-CARD-73015'
+        );
+        $lockfactory = \core\lock\lock_config::get_lock_factory('local_rtcsync_user_identity');
+        $lock = $lockfactory->get_lock('moodle:' . (int) $legacy->id, 0);
+        $this->assertNotFalse($lock);
+
+        $timedout = false;
+        try {
+            \local_rtcsync_external::upsert_user([
+                'moodleid' => (int) $legacy->id,
+                'username' => 'rtc.identity-migration-lock@example.test',
+                'email' => 'rtc.identity-migration-lock@example.test',
+                'firstname' => 'RTC',
+                'lastname' => 'Identity Lock',
+                'idnumber' => 'rtc-user:73015',
+                'phone1' => '',
+                'suspended' => 0,
+                'profile_fields' => [],
+            ]);
+        } catch (\moodle_exception $exception) {
+            $timedout = $exception->errorcode === 'locktimeout';
+        } finally {
+            $lock->release();
+        }
+
+        $this->assertTrue($timedout, 'A competing legacy migration must not pass the Moodle mapping lock.');
+        $this->assertSame('LEGACY-CARD-73015', (string) $DB->get_field('user', 'idnumber', ['id' => (int) $legacy->id]));
+        $this->assertSame('LEGACY-CARD-73015', (string) $DB->get_field(
+            'local_rtcsync_user',
+            'idnumber',
+            ['userid' => (int) $legacy->id]
+        ));
+    }
+
     public function test_user_upsert_requires_a_canonical_numeric_rtc_user_idnumber(): void
     {
         $this->resetAfterTest();
@@ -869,6 +952,184 @@ final class externallib_test extends \advanced_testcase
             'idnumber',
             ['userid' => (int) $legacy->id]
         ));
+    }
+
+    public function test_user_upsert_rolls_back_identity_and_marker_when_profile_sync_fails(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $legacy = $this->createLegacyManagedUser(
+            'rtc-atomic-legacy@example.test',
+            'rtc-atomic-legacy@example.test',
+            'LEGACY-CARD-ATOMIC'
+        );
+        $userbefore = $DB->get_record('user', ['id' => (int) $legacy->id], '*', MUST_EXIST);
+        $markerbefore = $DB->get_record('local_rtcsync_user', ['userid' => (int) $legacy->id], '*', MUST_EXIST);
+
+        try {
+            \local_rtcsync_external::upsert_user([
+                'moodleid' => (int) $legacy->id,
+                'username' => 'rtc-atomic-legacy-renamed@example.test',
+                'email' => 'rtc-atomic-legacy-renamed@example.test',
+                'firstname' => 'Changed',
+                'lastname' => 'Before Failure',
+                'idnumber' => 'rtc-user:73016',
+                'phone1' => '12345',
+                'suspended' => 1,
+                'profile_fields' => [[
+                    'shortname' => 'rtc_unknown_atomic_test_field',
+                    'value' => 'invalid',
+                ]],
+            ]);
+            $this->fail('An invalid profile field must abort the complete identity migration.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('Unknown RTC profile field', $exception->getMessage());
+        }
+
+        $this->assertEquals(
+            $userbefore,
+            $DB->get_record('user', ['id' => (int) $legacy->id], '*', MUST_EXIST),
+            'A failed migration must preserve all Moodle account fields.'
+        );
+        $this->assertEquals(
+            $markerbefore,
+            $DB->get_record('local_rtcsync_user', ['userid' => (int) $legacy->id], '*', MUST_EXIST),
+            'A failed migration must preserve the stable-identity ownership marker.'
+        );
+
+        try {
+            \local_rtcsync_external::upsert_user([
+                'moodleid' => 0,
+                'username' => 'rtc-atomic-new@example.test',
+                'email' => 'rtc-atomic-new@example.test',
+                'firstname' => 'New',
+                'lastname' => 'Before Failure',
+                'idnumber' => 'rtc-user:73017',
+                'phone1' => '',
+                'suspended' => 0,
+                'profile_fields' => [[
+                    'shortname' => 'rtc_unknown_atomic_test_field',
+                    'value' => 'invalid',
+                ]],
+            ]);
+            $this->fail('A profile failure must not leave a partially created RTC account.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('Unknown RTC profile field', $exception->getMessage());
+        }
+
+        $this->assertSame(0, $DB->count_records('user', [
+            'idnumber' => 'rtc-user:73017',
+            'deleted' => 0,
+        ]));
+        $this->assertSame(0, $DB->count_records('local_rtcsync_user', [
+            'idnumber' => 'rtc-user:73017',
+        ]));
+    }
+
+    public function test_user_upsert_rolls_back_user_and_profile_when_marker_update_fails(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $legacy = $this->createLegacyManagedUser(
+            'rtc-marker-write-failure@example.test',
+            'rtc-marker-write-failure@example.test',
+            'LEGACY-CARD-MARKER-FAILURE'
+        );
+        local_rtcsync_save_profile_fields((int) $legacy->id, [[
+            'shortname' => 'rtc_batch_code',
+            'value' => 'BEFORE-MIGRATION',
+        ]]);
+
+        $userbefore = $DB->get_record('user', ['id' => (int) $legacy->id], '*', MUST_EXIST);
+        $markerbefore = $DB->get_record('local_rtcsync_user', ['userid' => (int) $legacy->id], '*', MUST_EXIST);
+        $profilefieldid = local_rtcsync_ensure_profile_fields()['rtc_batch_code'];
+        $profilebefore = $DB->get_record('user_info_data', [
+            'userid' => (int) $legacy->id,
+            'fieldid' => $profilefieldid,
+        ], '*', MUST_EXIST);
+
+        $realdb = $DB;
+        $faultdb = new class($realdb) {
+            /** @var moodle_database */
+            private $database;
+
+            /** @var bool */
+            public $markerupdatefailed = false;
+
+            public function __construct($database) {
+                $this->database = $database;
+            }
+
+            public function __call(string $name, array $arguments) {
+                if ($name === 'update_record' && ($arguments[0] ?? null) === 'local_rtcsync_user') {
+                    $this->markerupdatefailed = true;
+                    throw new \dml_write_exception(
+                        'injected-marker-write-failure',
+                        'UPDATE {local_rtcsync_user}',
+                        []
+                    );
+                }
+
+                return $this->database->{$name}(...$arguments);
+            }
+
+            public function __get(string $name) {
+                return $this->database->{$name};
+            }
+
+            public function __isset(string $name): bool {
+                return isset($this->database->{$name});
+            }
+        };
+
+        $DB = $faultdb;
+        try {
+            \local_rtcsync_external::upsert_user([
+                'moodleid' => (int) $legacy->id,
+                'username' => 'rtc-marker-write-failure-renamed@example.test',
+                'email' => 'rtc-marker-write-failure-renamed@example.test',
+                'firstname' => 'Changed',
+                'lastname' => 'Before Marker Failure',
+                'idnumber' => 'rtc-user:73018',
+                'phone1' => '54321',
+                'suspended' => 1,
+                'profile_fields' => [[
+                    'shortname' => 'rtc_batch_code',
+                    'value' => 'AFTER-MIGRATION',
+                ]],
+            ]);
+            $this->fail('A database failure while updating the ownership marker must abort user migration.');
+        } catch (\dml_write_exception $exception) {
+            $this->assertSame('dmlwriteexception', $exception->errorcode);
+        } finally {
+            $DB = $realdb;
+        }
+
+        $this->assertTrue($faultdb->markerupdatefailed, 'The injected failure must occur at the marker write boundary.');
+        $this->assertEquals(
+            $userbefore,
+            $DB->get_record('user', ['id' => (int) $legacy->id], '*', MUST_EXIST),
+            'The Moodle identity/profile fields must be rolled back after marker persistence fails.'
+        );
+        $this->assertEquals(
+            $markerbefore,
+            $DB->get_record('local_rtcsync_user', ['userid' => (int) $legacy->id], '*', MUST_EXIST),
+            'The ownership marker must retain its pre-migration identity.'
+        );
+        $this->assertEquals(
+            $profilebefore,
+            $DB->get_record('user_info_data', [
+                'userid' => (int) $legacy->id,
+                'fieldid' => $profilefieldid,
+            ], '*', MUST_EXIST),
+            'RTC profile changes must roll back with the failed identity migration.'
+        );
     }
 
     public function test_user_upsert_resolves_legacy_account_from_exact_stable_marker_after_email_change(): void
@@ -1511,6 +1772,78 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame($revision, $replay['scoperevision']);
     }
 
+    public function test_delivery_history_clear_rejects_a_conflicting_stored_delivery(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 77);
+        $this->createDeliveryGrouping($course, 88);
+        $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+
+        $revision = 20261031000000000;
+        \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'deliveryids' => [77],
+            'revision' => $revision,
+        ]);
+        $originalmarker = (object) [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9205,
+            'deliveryid' => 88,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ];
+        $originalmarker->id = $DB->insert_record('local_rtcsync_history', $originalmarker);
+
+        try {
+            \local_rtcsync_external::sync_history_marker([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'historyaccess' => 0,
+                'historysourcetype' => 'delivery_participation',
+                'historysourceid' => 9205,
+                'deliveryid' => 77,
+                'expectedscoperevision' => $revision,
+            ]);
+            $this->fail('A clear request must not silently accept a source marker bound to another delivery.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('deliveryhistorymarkermismatch', $exception->errorcode);
+        }
+
+        $this->assertEquals($originalmarker, $DB->get_record('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9205,
+        ], '*', MUST_EXIST));
+
+        $absentclear = \local_rtcsync_external::sync_history_marker([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 0,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9206,
+            'deliveryid' => 77,
+            'expectedscoperevision' => $revision,
+        ]);
+        $this->assertSame(0, $absentclear['applied']);
+        $this->assertSame($revision, $absentclear['scoperevision']);
+    }
+
     public function test_delivery_history_grants_remain_independent_of_current_scope_revision(): void
     {
         global $DB;
@@ -2127,8 +2460,62 @@ final class externallib_test extends \advanced_testcase
             'deliveryid' => 711,
             'grade' => 83.0,
         ]);
+        $cleared = \local_rtcsync_external::upsert_grade([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Delivery score',
+            'idnumber' => 'rtc-subject-score:314:delivery:710',
+            'deliveryid' => 710,
+            'grade' => null,
+            'clear' => 1,
+        ]);
 
-        $this->assertSame($first['itemid'], $updated['itemid']);
+        $firstitem = \grade_item::fetch([
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-subject-score:314:delivery:710',
+        ]);
+        $seconditem = \grade_item::fetch([
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-subject-score:314:delivery:711',
+        ]);
+        $this->assertNotFalse($firstitem);
+        $this->assertNotFalse($seconditem);
+        $this->assertSame([
+            'itemid' => (int) $firstitem->id,
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'grade' => 75.0,
+            'cleared' => 0,
+            'deliveryid' => 710,
+        ], $first);
+        $this->assertSame([
+            'itemid' => (int) $firstitem->id,
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'grade' => 81.0,
+            'cleared' => 0,
+            'deliveryid' => 710,
+        ], $updated);
+        $this->assertSame([
+            'itemid' => (int) $firstitem->id,
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'grade' => null,
+            'cleared' => 1,
+            'deliveryid' => 710,
+        ], $cleared);
+        $this->assertSame([
+            'itemid' => (int) $seconditem->id,
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'grade' => 83.0,
+            'cleared' => 0,
+            'deliveryid' => 711,
+        ], $second);
+        $this->assertNull($DB->get_field('grade_grades', 'finalgrade', [
+            'itemid' => (int) $firstitem->id,
+            'userid' => (int) $user->id,
+        ]));
         $this->assertNotSame($first['itemid'], $second['itemid']);
         $this->assertSame(1, $DB->count_records('local_rtcsync_deliverygrade', [
             'gradeitemid' => (int) $first['itemid'],
@@ -2146,6 +2533,132 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame(1, (int) $DB->get_field('local_rtcsync_deliverygrade', 'lineageverified', [
             'gradeitemid' => (int) $second['itemid'],
         ]));
+    }
+
+    public function test_delivery_score_clear_fails_when_grade_item_is_locked(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:315']);
+        $this->createDeliveryGrouping($course, 712);
+        $user = $this->createManagedUser();
+        $created = \local_rtcsync_external::upsert_grade([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Locked delivery score',
+            'idnumber' => 'rtc-subject-score:315:delivery:712',
+            'deliveryid' => 712,
+            'grade' => 64.0,
+        ]);
+
+        $mappingbefore = $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $created['itemid'],
+            'courseid' => (int) $course->id,
+            'deliveryid' => 712,
+        ], '*', MUST_EXIST);
+        $mappingbefore->timemodified = time() - 60;
+        $DB->update_record('local_rtcsync_deliverygrade', $mappingbefore);
+        $mappingbefore = $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $created['itemid'],
+        ], '*', MUST_EXIST);
+
+        $DB->set_field('grade_items', 'locked', 1, ['id' => (int) $created['itemid']]);
+
+        try {
+            \local_rtcsync_external::upsert_grade([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'itemname' => 'Attempted locked item rewrite',
+                'idnumber' => 'rtc-subject-score:315:delivery:712',
+                'deliveryid' => 712,
+                'grade' => null,
+                'grademax' => 200,
+                'hidden' => 1,
+                'clear' => 1,
+            ]);
+            $this->fail('A locked Moodle grade must not be reported as successfully cleared.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('gradeupdatefailed', $exception->errorcode);
+        }
+
+        $this->assertSame(64.0, (float) $DB->get_field('grade_grades', 'finalgrade', [
+            'itemid' => (int) $created['itemid'],
+            'userid' => (int) $user->id,
+        ]));
+        $unchangeditem = \grade_item::fetch(['id' => (int) $created['itemid']]);
+        $this->assertNotFalse($unchangeditem);
+        $this->assertSame('Locked delivery score', (string) $unchangeditem->itemname);
+        $this->assertSame(100.0, (float) $unchangeditem->grademax);
+        $this->assertSame(0, (int) $unchangeditem->hidden);
+        $this->assertSame(1, $DB->count_records('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $created['itemid'],
+            'courseid' => (int) $course->id,
+            'deliveryid' => 712,
+        ]));
+        $this->assertSame(1, (int) $DB->get_field('local_rtcsync_deliverygrade', 'lineageverified', [
+            'gradeitemid' => (int) $created['itemid'],
+        ]));
+        $mappingafter = $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $created['itemid'],
+        ], '*', MUST_EXIST);
+        $this->assertEquals($mappingbefore, $mappingafter, 'A failed grade write must leave all mapping fields unchanged.');
+    }
+
+    public function test_delivery_score_failure_does_not_create_delivery_grade_mapping(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:319']);
+        $this->createDeliveryGrouping($course, 717);
+        $user = $this->createManagedUser();
+        $idnumber = 'rtc-subject-score:319:delivery:717';
+        $item = new \grade_item([
+            'courseid' => (int) $course->id,
+            'itemname' => 'Locked unmapped delivery score',
+            'itemtype' => 'manual',
+            'itemmodule' => null,
+            'iteminstance' => null,
+            'itemnumber' => 0,
+            'idnumber' => $idnumber,
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ], false);
+        $item->insert('grade-failure-test');
+        $DB->set_field('grade_items', 'locked', 1, ['id' => (int) $item->id]);
+
+        try {
+            \local_rtcsync_external::upsert_grade([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'itemname' => 'Attempted locked item rewrite',
+                'idnumber' => $idnumber,
+                'deliveryid' => 717,
+                'grade' => 64.0,
+                'grademax' => 150,
+                'hidden' => 1,
+            ]);
+            $this->fail('A locked grade item must not be reported as a successful sync.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('gradeupdatefailed', $exception->errorcode);
+        }
+
+        $this->assertFalse($DB->record_exists('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+        ]));
+        $this->assertFalse($DB->record_exists('grade_grades', [
+            'itemid' => (int) $item->id,
+            'userid' => (int) $user->id,
+        ]));
+        $unchangeditem = \grade_item::fetch(['id' => (int) $item->id]);
+        $this->assertNotFalse($unchangeditem);
+        $this->assertSame('Locked unmapped delivery score', (string) $unchangeditem->itemname);
+        $this->assertSame(100.0, (float) $unchangeditem->grademax);
+        $this->assertSame(0, (int) $unchangeditem->hidden);
     }
 
     public function test_sync_does_not_verify_a_legacy_delivery_grade_mapping(): void
@@ -2194,6 +2707,134 @@ final class externallib_test extends \advanced_testcase
         $mapping = $DB->get_record('local_rtcsync_deliverygrade', ['gradeitemid' => (int) $item->id], '*', MUST_EXIST);
         $this->assertSame(0, (int) $mapping->lineageverified);
         $this->assertNull($mapping->lineagemanifestid);
+    }
+
+    public function test_legacy_score_request_cannot_rewrite_a_delivery_mapped_grade_item(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:317']);
+        $this->createDeliveryGrouping($course, 715);
+        $user = $this->createManagedUser();
+        $item = new \grade_item([
+            'courseid' => (int) $course->id,
+            'itemname' => 'Reviewed historical score',
+            'itemtype' => 'manual',
+            'itemmodule' => null,
+            'iteminstance' => null,
+            'itemnumber' => 0,
+            'idnumber' => 'reviewed-historical-score',
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ], false);
+        $item->insert('lineage-test');
+        $item->update_final_grade((int) $user->id, 54.0, 'lineage-test');
+        $DB->insert_record('local_rtcsync_deliverygrade', (object) [
+            'gradeitemid' => (int) $item->id,
+            'courseid' => (int) $course->id,
+            'deliveryid' => 715,
+            'timecreated' => time(),
+            'timemodified' => time(),
+            'lineageverified' => 1,
+            'lineagemanifestid' => 'reviewed-grade-manifest',
+        ]);
+        $mappingbefore = $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+        ], '*', MUST_EXIST);
+
+        try {
+            \local_rtcsync_external::upsert_grade([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'itemname' => 'Overwrite as legacy score',
+                'idnumber' => 'reviewed-historical-score',
+                'deliveryid' => 0,
+                'grade' => 88.0,
+            ]);
+            $this->fail('A delivery-mapped item must not accept a delivery-free grade update.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('matching positive delivery ID', $exception->getMessage());
+        }
+
+        $unchangeditem = \grade_item::fetch(['id' => (int) $item->id]);
+        $this->assertNotFalse($unchangeditem);
+        $this->assertSame('Reviewed historical score', (string) $unchangeditem->itemname);
+        $this->assertSame(100.0, (float) $unchangeditem->grademax);
+        $this->assertSame(54.0, (float) $DB->get_field('grade_grades', 'finalgrade', [
+            'itemid' => (int) $item->id,
+            'userid' => (int) $user->id,
+        ]));
+        $this->assertEquals($mappingbefore, $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+        ], '*', MUST_EXIST));
+    }
+
+    public function test_delivery_score_rejects_stale_grade_mapping_before_any_update(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:320']);
+        $this->createDeliveryGrouping($course, 718);
+        $this->createDeliveryGrouping($course, 719);
+        $user = $this->createManagedUser();
+        $item = new \grade_item([
+            'courseid' => (int) $course->id,
+            'itemname' => 'Existing delivery 719 score',
+            'itemtype' => 'manual',
+            'itemmodule' => null,
+            'iteminstance' => null,
+            'itemnumber' => 0,
+            'idnumber' => 'rtc-subject-score:320:delivery:719',
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ], false);
+        $item->insert('lineage-test');
+        $item->update_final_grade((int) $user->id, 54.0, 'lineage-test');
+        $DB->insert_record('local_rtcsync_deliverygrade', (object) [
+            'gradeitemid' => (int) $item->id,
+            'courseid' => (int) $course->id,
+            'deliveryid' => 718,
+            'timecreated' => time(),
+            'timemodified' => time(),
+            'lineageverified' => 1,
+            'lineagemanifestid' => 'reviewed-grade-manifest',
+        ]);
+        $mappingbefore = $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+        ], '*', MUST_EXIST);
+
+        try {
+            \local_rtcsync_external::upsert_grade([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'itemname' => 'Stale mapping overwrite attempt',
+                'idnumber' => 'rtc-subject-score:320:delivery:719',
+                'deliveryid' => 719,
+                'grade' => 88.0,
+                'grademax' => 200,
+            ]);
+            $this->fail('A stale grade-item delivery mapping must be rejected.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('does not match the grade item’s stored delivery association', $exception->getMessage());
+        }
+
+        $unchangeditem = \grade_item::fetch(['id' => (int) $item->id]);
+        $this->assertNotFalse($unchangeditem);
+        $this->assertSame('Existing delivery 719 score', (string) $unchangeditem->itemname);
+        $this->assertSame(100.0, (float) $unchangeditem->grademax);
+        $this->assertSame(54.0, (float) $DB->get_field('grade_grades', 'finalgrade', [
+            'itemid' => (int) $item->id,
+            'userid' => (int) $user->id,
+        ]));
+        $this->assertEquals($mappingbefore, $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+        ], '*', MUST_EXIST));
     }
 
     public function test_delivery_score_sync_rejects_an_existing_activity_grade_item(): void

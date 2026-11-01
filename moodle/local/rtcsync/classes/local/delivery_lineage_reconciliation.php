@@ -1121,7 +1121,7 @@ final class delivery_lineage_reconciliation
             foreach ($DB->get_records('local_rtcsync_deliverycmhist', [
                 'courseid' => $courseid,
                 'lineageverified' => 0,
-            ], 'cmid ASC, deliveryid ASC', 'cmid,deliveryid') as $row) {
+            ], 'cmid ASC, deliveryid ASC', 'id,cmid') as $row) {
                 if (!isset($seenmodules[(string) $row->cmid])) {
                     $errors[] = "Manifest omits unresolved module-history mapping for course module {$row->cmid}; include a module decision.";
                 }

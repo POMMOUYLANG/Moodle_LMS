@@ -42,38 +42,24 @@ $excluded = [
     '.phpunit.result.cache',
     '.phpunit.cache',
 ];
-$rootiterator = new RecursiveDirectoryIterator($source, FilesystemIterator::SKIP_DOTS);
-$filter = new RecursiveCallbackFilterIterator(
-    $rootiterator,
-    static function (SplFileInfo $entry) use ($source, $excluded): bool {
-        $relative = substr($entry->getPathname(), strlen($source) + 1);
-        if (in_array($relative, $excluded, true)) {
-            return false;
-        }
-        $firstsegment = explode(DIRECTORY_SEPARATOR, $relative, 2)[0];
-        return $firstsegment !== '.git';
+$sourceentries = new FilesystemIterator($source, FilesystemIterator::SKIP_DOTS);
+foreach ($sourceentries as $entry) {
+    $name = $entry->getFilename();
+    if (in_array($name, $excluded, true) || $name === '.git') {
+        continue;
     }
-);
-$iterator = new RecursiveIteratorIterator($filter, RecursiveIteratorIterator::SELF_FIRST);
 
-foreach ($iterator as $entry) {
-    $sourcepath = $entry->getPathname();
-    $relative = substr($sourcepath, strlen($source) + 1);
-    $targetpath = $workspace . DIRECTORY_SEPARATOR . $relative;
-
-    if ($entry->isLink()) {
-        $linktarget = readlink($sourcepath);
-        if ($linktarget === false || !symlink($linktarget, $targetpath)) {
-            fwrite(STDERR, "Unable to copy a Moodle source symlink into the isolated workspace.\n");
-            exit(74);
-        }
-    } elseif ($entry->isDir()) {
-        if (!mkdir($targetpath, 0777, true) && !is_dir($targetpath)) {
-            fwrite(STDERR, "Unable to copy a Moodle source directory into the isolated workspace.\n");
-            exit(74);
-        }
-    } elseif ($entry->isFile() && !copy($sourcepath, $targetpath)) {
-        fwrite(STDERR, "Unable to copy a Moodle source file into the isolated workspace.\n");
+    $copy = proc_open(
+        ['cp', '-a', '--no-preserve=ownership', '--', $entry->getPathname(), $workspace],
+        [0 => STDIN, 1 => STDOUT, 2 => STDERR],
+        $copypipes
+    );
+    if (!is_resource($copy)) {
+        fwrite(STDERR, "Unable to start the Moodle source copy into the isolated workspace.\n");
+        exit(74);
+    }
+    if (proc_close($copy) !== 0) {
+        fwrite(STDERR, "Unable to copy a Moodle source entry into the isolated workspace.\n");
         exit(74);
     }
 }

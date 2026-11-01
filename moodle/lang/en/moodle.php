@@ -373,6 +373,7 @@ $string['coursedisplay_single'] = 'Show all sections on one page';
 $string['coursedisplay_multi'] = 'Show one section per page';
 $string['coursedeleted'] = 'Deleted course {$a}';
 $string['courseextendednamedisplay'] = '{$a->shortname} {$a->fullname}';
+$string['coursepurgestopped'] = 'Course data purge was blocked by an installed plugin or feature.';
 $string['coursefiles'] = 'Legacy course files';
 $string['coursefilesedit'] = 'Edit legacy course files';
 $string['coursefileswarning'] = 'Course files are deprecated';

@@ -7,6 +7,10 @@ param(
 
     [string]$TestFilter = '',
 
+    [switch]$ListTests,
+
+    [switch]$DiagnoseNotices,
+
     [switch]$ConfirmDisposableTarget,
 
     [string]$ExpectedProjectName = '',
@@ -27,6 +31,12 @@ $databaseName = 'rtc_moodle_phpunit'
 
 if (-not $ConfirmDisposableTarget) {
     throw 'Refusing to run PHPUnit without -ConfirmDisposableTarget. This profile can mutate or rebuild its disposable database.'
+}
+if ($ListTests -and $Action -ne 'Test') {
+    throw '-ListTests is only valid with -Action Test.'
+}
+if ($DiagnoseNotices -and $Action -ne 'Test') {
+    throw '-DiagnoseNotices is only valid with -Action Test.'
 }
 if ($ExpectedProjectName -cne $composeProjectName) {
     throw "Refusing to run PHPUnit: pass -ExpectedProjectName '$composeProjectName' to confirm this checkout-specific profile."
@@ -88,32 +98,55 @@ $composeBaseArgs = @(
     '--env-file', $envPath,
     '-f', $composePath
 )
-$composeArgs = $composeBaseArgs + @('run', '--rm', 'phpunit-runner')
+$composeArgs = $composeBaseArgs + @('run', '--rm')
+if ($Action -eq 'Test') {
+    # Reuse the already-running disposable database without allowing Compose to start it.
+    $composeArgs += @('--no-deps')
+}
+$composeArgs += @('phpunit-runner')
 
 if ($Action -eq 'Initialize') {
     $composeArgs += @('admin/tool/phpunit/cli/init.php', '--disable-composer')
 } else {
-    if ($TestFile -notmatch '^local/rtcsync/tests/[A-Za-z0-9_/-]+\.php$' -or $TestFile.Contains('..')) {
-        throw 'TestFile must name a PHP test under local/rtcsync/tests/.'
+    $isPluginTestDirectory = $TestFile -eq 'local/rtcsync/tests'
+    $isPluginTestFile = $TestFile -match '^local/rtcsync/tests/[A-Za-z0-9_/-]+\.php$' -and -not $TestFile.Contains('..')
+    if (-not ($isPluginTestDirectory -or $isPluginTestFile)) {
+        throw 'TestFile must name local/rtcsync/tests or a PHP test under that directory.'
     }
     if ($TestFilter.Length -gt 250 -or $TestFilter.Contains([char]0)) {
         throw 'TestFilter must be a bounded PHPUnit filter expression.'
     }
     $hostTestPath = Join-Path $moodleRoot ($TestFile -replace '/', '\')
-    if (-not (Test-Path -LiteralPath $hostTestPath -PathType Leaf)) {
+    $testPathType = if ($isPluginTestDirectory) { 'Container' } else { 'Leaf' }
+    if (-not (Test-Path -LiteralPath $hostTestPath -PathType $testPathType)) {
         throw "Moodle test file not found: $TestFile"
     }
-    $composeArgs += @('vendor/bin/phpunit', $TestFile)
+    $composeArgs += @('vendor/bin/phpunit')
+    if ($ListTests) {
+        $composeArgs += @('--list-tests')
+    }
+    if ($DiagnoseNotices) {
+        $composeArgs += @('--display-notices', '--stop-on-notice')
+    }
+    if ($isPluginTestDirectory) {
+        $composeArgs += @('--test-suffix', '_test.php')
+    }
+    $composeArgs += @($TestFile)
     if ($TestFilter -ne '') {
         $composeArgs += @('--filter', $TestFilter)
     }
 }
 
-$dockerCommand = Get-Command docker -CommandType Application -ErrorAction SilentlyContinue
+$dockerCommand = Get-Command docker.exe -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if (-not $dockerCommand) {
+    $dockerCommand = Get-Command docker -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+}
 if (-not $dockerCommand) {
     throw 'Docker CLI is unavailable. The runner will not install or start Docker.'
 }
-$dockerPath = $dockerCommand.Source
+$dockerPath = $dockerCommand.Path
 foreach ($overrideName in @('DOCKER_HOST', 'DOCKER_CONTEXT')) {
     if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($overrideName, [EnvironmentVariableTarget]::Process))) {
         throw "Refusing a Docker target override in $overrideName; use the selected local Docker context only."
