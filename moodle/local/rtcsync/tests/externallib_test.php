@@ -3774,6 +3774,254 @@ final class externallib_test extends \advanced_testcase
         ]);
     }
 
+    public function test_class_delivery_roster_rejects_bad_snapshots_without_partial_mutation_and_replays_idempotently(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:roster-preflight']);
+        $studentone = $this->createManagedUser();
+        $studenttwo = $this->createManagedUser();
+        $teacher = $this->createManagedUser();
+        $unmanaged = $this->getDataGenerator()->create_user();
+
+        $payload = [
+            'idnumber' => 'rtc-delivery:roster-preflight',
+            'name' => '[Delivery] Roster Preflight',
+            'visible' => 1,
+            'delivery_id' => 9901,
+            'userids' => [(int) $studentone->id],
+            'courseids' => [(int) $course->id],
+            'teacher_userids' => [(int) $teacher->id],
+            'grouping_idnumber' => 'rtc-delivery-grouping:9901',
+            'grouping_name' => '[Delivery] Roster Preflight',
+            'groups' => [
+                [
+                    'idnumber' => 'rtc-delivery-class-group:9901:37',
+                    'name' => '[Delivery Group] 37',
+                    'userids' => [(int) $studentone->id],
+                ],
+                [
+                    'idnumber' => 'rtc-class-group:legacy37',
+                    'name' => '[Legacy Delivery Group] 37',
+                    'userids' => [(int) $studentone->id],
+                ],
+            ],
+        ];
+        \local_rtcsync_external::upsert_class($payload);
+        $revision = 20261031000000000;
+        \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $studentone->id,
+            'deliveryids' => [9901],
+            'revision' => $revision,
+        ]);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $studentone->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
+
+        $snapshot = static function() use ($DB, $course): array {
+            $cohorts = $DB->get_records_select(
+                'cohort',
+                'idnumber LIKE :classpattern OR idnumber LIKE :deliverypattern',
+                ['classpattern' => 'rtc-class:%', 'deliverypattern' => 'rtc-delivery:%'],
+                'idnumber',
+                'id,idnumber,name,visible'
+            );
+            $cohortrows = array_map(static fn(\stdClass $row): array => [
+                (int) $row->id,
+                (string) $row->idnumber,
+                (string) $row->name,
+                (int) $row->visible,
+            ], array_values($cohorts));
+            $cohortmembers = $DB->get_records_sql(
+                'SELECT cm.id, cm.cohortid, cm.userid
+                   FROM {cohort_members} cm
+                   JOIN {cohort} c ON c.id = cm.cohortid
+                  WHERE c.idnumber LIKE :classpattern OR c.idnumber LIKE :deliverypattern
+               ORDER BY cm.cohortid, cm.userid',
+                ['classpattern' => 'rtc-class:%', 'deliverypattern' => 'rtc-delivery:%']
+            );
+            $enrolinstance = $DB->get_record('enrol', [
+                'courseid' => (int) $course->id,
+                'enrol' => 'manual',
+            ], 'id', IGNORE_MISSING);
+            $enrolments = $enrolinstance ? $DB->get_records(
+                'user_enrolments',
+                ['enrolid' => (int) $enrolinstance->id],
+                'userid,id',
+                'userid,status'
+            ) : [];
+            $coursecontext = \context_course::instance((int) $course->id);
+            $roles = $DB->get_records_sql(
+                'SELECT id, userid, roleid, component, itemid
+                   FROM {role_assignments}
+                  WHERE contextid = :contextid
+               ORDER BY userid, roleid, component, itemid',
+                ['contextid' => (int) $coursecontext->id]
+            );
+            $groupings = $DB->get_records('groupings', ['courseid' => (int) $course->id], 'idnumber,id');
+            $groups = $DB->get_records('groups', ['courseid' => (int) $course->id], 'idnumber,id');
+            $groupinglinks = $DB->get_records_sql(
+                'SELECT gg.id, gg.groupingid, gg.groupid
+                   FROM {groupings_groups} gg
+                   JOIN {groupings} g ON g.id = gg.groupingid
+                  WHERE g.courseid = :courseid
+               ORDER BY gg.groupingid, gg.groupid',
+                ['courseid' => (int) $course->id]
+            );
+            $groupmembers = $DB->get_records_sql(
+                'SELECT gm.id, gm.groupid, gm.userid
+                   FROM {groups_members} gm
+                   JOIN {groups} g ON g.id = gm.groupid
+                  WHERE g.courseid = :courseid
+               ORDER BY gm.groupid, gm.userid',
+                ['courseid' => (int) $course->id]
+            );
+            $stagedmembers = $DB->get_records_sql(
+                'SELECT id, groupid, userid
+                   FROM {local_rtcsync_deliverymember}
+                  WHERE courseid = :courseid
+               ORDER BY groupid, userid',
+                ['courseid' => (int) $course->id]
+            );
+            $scopes = $DB->get_records('local_rtcsync_studentscope', [
+                'courseid' => (int) $course->id,
+            ], 'userid', 'userid,deliveryids,revision');
+            $coursestate = $DB->get_record('local_rtcsync_deliverycourse', [
+                'courseid' => (int) $course->id,
+            ], 'ready,lastcmid', IGNORE_MISSING);
+
+            $normaliserows = static function(array $rows, array $fields): array {
+                return array_map(static function(\stdClass $row) use ($fields): array {
+                    return array_map(static fn(string $field): int|string => is_numeric($row->{$field})
+                        ? (int) $row->{$field}
+                        : (string) $row->{$field}, $fields);
+                }, array_values($rows));
+            };
+
+            return [
+                'cohorts' => $cohortrows,
+                'cohortmembers' => $normaliserows($cohortmembers, ['cohortid', 'userid']),
+                'enrolments' => $normaliserows($enrolments, ['userid', 'status']),
+                'roles' => $normaliserows($roles, ['userid', 'roleid', 'component', 'itemid']),
+                'groupings' => array_map(static fn(\stdClass $row): array => [
+                    (int) $row->id,
+                    (string) $row->idnumber,
+                    (string) $row->name,
+                ], array_values($groupings)),
+                'groups' => array_map(static fn(\stdClass $row): array => [
+                    (int) $row->id,
+                    (string) $row->idnumber,
+                    (string) $row->name,
+                ], array_values($groups)),
+                'groupinglinks' => $normaliserows($groupinglinks, ['groupingid', 'groupid']),
+                'groupmembers' => $normaliserows($groupmembers, ['groupid', 'userid']),
+                'stagedmembers' => array_map(static fn(\stdClass $row): array => [
+                    (int) $row->groupid,
+                    (int) $row->userid,
+                ], array_values($stagedmembers)),
+                'scopes' => $normaliserows($scopes, ['userid', 'deliveryids', 'revision']),
+                'coursestate' => $coursestate ? [
+                    (int) $coursestate->ready,
+                    (int) $coursestate->lastcmid,
+                ] : null,
+            ];
+        };
+
+        $before = $snapshot();
+        $invalidpayloads = [
+            'non-positive cohort member' => array_merge($payload, [
+                'name' => '[Delivery] Must Not Change',
+                'userids' => [(int) $studenttwo->id, -7],
+            ]),
+            'non-positive course id' => array_merge($payload, [
+                'name' => '[Delivery] Must Not Change',
+                'userids' => [(int) $studenttwo->id],
+                'courseids' => [(int) $course->id, 1],
+            ]),
+            'non-positive teacher id' => array_merge($payload, [
+                'name' => '[Delivery] Must Not Change',
+                'userids' => [(int) $studenttwo->id],
+                'teacher_userids' => [(int) $teacher->id, 0],
+            ]),
+            'unmanaged delivery group member' => array_merge($payload, [
+                'name' => '[Delivery] Must Not Change',
+                'userids' => [(int) $studenttwo->id],
+                'groups' => [
+                    array_merge($payload['groups'][0], [
+                        'name' => '[Delivery Group] Must Not Change',
+                        'userids' => [(int) $unmanaged->id],
+                    ]),
+                    $payload['groups'][1],
+                ],
+            ]),
+            'invalid grouping identity' => array_merge($payload, [
+                'name' => '[Delivery] Must Not Change',
+                'userids' => [(int) $studenttwo->id],
+                'grouping_idnumber' => 'rtc-invalid-grouping',
+                'groups' => [],
+            ]),
+            'duplicate child identity' => array_merge($payload, [
+                'name' => '[Delivery] Must Not Change',
+                'userids' => [(int) $studenttwo->id],
+                'groups' => [$payload['groups'][0], $payload['groups'][0]],
+            ]),
+            'child group owned by another delivery' => array_merge($payload, [
+                'idnumber' => 'rtc-delivery:9902',
+                'name' => '[Delivery] Must Not Change',
+                'delivery_id' => 9902,
+                'userids' => [(int) $studenttwo->id],
+                'grouping_idnumber' => 'rtc-delivery-grouping:9902',
+                'grouping_name' => '[Delivery] Must Not Change',
+                'groups' => [array_merge($payload['groups'][1], [
+                    'name' => '[Legacy Delivery Group] Must Not Change',
+                    'userids' => [(int) $studenttwo->id],
+                ])],
+            ]),
+        ];
+        foreach ($invalidpayloads as $label => $invalidpayload) {
+            try {
+                \local_rtcsync_external::upsert_class($invalidpayload);
+                $this->fail('Expected invalid roster case to be rejected: ' . $label);
+            } catch (\invalid_parameter_exception $exception) {
+                $this->assertNotSame('', $exception->getMessage(), $label);
+            }
+            $this->assertSame($before, $snapshot(), $label . ' must not partially mutate sync state');
+        }
+
+        $stale = \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $studentone->id,
+            'deliveryids' => [],
+            'revision' => $revision - 1,
+        ]);
+        $this->assertSame(0, $stale['applied']);
+        $this->assertSame([9901], $stale['deliveryids']);
+        $this->assertSame($before, $snapshot(), 'A stale delivery snapshot must retain the roster and scope.');
+
+        \local_rtcsync_external::upsert_class($payload);
+        $replay = \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $studentone->id,
+            'deliveryids' => [9901],
+            'revision' => $revision,
+        ]);
+        $this->assertSame(0, $replay['applied']);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $studentone->id,
+            'role_shortname' => 'student',
+            'suspend' => 0,
+        ]);
+        $this->assertSame($before, $snapshot(), 'Replaying the complete roster and scope must be idempotent.');
+    }
+
     public function test_delivery_owned_child_group_has_scoped_identity_and_survives_class_cleanup(): void
     {
         global $DB;

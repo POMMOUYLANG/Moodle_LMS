@@ -213,10 +213,17 @@ function local_rtcsync_validate_managed_userids(array $userids, string $scope): 
 {
     global $DB;
 
-    $desired = array_values(array_unique(array_filter(
-        array_map('intval', $userids),
-        static fn(int $userid): bool => $userid > 0
-    )));
+    $desired = [];
+    foreach ($userids as $userid) {
+        if ((!is_int($userid) && !(is_string($userid) && ctype_digit($userid)))
+                || (int) $userid <= 1) {
+            throw new invalid_parameter_exception(
+                sprintf('RTC-Sync %s must contain positive Moodle user IDs greater than 1.', $scope)
+            );
+        }
+        $desired[(int) $userid] = (int) $userid;
+    }
+    $desired = array_values($desired);
     if (!$desired) {
         return [];
     }

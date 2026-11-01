@@ -347,6 +347,17 @@ trait local_rtcsync_credit_class_external
         }
         unset($group);
 
+        $groupingidnumber = (string) $class['grouping_idnumber'];
+        $validclassgrouping = str_starts_with($groupingidnumber, 'rtc-class-grouping:')
+            && strlen($groupingidnumber) > strlen('rtc-class-grouping:');
+        $validdeliverygrouping = str_starts_with($groupingidnumber, 'rtc-delivery-grouping:')
+            && strlen($groupingidnumber) > strlen('rtc-delivery-grouping:');
+        if (!$validclassgrouping && !$validdeliverygrouping) {
+            throw new invalid_parameter_exception(
+                'Class grouping idnumber must use the rtc-class-grouping: or rtc-delivery-grouping: prefix.'
+            );
+        }
+
         $systemcontext = context_system::instance();
         self::validate_context($systemcontext);
         require_capability('moodle/cohort:manage', $systemcontext);
@@ -359,6 +370,49 @@ trait local_rtcsync_credit_class_external
                 'Class idnumber must use the rtc-class: or rtc-delivery: prefix.'
             );
         }
+
+        // Resolve the complete desired snapshot before changing the cohort,
+        // enrolments, groupings, native groups, or staged delivery roster.
+        // A late invalid ID otherwise leaves a partially applied sync behind.
+        $class['userids'] = self::valid_userids($class['userids'] ?? [], 'classuser');
+        $class['teacher_userids'] = self::valid_userids($class['teacher_userids'] ?? [], 'classteacher');
+        $class['courseids'] = self::valid_courseids($class['courseids'] ?? []);
+        $class['student_role_shortname'] = trim((string) ($class['student_role_shortname'] ?? 'student'));
+        $class['teacher_role_shortname'] = trim((string) ($class['teacher_role_shortname'] ?? 'editingteacher'));
+        self::role_by_shortname($class['student_role_shortname']);
+        self::role_by_shortname($class['teacher_role_shortname']);
+
+        $groupidnumbers = [];
+        foreach ($class['groups'] as &$group) {
+            if (isset($groupidnumbers[$group['idnumber']])) {
+                throw new invalid_parameter_exception('A class payload cannot contain duplicate child group idnumbers.');
+            }
+            $groupidnumbers[$group['idnumber']] = true;
+            $groupwillbereconciled = $class['courseids'] !== [] && (int) $class['visible'] === 1;
+            if ($groupwillbereconciled && !$validdeliverygrouping) {
+                $groupwillbereconciled = false;
+                foreach ($class['courseids'] as $courseid) {
+                    $existinggroup = $DB->get_record('groups', [
+                        'courseid' => $courseid,
+                        'idnumber' => $group['idnumber'],
+                    ], 'id', IGNORE_MISSING);
+                    if (!$existinggroup
+                            || !self::group_has_delivery_grouping_assignment((int) $existinggroup->id)) {
+                        $groupwillbereconciled = true;
+                        break;
+                    }
+                }
+            }
+            if ($groupwillbereconciled) {
+                $group['userids'] = self::valid_userids($group['userids'] ?? [], 'classgroupuser');
+            }
+        }
+        unset($group);
+        self::validate_delivery_group_ownership(
+            $class['courseids'],
+            $groupingidnumber,
+            $class['groups']
+        );
 
         $cohort = $DB->get_record('cohort', [
             'contextid' => $systemcontext->id,
@@ -398,7 +452,7 @@ trait local_rtcsync_credit_class_external
             }
         }
 
-        $desired = self::valid_userids($class['userids'] ?? [], 'classuser');
+        $desired = $class['userids'];
         $members = $DB->get_records(
             'cohort_members',
             ['cohortid' => $cohortid],
@@ -416,14 +470,14 @@ trait local_rtcsync_credit_class_external
             cohort_remove_member($cohortid, $userid);
         }
 
-        $courseids = self::valid_courseids($class['courseids'] ?? []);
+        $courseids = $class['courseids'];
         // Moodle only permits a user who is enrolled in the course to join a
         // course group. Reconcile class students before creating memberships
         // so the child-group assignment is effective on the same sync pass.
         self::reconcile_class_course_roles(
             $courseids,
             $cohortid,
-            trim((string) ($class['student_role_shortname'] ?? 'student')),
+            $class['student_role_shortname'],
             $desired,
             (int) $class['visible'] === 1
         );
@@ -434,11 +488,11 @@ trait local_rtcsync_credit_class_external
             $class['groups'] ?? [],
             (int) $class['visible'] === 1
         );
-        $teacherids = self::valid_userids($class['teacher_userids'] ?? [], 'classteacher');
+        $teacherids = $class['teacher_userids'];
         $teacherCount = self::reconcile_class_course_roles(
             $courseids,
             $cohortid,
-            trim((string) ($class['teacher_role_shortname'] ?? 'editingteacher')),
+            $class['teacher_role_shortname'],
             $teacherids,
             (int) $class['visible'] === 1
         );
@@ -507,10 +561,17 @@ trait local_rtcsync_credit_class_external
     {
         global $DB;
 
-        $desired = array_values(array_unique(array_filter(
-            array_map('intval', $courseids),
-            static fn(int $courseid): bool => $courseid > 1
-        )));
+        $desired = [];
+        foreach ($courseids as $courseid) {
+            if ((!is_int($courseid) && !(is_string($courseid) && ctype_digit($courseid)))
+                    || (int) $courseid <= 1) {
+                throw new invalid_parameter_exception(
+                    'RTC-Sync class courses must contain positive Moodle course IDs greater than 1.'
+                );
+            }
+            $desired[(int) $courseid] = (int) $courseid;
+        }
+        $desired = array_values($desired);
         if (!$desired) {
             return [];
         }
@@ -535,6 +596,41 @@ trait local_rtcsync_credit_class_external
         }
 
         return $desired;
+    }
+
+    /** Reject child groups already owned by another delivery before any class data is changed. */
+    private static function validate_delivery_group_ownership(
+        array $courseids,
+        string $groupingidnumber,
+        array $groups
+    ): void {
+        global $DB;
+
+        if (!str_starts_with($groupingidnumber, 'rtc-delivery-grouping:')) {
+            return;
+        }
+
+        foreach ($courseids as $courseid) {
+            $groupingid = (int) $DB->get_field('groupings', 'id', [
+                'courseid' => $courseid,
+                'idnumber' => $groupingidnumber,
+            ]);
+            foreach ($groups as $group) {
+                $existinggroup = $DB->get_record('groups', [
+                    'courseid' => $courseid,
+                    'idnumber' => $group['idnumber'],
+                ], 'id', IGNORE_MISSING);
+                if ($existinggroup
+                        && self::group_has_other_delivery_grouping_assignment(
+                            (int) $existinggroup->id,
+                            $groupingid
+                        )) {
+                    throw new invalid_parameter_exception(
+                        'A Moodle child group cannot be shared by multiple delivery groupings; use a delivery-scoped child-group idnumber.'
+                    );
+                }
+            }
+        }
     }
 
     private static function reconcile_class_course_groups(
