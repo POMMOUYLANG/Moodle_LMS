@@ -2593,6 +2593,63 @@ final class externallib_test extends \advanced_testcase
         ]));
     }
 
+    public function test_grade_upsert_rejects_conflicting_clear_payloads_without_mutation(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:321']);
+        $this->createDeliveryGrouping($course, 720);
+        $user = $this->createManagedUser();
+        $base = [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Explicit delivery clear contract',
+            'idnumber' => 'rtc-subject-score:321:delivery:720',
+            'deliveryid' => 720,
+        ];
+        $created = \local_rtcsync_external::upsert_grade($base + [
+            'grade' => 74.0,
+            'clear' => 0,
+        ]);
+        $item = \grade_item::fetch(['id' => (int) $created['itemid']]);
+        $this->assertNotFalse($item);
+        $mappingbefore = $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+        ], '*', MUST_EXIST);
+
+        foreach ([
+            [
+                'payload' => ['grade' => null, 'clear' => 0],
+                'message' => 'grade update requires a non-null grade',
+            ],
+            [
+                'payload' => ['grade' => 61.0, 'clear' => 1],
+                'message' => 'clear request requires a null grade',
+            ],
+            [
+                'payload' => ['grade' => 62.0, 'clear' => 2],
+                'message' => 'Clear flag must be 0 or 1',
+            ],
+        ] as $invalidrequest) {
+            try {
+                \local_rtcsync_external::upsert_grade($base + $invalidrequest['payload']);
+                $this->fail('A conflicting grade/clear request must be rejected before updating the grade.');
+            } catch (\invalid_parameter_exception $exception) {
+                $this->assertStringContainsString($invalidrequest['message'], $exception->getMessage());
+            }
+            $this->assertSame(74.0, (float) $DB->get_field('grade_grades', 'finalgrade', [
+                'itemid' => (int) $item->id,
+                'userid' => (int) $user->id,
+            ]));
+        }
+
+        $this->assertEquals($mappingbefore, $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+        ], '*', MUST_EXIST));
+    }
+
     public function test_delivery_score_clear_fails_when_grade_item_is_locked(): void
     {
         global $DB;

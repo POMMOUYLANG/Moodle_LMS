@@ -1219,10 +1219,21 @@ class local_rtcsync_external extends external_api
                 'itemname' => new external_value(PARAM_TEXT, 'RTC grade item name.'),
                 'idnumber' => new external_value(PARAM_RAW, 'Stable RTC grade item idnumber.'),
                 'deliveryid' => new external_value(PARAM_INT, 'Delivery scope for this synced score; 0 for legacy/non-delivery scores.', VALUE_DEFAULT, 0),
-                'grade' => new external_value(PARAM_FLOAT, 'Grade value.', VALUE_DEFAULT, null, NULL_ALLOWED),
+                'grade' => new external_value(
+                    PARAM_FLOAT,
+                    'Grade value; required when clear is 0 and null when clear is 1.',
+                    VALUE_DEFAULT,
+                    null,
+                    NULL_ALLOWED
+                ),
                 'grademax' => new external_value(PARAM_FLOAT, 'Maximum grade.', VALUE_DEFAULT, 100),
                 'feedback' => new external_value(PARAM_RAW, 'Feedback text.', VALUE_DEFAULT, ''),
-                'clear' => new external_value(PARAM_INT, 'Clear grade flag.', VALUE_DEFAULT, 0),
+                'clear' => new external_value(
+                    PARAM_INT,
+                    'Use 1 with a null grade to clear; otherwise use 0 with a grade value.',
+                    VALUE_DEFAULT,
+                    0
+                ),
                 'hidden' => new external_value(PARAM_INT, 'Hide grade item flag.', VALUE_DEFAULT, 0),
             ]),
         ]);
@@ -1234,6 +1245,15 @@ class local_rtcsync_external extends external_api
 
         $params = self::validate_parameters(self::upsert_grade_parameters(), ['grade' => $grade]);
         $grade = $params['grade'];
+        $clear = (int) $grade['clear'];
+        if (!in_array($clear, [0, 1], true)) {
+            throw new invalid_parameter_exception('Clear flag must be 0 or 1.');
+        }
+        if (($clear === 1) !== ($grade['grade'] === null)) {
+            throw new invalid_parameter_exception(
+                'A clear request requires a null grade; a grade update requires a non-null grade.'
+            );
+        }
 
         $course = local_rtcsync_require_managed_course(
             (int) $grade['courseid'],
@@ -1307,7 +1327,7 @@ class local_rtcsync_external extends external_api
             (int) $grade['hidden'] === 1
         );
 
-        $value = (int) $grade['clear'] === 1 ? null : $grade['grade'];
+        $value = $clear === 1 ? null : $grade['grade'];
         $gradeupdated = $item->update_final_grade(
             (int) $grade['userid'],
             $value,
@@ -1335,7 +1355,7 @@ class local_rtcsync_external extends external_api
             'courseid' => (int) $course->id,
             'userid' => (int) $grade['userid'],
             'grade' => $value,
-            'cleared' => (int) $grade['clear'],
+            'cleared' => $clear,
             'deliveryid' => $deliveryid,
         ];
             }
