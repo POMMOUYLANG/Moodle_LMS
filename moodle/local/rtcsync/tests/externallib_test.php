@@ -173,6 +173,60 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame('rtc-user:73001', $result['records'][0]['idnumber']);
     }
 
+    public function test_user_read_omits_duplicate_stable_idnumbers(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:73003']);
+        $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:73003']);
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'users',
+            ['rtc-user:73003'],
+            0,
+            100
+        );
+
+        $this->assertSame(0, $result['total']);
+        $this->assertSame([], $result['records']);
+    }
+
+    public function test_user_read_omits_a_stable_idnumber_with_a_conflicting_managed_marker(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $target = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:73004']);
+        $markerowner = $this->createManagedUser(['idnumber' => 'rtc-user:73005']);
+        $DB->set_field('local_rtcsync_user', 'idnumber', 'rtc-user:73004', [
+            'userid' => (int) $markerowner->id,
+        ]);
+        $DB->set_field('user', 'deleted', 1, ['id' => (int) $markerowner->id]);
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'users',
+            ['rtc-user:73004'],
+            0,
+            100
+        );
+
+        $this->assertSame(0, $result['total']);
+        $this->assertSame([], $result['records']);
+        $this->assertSame(1, (int) $DB->get_field(
+            'user',
+            'deleted',
+            ['id' => (int) $markerowner->id],
+            MUST_EXIST
+        ));
+        $this->assertSame((int) $target->id, (int) $DB->get_field(
+            'user',
+            'id',
+            ['idnumber' => 'rtc-user:73004'],
+            MUST_EXIST
+        ));
+    }
+
     public function test_managed_user_inventory_uses_marker_for_sms_id_card_idnumbers(): void
     {
         $this->resetAfterTest();
@@ -434,7 +488,15 @@ final class externallib_test extends \advanced_testcase
         $this->resetAfterTest();
         $this->setAdminUser();
         $course = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:11']);
-        $student = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:22']);
+        $student = $this->createManagedUser(['idnumber' => 'rtc-user:22']);
+        $unmanagedstudent = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:23']);
+        $mismarkedstudent = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:24']);
+        $DB->insert_record('local_rtcsync_user', (object) [
+            'userid' => (int) $mismarkedstudent->id,
+            'idnumber' => 'rtc-user:25',
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
         $quiz = $this->getDataGenerator()->create_module('quiz', [
             'course' => $course->id,
             'name' => 'Quiz 1',
@@ -452,6 +514,8 @@ final class externallib_test extends \advanced_testcase
         $item->grademax = 10;
         $item->update();
         $item->update_final_grade($student->id, 8, 'test');
+        $item->update_final_grade($unmanagedstudent->id, 9, 'test');
+        $item->update_final_grade($mismarkedstudent->id, 7, 'test');
 
         $configid = $DB->insert_record('local_rtcsync_formcfg', (object) [
             'courseid' => $course->id,
@@ -478,6 +542,8 @@ final class externallib_test extends \advanced_testcase
 
         $this->assertSame(1, $result['total']);
         $this->assertSame('Knowledge check', $result['records'][0]['sync_label']);
+        $this->assertSame('rtc-user:22', $result['records'][0]['user_idnumber']);
+        $this->assertSame((int) $student->id, $result['records'][0]['user_id']);
         $this->assertSame(100.0, $result['records'][0]['sync_weight']);
         $this->assertSame(1, $result['records'][0]['sync_selected_count']);
 
@@ -489,6 +555,123 @@ final class externallib_test extends \advanced_testcase
             100
         );
         $this->assertSame(0, $disabled['total']);
+    }
+
+    public function test_activity_grade_read_omits_duplicate_stable_user_idnumbers(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:12']);
+        $student = $this->createManagedUser(['idnumber' => 'rtc-user:70012']);
+        $duplicate = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:70012']);
+        $quiz = $this->getDataGenerator()->create_module('quiz', [
+            'course' => $course->id,
+            'name' => 'Duplicate identity quiz',
+        ]);
+        $item = \grade_item::fetch([
+            'courseid' => $course->id,
+            'itemtype' => 'mod',
+            'itemmodule' => 'quiz',
+            'iteminstance' => $quiz->id,
+            'itemnumber' => 0,
+        ]);
+        $this->assertNotFalse($item);
+        $item->update_final_grade($student->id, 8, 'test');
+        $item->update_final_grade($duplicate->id, 7, 'test');
+        $DB->insert_record('local_rtcsync_formcfg', (object) [
+            'courseid' => $course->id,
+            'enabled' => 1,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+        $DB->insert_record('local_rtcsync_formitem', (object) [
+            'courseid' => $course->id,
+            'itemid' => $item->id,
+            'included' => 1,
+            'label' => 'Duplicate identity quiz',
+            'weight' => 100,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'activitygrades',
+            ['rtc-subject:12'],
+            0,
+            100
+        );
+
+        $this->assertSame(0, $result['total']);
+        $this->assertSame([], $result['records']);
+    }
+
+    public function test_activity_grade_read_omits_duplicate_stable_user_markers(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:13']);
+        $student = $this->createManagedUser(['idnumber' => 'rtc-user:70013']);
+        $duplicate = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:70014']);
+        $DB->insert_record('local_rtcsync_user', (object) [
+            'userid' => (int) $duplicate->id,
+            'idnumber' => 'rtc-user:70013',
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+        $quiz = $this->getDataGenerator()->create_module('quiz', [
+            'course' => $course->id,
+            'name' => 'Duplicate marker quiz',
+        ]);
+        $item = \grade_item::fetch([
+            'courseid' => $course->id,
+            'itemtype' => 'mod',
+            'itemmodule' => 'quiz',
+            'iteminstance' => $quiz->id,
+            'itemnumber' => 0,
+        ]);
+        $this->assertNotFalse($item);
+        $item->update_final_grade($student->id, 8, 'test');
+        $DB->insert_record('local_rtcsync_formcfg', (object) [
+            'courseid' => $course->id,
+            'enabled' => 1,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+        $DB->insert_record('local_rtcsync_formitem', (object) [
+            'courseid' => $course->id,
+            'itemid' => $item->id,
+            'included' => 1,
+            'label' => 'Duplicate marker quiz',
+            'weight' => 100,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'activitygrades',
+            ['rtc-subject:13'],
+            0,
+            100
+        );
+
+        $this->assertSame(0, $result['total']);
+        $this->assertSame([], $result['records']);
+
+        // Deleting the conflicting account leaves its stable identity marker as
+        // a tombstone; that must not make the remaining account exportable.
+        $DB->set_field('user', 'deleted', 1, ['id' => (int) $duplicate->id]);
+        $afterdelete = \local_rtcsync_external::get_managed_state(
+            'activitygrades',
+            ['rtc-subject:13'],
+            0,
+            100
+        );
+        $this->assertSame(0, $afterdelete['total']);
+        $this->assertSame([], $afterdelete['records']);
     }
 
     public function test_course_upsert_reuses_nested_legacy_categories_and_moves_existing_course(): void
@@ -878,6 +1061,44 @@ final class externallib_test extends \advanced_testcase
             'suspended' => 0,
             'profile_fields' => [],
         ]);
+    }
+
+    public function test_user_upsert_does_not_reuse_a_stable_id_with_a_deleted_account_marker(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $deleted = $this->createManagedUser(['idnumber' => 'rtc-user:70002']);
+        $DB->set_field('user', 'deleted', 1, ['id' => (int) $deleted->id]);
+
+        try {
+            \local_rtcsync_external::upsert_user([
+                'moodleid' => 0,
+                'username' => 'rtc-reused-stable-id@example.test',
+                'email' => 'rtc-reused-stable-id@example.test',
+                'firstname' => 'Must',
+                'lastname' => 'Not Reuse',
+                'idnumber' => 'rtc-user:70002',
+                'phone1' => '',
+                'suspended' => 0,
+                'profile_fields' => [],
+            ]);
+            $this->fail('A deleted account marker must reserve its stable RTC identity.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertSame(
+                'The stable RTC user idnumber is already reserved by an unavailable Moodle ownership marker.',
+                $exception->getMessage()
+            );
+        }
+
+        $this->assertSame(0, $DB->count_records('user', [
+            'username' => 'rtc-reused-stable-id@example.test',
+            'deleted' => 0,
+        ]));
+        $this->assertSame(1, $DB->count_records('local_rtcsync_user', [
+            'idnumber' => 'rtc-user:70002',
+        ]));
     }
 
     public function test_user_upsert_rejects_a_stale_mapping_to_a_different_stable_rtc_user(): void
@@ -2818,6 +3039,95 @@ final class externallib_test extends \advanced_testcase
         ], '*', MUST_EXIST));
     }
 
+    public function test_grade_upsert_rejects_values_moodle_would_clamp_without_mutation(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:322']);
+        $this->createDeliveryGrouping($course, 721);
+        $user = $this->createManagedUser();
+        $payload = [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Grade range contract',
+            'idnumber' => 'rtc-subject-score:322:delivery:721',
+            'deliveryid' => 721,
+            'grademax' => 100.0,
+            'grade' => 74.0,
+        ];
+        $created = \local_rtcsync_external::upsert_grade($payload);
+        $itembefore = $DB->get_record('grade_items', ['id' => (int) $created['itemid']], '*', MUST_EXIST);
+        $gradebefore = $DB->get_record('grade_grades', [
+            'itemid' => (int) $created['itemid'],
+            'userid' => (int) $user->id,
+        ], '*', MUST_EXIST);
+        $mappingbefore = $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $created['itemid'],
+        ], '*', MUST_EXIST);
+
+        foreach ([-1.0, 101.0] as $invalidgrade) {
+            try {
+                \local_rtcsync_external::upsert_grade(array_merge($payload, [
+                    'itemname' => 'Must not rename existing score',
+                    'grade' => $invalidgrade,
+                    'hidden' => 1,
+                ]));
+                $this->fail('A grade outside Moodle’s item range must be rejected, not silently clamped.');
+            } catch (\invalid_parameter_exception $exception) {
+                $this->assertSame(
+                    'Grade value falls outside the Moodle grade item’s allowed range.',
+                    $exception->getMessage()
+                );
+            }
+
+            $this->assertEquals($itembefore, $DB->get_record('grade_items', [
+                'id' => (int) $created['itemid'],
+            ], '*', MUST_EXIST));
+            $this->assertEquals($gradebefore, $DB->get_record('grade_grades', [
+                'itemid' => (int) $created['itemid'],
+                'userid' => (int) $user->id,
+            ], '*', MUST_EXIST));
+            $this->assertEquals($mappingbefore, $DB->get_record('local_rtcsync_deliverygrade', [
+                'gradeitemid' => (int) $created['itemid'],
+            ], '*', MUST_EXIST));
+            $this->assertSame(1, $DB->count_records('grade_items', [
+                'courseid' => (int) $course->id,
+                'idnumber' => 'rtc-subject-score:322:delivery:721',
+            ]));
+        }
+
+        foreach ([0.0, -1.0] as $invalidmaximum) {
+            try {
+                \local_rtcsync_external::upsert_grade(array_merge($payload, [
+                    'itemname' => 'Must not rename existing score',
+                    'grademax' => $invalidmaximum,
+                    'grade' => 88.0,
+                    'hidden' => 1,
+                ]));
+                $this->fail('A non-positive grade maximum must be rejected before mutation.');
+            } catch (\invalid_parameter_exception $exception) {
+                $this->assertSame('Grade maximum must be greater than zero.', $exception->getMessage());
+            }
+
+            $this->assertEquals($itembefore, $DB->get_record('grade_items', [
+                'id' => (int) $created['itemid'],
+            ], '*', MUST_EXIST));
+            $this->assertEquals($gradebefore, $DB->get_record('grade_grades', [
+                'itemid' => (int) $created['itemid'],
+                'userid' => (int) $user->id,
+            ], '*', MUST_EXIST));
+            $this->assertEquals($mappingbefore, $DB->get_record('local_rtcsync_deliverygrade', [
+                'gradeitemid' => (int) $created['itemid'],
+            ], '*', MUST_EXIST));
+            $this->assertSame(1, $DB->count_records('grade_items', [
+                'courseid' => (int) $course->id,
+                'idnumber' => 'rtc-subject-score:322:delivery:721',
+            ]));
+        }
+    }
+
     public function test_delivery_score_clear_fails_when_grade_item_is_locked(): void
     {
         global $DB;
@@ -3731,6 +4041,26 @@ final class externallib_test extends \advanced_testcase
         ]);
 
         $this->assertNotSame($first['courseid'], $second['courseid']);
+        $firstowner = $DB->get_record('local_rtcsync_creditowner', [
+            'creditcourseid' => (int) $first['courseid'],
+        ], '*', MUST_EXIST);
+        $secondowner = $DB->get_record('local_rtcsync_creditowner', [
+            'creditcourseid' => (int) $second['courseid'],
+        ], '*', MUST_EXIST);
+        $this->assertSame((int) $parent->id, (int) $firstowner->parentcourseid);
+        $this->assertSame((int) $parent->id, (int) $secondowner->parentcourseid);
+        $this->assertSame('rtc-credit-course:101', (string) $firstowner->idnumber);
+        $repeatedfirst = \local_rtcsync_external::upsert_credit($base + [
+            'idnumber' => 'rtc-credit-course:101',
+            'shortname' => 'RTC-CREDIT-101',
+            'name' => 'Credit 1 - Teacher One',
+            'teacher_userids' => [(int) $teacherone->id],
+        ]);
+        $this->assertSame((int) $first['courseid'], (int) $repeatedfirst['courseid']);
+        $this->assertSame(1, $DB->count_records('local_rtcsync_creditowner', [
+            'creditcourseid' => (int) $first['courseid'],
+        ]));
+
         $teacherrole = $DB->get_record('role', ['shortname' => 'editingteacher'], '*', MUST_EXIST);
         $studentrole = $DB->get_record('role', ['shortname' => 'student'], '*', MUST_EXIST);
         $firstcontext = \context_course::instance((int) $first['courseid']);
@@ -3810,6 +4140,244 @@ final class externallib_test extends \advanced_testcase
             'contextid' => $firstcontext->id,
             'userid' => (int) $student->id,
         ]));
+        $this->assertSame((int) $parent->id, (int) $DB->get_field(
+            'local_rtcsync_creditowner',
+            'parentcourseid',
+            ['creditcourseid' => (int) $first['courseid']],
+            MUST_EXIST
+        ));
+    }
+
+    public function test_same_category_wrong_parent_cannot_sync_or_cleanup_credit_course(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
+
+        $parent = $this->createManagedCourse(['idnumber' => 'rtc-subject:credit-owner']);
+        $otherparent = $this->createManagedCourse([
+            'idnumber' => 'rtc-subject:credit-wrong-owner',
+            'category' => (int) $parent->category,
+        ]);
+        $this->assertSame((int) $parent->category, (int) $otherparent->category);
+        $teacher = $this->createManagedUser();
+        $credit = \local_rtcsync_external::upsert_credit([
+            'courseid' => (int) $parent->id,
+            'subject_id' => 7001,
+            'idnumber' => 'rtc-credit-course:7001',
+            'shortname' => 'RTC-CREDIT-7001',
+            'name' => 'Credit owned by subject one',
+            'teacher_userids' => [(int) $teacher->id],
+            'student_userids' => [],
+        ]);
+        $creditbefore = $DB->get_record('course', [
+            'id' => (int) $credit['courseid'],
+        ], '*', MUST_EXIST);
+        $context = \context_course::instance((int) $credit['courseid']);
+        $rolesbefore = $DB->get_records('role_assignments', [
+            'contextid' => (int) $context->id,
+        ], 'id', 'id,userid,roleid,component,itemid');
+        $ownerbefore = $DB->get_record('local_rtcsync_creditowner', [
+            'creditcourseid' => (int) $credit['courseid'],
+        ], '*', MUST_EXIST);
+
+        try {
+            \local_rtcsync_external::upsert_credit([
+                'courseid' => (int) $otherparent->id,
+                'subject_id' => 7001,
+                'idnumber' => 'rtc-credit-course:7001',
+                'shortname' => 'RTC-CREDIT-7001-WRONG-PARENT',
+                'name' => 'Must not update wrong owner',
+                'teacher_userids' => [],
+                'student_userids' => [],
+            ]);
+            $this->fail('A same-category wrong parent must not sync this credit course.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertSame(
+                'The RTC credit course belongs to a different parent subject course; no changes were made.',
+                $exception->getMessage()
+            );
+        }
+
+        $this->assertEquals($creditbefore, $DB->get_record('course', [
+            'id' => (int) $credit['courseid'],
+        ], '*', MUST_EXIST));
+        $this->assertEquals($rolesbefore, $DB->get_records('role_assignments', [
+            'contextid' => (int) $context->id,
+        ], 'id', 'id,userid,roleid,component,itemid'));
+        $this->assertEquals($ownerbefore, $DB->get_record('local_rtcsync_creditowner', [
+            'creditcourseid' => (int) $credit['courseid'],
+        ], '*', MUST_EXIST));
+
+        try {
+            \local_rtcsync_external::delete_credit([
+                'courseid' => (int) $otherparent->id,
+                'idnumber' => 'rtc-credit-course:7001',
+                'teacher_role_shortname' => 'editingteacher',
+                'student_role_shortname' => 'student',
+            ]);
+            $this->fail('A same-category wrong parent must not archive this credit course.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertSame(
+                'The RTC credit course belongs to a different parent subject course; no changes were made.',
+                $exception->getMessage()
+            );
+        }
+
+        $this->assertEquals($creditbefore, $DB->get_record('course', [
+            'id' => (int) $credit['courseid'],
+        ], '*', MUST_EXIST));
+        $this->assertEquals($rolesbefore, $DB->get_records('role_assignments', [
+            'contextid' => (int) $context->id,
+        ], 'id', 'id,userid,roleid,component,itemid'));
+        $this->assertEquals($ownerbefore, $DB->get_record('local_rtcsync_creditowner', [
+            'creditcourseid' => (int) $credit['courseid'],
+        ], '*', MUST_EXIST));
+    }
+
+    public function test_legacy_credit_course_without_parent_owner_fails_closed(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $parent = $this->createManagedCourse(['idnumber' => 'rtc-subject:legacy-credit-owner']);
+        $legacy = $this->getDataGenerator()->create_course([
+            'idnumber' => 'rtc-credit-course:legacy-unowned',
+            'category' => (int) $parent->category,
+            'fullname' => 'Legacy credit with no verified owner',
+            'visible' => 1,
+        ]);
+        $coursebefore = $DB->get_record('course', ['id' => (int) $legacy->id], '*', MUST_EXIST);
+        $context = \context_course::instance((int) $legacy->id);
+        $rolesbefore = $DB->get_records('role_assignments', [
+            'contextid' => (int) $context->id,
+        ], 'id', 'id,userid,roleid,component,itemid');
+        $message = 'This legacy RTC credit course has no verified parent ownership record. '
+            . 'Do not sync or archive it by category; have the LMS data owner verify its exact parent '
+            . 'from authoritative RTC records before retrying.';
+
+        try {
+            \local_rtcsync_external::upsert_credit([
+                'courseid' => (int) $parent->id,
+                'idnumber' => 'rtc-credit-course:legacy-unowned',
+                'shortname' => 'LEGACY-CREDIT-UNOWNED',
+                'name' => 'Must not guess the owner',
+                'teacher_userids' => [],
+                'student_userids' => [],
+            ]);
+            $this->fail('A legacy credit course without an ownership record must not be updated.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertSame($message, $exception->getMessage());
+        }
+
+        try {
+            \local_rtcsync_external::delete_credit([
+                'courseid' => (int) $parent->id,
+                'idnumber' => 'rtc-credit-course:legacy-unowned',
+            ]);
+            $this->fail('A legacy credit course without an ownership record must not be archived.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertSame($message, $exception->getMessage());
+        }
+
+        $this->assertEquals($coursebefore, $DB->get_record('course', ['id' => (int) $legacy->id], '*', MUST_EXIST));
+        $this->assertEquals($rolesbefore, $DB->get_records('role_assignments', [
+            'contextid' => (int) $context->id,
+        ], 'id', 'id,userid,roleid,component,itemid'));
+        $this->assertFalse($DB->record_exists('local_rtcsync_creditowner', [
+            'creditcourseid' => (int) $legacy->id,
+        ]));
+    }
+
+    public function test_credit_sync_and_cleanup_reject_duplicate_idnumber_without_mutation(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
+
+        $parent = $this->createManagedCourse(['idnumber' => 'rtc-subject:credit-duplicate-owner']);
+        $teacher = $this->createManagedUser();
+        $credit = \local_rtcsync_external::upsert_credit([
+            'courseid' => (int) $parent->id,
+            'subject_id' => 7002,
+            'idnumber' => 'rtc-credit-course:7002',
+            'shortname' => 'RTC-CREDIT-7002',
+            'name' => 'Credit with ambiguous idnumber',
+            'teacher_userids' => [(int) $teacher->id],
+            'student_userids' => [],
+        ]);
+        $duplicate = $this->getDataGenerator()->create_course([
+            'idnumber' => 'manual-course:credit-duplicate',
+            'category' => (int) $parent->category,
+        ]);
+        $DB->set_field('course', 'idnumber', 'rtc-credit-course:7002', ['id' => (int) $duplicate->id]);
+        $creditbefore = $DB->get_record('course', [
+            'id' => (int) $credit['courseid'],
+        ], '*', MUST_EXIST);
+        $duplicatebefore = $DB->get_record('course', [
+            'id' => (int) $duplicate->id,
+        ], '*', MUST_EXIST);
+        $context = \context_course::instance((int) $credit['courseid']);
+        $rolesbefore = $DB->get_records('role_assignments', [
+            'contextid' => (int) $context->id,
+        ], 'id', 'id,userid,roleid,component,itemid');
+
+        try {
+            \local_rtcsync_external::upsert_credit([
+                'courseid' => (int) $parent->id,
+                'subject_id' => 7002,
+                'idnumber' => 'rtc-credit-course:7002',
+                'shortname' => 'RTC-CREDIT-7002-CHANGED',
+                'name' => 'Must not update ambiguous credit',
+                'teacher_userids' => [],
+                'student_userids' => [],
+            ]);
+            $this->fail('An ambiguous credit idnumber must not update an arbitrary Moodle course.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertSame(
+                'Credit course idnumber matches multiple Moodle courses.',
+                $exception->getMessage()
+            );
+        }
+        $this->assertEquals($creditbefore, $DB->get_record('course', [
+            'id' => (int) $credit['courseid'],
+        ], '*', MUST_EXIST));
+        $this->assertEquals($duplicatebefore, $DB->get_record('course', [
+            'id' => (int) $duplicate->id,
+        ], '*', MUST_EXIST));
+        $this->assertEquals($rolesbefore, $DB->get_records('role_assignments', [
+            'contextid' => (int) $context->id,
+        ], 'id', 'id,userid,roleid,component,itemid'));
+
+        try {
+            \local_rtcsync_external::delete_credit([
+                'courseid' => (int) $parent->id,
+                'idnumber' => 'rtc-credit-course:7002',
+                'teacher_role_shortname' => 'editingteacher',
+                'student_role_shortname' => 'student',
+            ]);
+            $this->fail('An ambiguous credit idnumber must not archive an arbitrary Moodle course.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertSame(
+                'Credit course idnumber matches multiple Moodle courses.',
+                $exception->getMessage()
+            );
+        }
+
+        $this->assertEquals($creditbefore, $DB->get_record('course', [
+            'id' => (int) $credit['courseid'],
+        ], '*', MUST_EXIST));
+        $this->assertEquals($duplicatebefore, $DB->get_record('course', [
+            'id' => (int) $duplicate->id,
+        ], '*', MUST_EXIST));
+        $this->assertEquals($rolesbefore, $DB->get_records('role_assignments', [
+            'contextid' => (int) $context->id,
+        ], 'id', 'id,userid,roleid,component,itemid'));
     }
 
     public function test_class_cohort_reconciles_child_groups_inside_course_grouping(): void

@@ -201,17 +201,13 @@ class local_rtcsync_external extends external_api
                 'The stable RTC user idnumber matches multiple local Moodle accounts.'
             );
         }
-        $stablemarkermatches = $DB->get_records_sql(
-            "SELECT u.*
-               FROM {local_rtcsync_user} managed
-               JOIN {user} u ON u.id = managed.userid
-              WHERE managed.idnumber = :idnumber
-                AND u.deleted = 0
-                AND u.mnethostid = :mnethostid",
-            [
-                'idnumber' => $requestedidnumber,
-                'mnethostid' => (int) $CFG->mnet_localhost_id,
-            ],
+        // A marker remains an ownership claim even if its Moodle account was
+        // deleted or moved off the local host. Never recycle that RTC identity.
+        $stablemarkermatches = $DB->get_records(
+            'local_rtcsync_user',
+            ['idnumber' => $requestedidnumber],
+            '',
+            'userid',
             0,
             2
         );
@@ -221,7 +217,15 @@ class local_rtcsync_external extends external_api
             );
         }
         $userbystableid = $stableusermatches ? reset($stableusermatches) : false;
-        $userbymarker = $stablemarkermatches ? reset($stablemarkermatches) : false;
+        $userbymarker = false;
+        if ($stablemarkermatches) {
+            $marker = reset($stablemarkermatches);
+            $userbymarker = $DB->get_record('user', [
+                'id' => (int) $marker->userid,
+                'deleted' => 0,
+                'mnethostid' => $CFG->mnet_localhost_id,
+            ], '*', IGNORE_MISSING);
+        }
         if ($userbystableid && $userbymarker
                 && (int) $userbystableid->id !== (int) $userbymarker->id) {
             throw new invalid_parameter_exception(
@@ -287,6 +291,12 @@ class local_rtcsync_external extends external_api
             if ($existing) {
                 $resolution = 'email';
             }
+        }
+
+        if (!$existing && $stablemarkermatches) {
+            throw new invalid_parameter_exception(
+                'The stable RTC user idnumber is already reserved by an unavailable Moodle ownership marker.'
+            );
         }
 
         if ($existing) {
@@ -1260,6 +1270,15 @@ class local_rtcsync_external extends external_api
                 'A clear request requires a null grade; a grade update requires a non-null grade.'
             );
         }
+        if (!is_finite((float) $grade['grademax'])) {
+            throw new invalid_parameter_exception('Grade maximum must be a finite number.');
+        }
+        if ((float) $grade['grademax'] <= 0) {
+            throw new invalid_parameter_exception('Grade maximum must be greater than zero.');
+        }
+        if ($grade['grade'] !== null && !is_finite((float) $grade['grade'])) {
+            throw new invalid_parameter_exception('Grade value must be a finite number.');
+        }
 
         $course = local_rtcsync_require_managed_course(
             (int) $grade['courseid'],
@@ -1334,6 +1353,11 @@ class local_rtcsync_external extends external_api
         );
 
         $value = $clear === 1 ? null : $grade['grade'];
+        if ($value !== null && (float) $item->bounded_grade((float) $value) !== (float) $value) {
+            throw new invalid_parameter_exception(
+                'Grade value falls outside the Moodle grade item’s allowed range.'
+            );
+        }
         $gradeupdated = $item->update_final_grade(
             (int) $grade['userid'],
             $value,
@@ -1513,7 +1537,21 @@ class local_rtcsync_external extends external_api
         if ($scope !== 'managedcourses' && $scope === 'users') {
             $where = "u.idnumber {$insql}
                       AND u.deleted = 0
-                      AND u.mnethostid = :mnethostid";
+                      AND u.mnethostid = :mnethostid
+                      AND NOT EXISTS (
+                          SELECT 1
+                            FROM {user} duplicateuser
+                           WHERE duplicateuser.idnumber = u.idnumber
+                             AND duplicateuser.deleted = 0
+                             AND duplicateuser.mnethostid = u.mnethostid
+                             AND duplicateuser.id <> u.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                            FROM {local_rtcsync_user} conflictingmarker
+                           WHERE conflictingmarker.idnumber = u.idnumber
+                             AND conflictingmarker.userid <> u.id
+                      )";
             $queryparams = $inparams + ['mnethostid' => $CFG->mnet_localhost_id];
             $total = $DB->count_records_sql(
                 "SELECT COUNT(1) FROM {user} u WHERE {$where}",
@@ -1822,8 +1860,28 @@ class local_rtcsync_external extends external_api
                       AND gi.itemtype = 'mod'
                       AND gi.itemmodule IS NOT NULL
                       AND u.deleted = 0
+                      AND u.mnethostid = :mnethostid
+                      AND managed.idnumber = u.idnumber
+                      AND managed.idnumber LIKE :stableuserprefix
+                      AND NOT EXISTS (
+                          SELECT 1
+                            FROM {user} duplicateuser
+                           WHERE duplicateuser.idnumber = managed.idnumber
+                             AND duplicateuser.deleted = 0
+                             AND duplicateuser.mnethostid = u.mnethostid
+                             AND duplicateuser.id <> u.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                            FROM {local_rtcsync_user} duplicatemarker
+                           WHERE duplicatemarker.idnumber = managed.idnumber
+                             AND duplicatemarker.userid <> u.id
+                      )
                       AND gg.finalgrade IS NOT NULL";
-            $queryparams = $inparams;
+            $queryparams = $inparams + [
+                'mnethostid' => (int) $CFG->mnet_localhost_id,
+                'stableuserprefix' => 'rtc-user:%',
+            ];
             $from = "FROM {course} c
                      JOIN {local_rtcsync_formcfg} cfg
                        ON cfg.courseid = c.id
@@ -1837,6 +1895,8 @@ class local_rtcsync_external extends external_api
                        ON gg.itemid = gi.id
                      JOIN {user} u
                        ON u.id = gg.userid";
+            $from .= "\n                     JOIN {local_rtcsync_user} managed
+                       ON managed.userid = u.id";
             $total = $DB->count_records_sql(
                 "SELECT COUNT(1) {$from} WHERE {$where}",
                 $queryparams
@@ -1846,7 +1906,7 @@ class local_rtcsync_external extends external_api
                         c.id AS course_id,
                         c.idnumber AS course_idnumber,
                         u.id AS user_id,
-                        u.idnumber AS user_idnumber,
+                        managed.idnumber AS user_idnumber,
                         gi.id AS grade_item_id,
                         gi.idnumber AS grade_item_idnumber,
                         gi.itemname AS grade_item_name,

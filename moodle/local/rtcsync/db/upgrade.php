@@ -722,5 +722,27 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         upgrade_plugin_savepoint(true, 2026103101, 'local', 'rtcsync');
     }
 
+    if ($oldversion < 2026110200) {
+        $dbman = $DB->get_manager();
+        $creditowner = new xmldb_table('local_rtcsync_creditowner');
+        $creditowner->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $creditowner->add_field('creditcourseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $creditowner->add_field('parentcourseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $creditowner->add_field('idnumber', XMLDB_TYPE_CHAR, '100', null, XMLDB_NOTNULL);
+        $creditowner->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $creditowner->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $creditowner->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $creditowner->add_key('creditcourse_fk', XMLDB_KEY_FOREIGN_UNIQUE, ['creditcourseid'], 'course', ['id']);
+        $creditowner->add_key('parentcourse_fk', XMLDB_KEY_FOREIGN, ['parentcourseid'], 'course', ['id']);
+        $creditowner->add_index('idnumber_uix', XMLDB_INDEX_UNIQUE, ['idnumber']);
+        $creditowner->add_index('parentcourse_ix', XMLDB_INDEX_NOTUNIQUE, ['parentcourseid']);
+        if (!$dbman->table_exists($creditowner)) {
+            // Existing credits are deliberately not backfilled: category and
+            // labels cannot prove an exact parent course.
+            $dbman->create_table($creditowner);
+        }
+        upgrade_plugin_savepoint(true, 2026110200, 'local', 'rtcsync');
+    }
+
     return true;
 }

@@ -26,6 +26,9 @@ SMS imports only opted-in courses and waits until every selected activity has a
 grade for the student. Turning synchronization off stops future updates and does
 not erase the last formative score already stored in SMS. The RTC backend
 scheduler runs `moodle:import-grades --apply` every five minutes.
+Moodle exports formative grades only for nondeleted local users whose account
+idnumber matches their RTC ownership marker; duplicate stable IDs or markers
+are excluded to avoid assigning one person's grade to an ambiguous identity.
 
 Student profile fields include RTC user program ID, program ID/name/Khmer/code/degree/department, generation ID/label/year range, academic year ID/label, study year, user-program promotion, enrollment status/type, previous enrollment ID, and a JSON snapshot of all RTC enrollments for that student.
 
@@ -106,6 +109,13 @@ The student Released results page uses bidirectional keyset pagination with a ma
 ## RTC User Identity Reconciliation
 
 The canonical Moodle user `idnumber` and `local_rtcsync_user.idnumber` are `rtc-user:<RTC users.id>`. ID cards, names, and email addresses are not stable RTC identity keys. SSO resolves an existing account only through that canonical idnumber or a managed marker with the exact canonical idnumber; it creates new RTC users with the canonical value and marker. A legacy ID-card account is migrated by the sync API only when it receives an explicit Moodle user mapping or already has a marker for the exact stable RTC ID. Duplicate, conflicting, or card/email-only matches fail closed. The plugin relies on the `moodleid` supplied by the sync call and does not independently verify the provenance of the backend mapping. Before migrating an old account without a stable marker, the data owner must confirm the stored RTC-to-Moodle mapping or repair it from authoritative records; do not link it by matching personal details. Released results require the canonical marker. A legacy Moodle idnumber is tolerated only while it uniquely matches the current ID card and its marker already proves the same stable RTC user; changed or duplicate legacy cards remain denied until the account is migrated.
+Stable IDs remain reserved by ownership markers on deleted Moodle accounts. Conflicting or duplicated markers are omitted from user-state and formative-grade reads and deny Released results; the data owner must resolve tombstoned ownership from authoritative records before a replacement account can use that RTC ID.
+
+## RTC Credit Course Ownership
+
+Each newly created `rtc-credit-course:<id>` is bound to the exact parent Moodle subject course supplied by the sync call. Moodle stores that owner and the unchanged credit idnumber in `local_rtcsync_creditowner`; the link remains after the credit course is hidden. Repeated sync and cleanup are allowed only when the stored parent course ID matches exactly. Course category equality is not ownership evidence.
+
+The v2026110200 upgrade creates the ownership table empty and does not backfill legacy credit courses. Sync or cleanup of an unlinked legacy credit fails with a data-owner remediation message. Confirm the exact RTC credit-to-subject mapping from authoritative records before any reviewed repair; do not infer it from category, name, or roster. The additive table can be removed during a rollback only while it is empty. Once ownership rows have been written, retain the table and forward-roll the plugin rather than discarding the ownership record or running older credit mutations that ignore it.
 
 ## Moodle Setup
 

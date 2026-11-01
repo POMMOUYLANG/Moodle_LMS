@@ -853,6 +853,80 @@ final class student_history_test extends \advanced_testcase
         $history->require_current_rtc_student($identity);
     }
 
+    public function test_duplicate_stable_moodle_idnumber_is_denied_for_released_results(): void
+    {
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('duplicate-stable-idnumber');
+        $this->setUser($student['user']);
+        $this->getDataGenerator()->create_user([
+            'idnumber' => (string) $student['user']->idnumber,
+        ]);
+
+        try {
+            (new \local_rtcsync\local\student_history())->require_current_rtc_student(
+                $this->rtcStudentIdentity($student['user'])
+            );
+            $this->fail('Duplicate stable Moodle idnumbers must not authenticate the same RTC identity.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('studenthistorydenied', $exception->errorcode);
+        }
+    }
+
+    public function test_duplicate_stable_managed_user_marker_is_denied_for_released_results(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('duplicate-stable-marker');
+        $this->setUser($student['user']);
+        $other = $this->getDataGenerator()->create_user([
+            'idnumber' => 'rtc-user:' . ((int) $student['user']->id + 1000000),
+        ]);
+        $DB->insert_record('local_rtcsync_user', (object) [
+            'userid' => (int) $other->id,
+            'idnumber' => (string) $student['user']->idnumber,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+
+        try {
+            (new \local_rtcsync\local\student_history())->require_current_rtc_student(
+                $this->rtcStudentIdentity($student['user'])
+            );
+            $this->fail('Duplicate stable managed-user markers must not authenticate the same RTC identity.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('studenthistorydenied', $exception->errorcode);
+        }
+    }
+
+    public function test_deleted_account_marker_still_reserves_stable_identity_for_released_results(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('tombstoned-stable-marker');
+        $this->setUser($student['user']);
+        $other = $this->getDataGenerator()->create_user([
+            'idnumber' => 'rtc-user:' . ((int) $student['user']->id + 1000000),
+        ]);
+        $DB->insert_record('local_rtcsync_user', (object) [
+            'userid' => (int) $other->id,
+            'idnumber' => (string) $student['user']->idnumber,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+        $DB->set_field('user', 'deleted', 1, ['id' => (int) $other->id]);
+
+        try {
+            (new \local_rtcsync\local\student_history())->require_current_rtc_student(
+                $this->rtcStudentIdentity($student['user'])
+            );
+            $this->fail('A deleted account marker must continue to reserve the stable RTC identity.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('studenthistorydenied', $exception->errorcode);
+        }
+    }
+
     public function test_hidden_course_keeps_read_only_history_without_restoring_activity_access(): void
     {
         global $DB;
@@ -1610,6 +1684,35 @@ final class student_history_test extends \advanced_testcase
             'revision' => 20261025000000001,
         ]);
 
+        $stalescope = \local_rtcsync_external::sync_student_delivery_scope([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $student['user']->id,
+            'deliveryids' => [771],
+            'revision' => 20261025000000000,
+        ]);
+        $this->assertSame(0, $stalescope['applied']);
+        $this->assertSame(20261025000000001, $stalescope['revision']);
+        $this->assertSame([772], $stalescope['deliveryids']);
+
+        $stalehistoryclear = \local_rtcsync\local\student_history::sync_marker(
+            (int) $student['user']->id,
+            (int) $course->id,
+            0,
+            'delivery_participation',
+            9711,
+            771,
+            20261025000000000
+        );
+        $this->assertSame(0, $stalehistoryclear['applied']);
+        $this->assertSame(20261025000000001, $stalehistoryclear['scoperevision']);
+        $this->assertTrue($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $student['user']->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9711,
+            'deliveryid' => 771,
+        ]), 'A clear carrying the old scope revision must retain the withdrawn delivery history marker.');
+
         $this->assertFalse($DB->record_exists('groups_members', [
             'groupid' => (int) $previousgroup->id,
             'userid' => (int) $student['user']->id,
@@ -1662,6 +1765,92 @@ final class student_history_test extends \advanced_testcase
             'role_shortname' => 'student',
             'suspend' => 0,
         ]);
+
+        // Repeated current and withdrawn-delivery roster payloads must reuse
+        // their identities and keep history mappings and staged rows unique.
+        foreach ([772, 771, 772, 771] as $deliveryid) {
+            $deliverylabel = $deliveryid === 772 ? 'Current' : 'Previous';
+            \local_rtcsync_external::upsert_class([
+                'idnumber' => 'rtc-delivery:' . $deliveryid,
+                'name' => $deliverylabel . ' delivery roster',
+                'delivery_id' => $deliveryid,
+                'visible' => 1,
+                'userids' => [(int) $student['user']->id],
+                'courseids' => [(int) $course->id],
+                'grouping_idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
+                'grouping_name' => $deliverylabel . ' delivery',
+                'groups' => [[
+                    'idnumber' => 'rtc-delivery-class-group:' . $deliveryid . ':1',
+                    'name' => $deliverylabel . ' delivery group',
+                    'userids' => [(int) $student['user']->id],
+                ]],
+            ]);
+            \local_rtcsync_external::enrol_user([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $student['user']->id,
+                'role_shortname' => 'student',
+                'suspend' => 0,
+            ]);
+        }
+        foreach ([
+            771 => ['grouping' => $previousgrouping, 'group' => $previousgroup],
+            772 => ['grouping' => $currentgrouping, 'group' => $currentgroup],
+        ] as $deliveryid => $records) {
+            $this->assertSame(1, $DB->count_records('groupings', [
+                'courseid' => (int) $course->id,
+                'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
+            ]));
+            $this->assertSame(1, $DB->count_records('groups', [
+                'courseid' => (int) $course->id,
+                'idnumber' => 'rtc-delivery-class-group:' . $deliveryid . ':1',
+            ]));
+            $this->assertSame(1, $DB->count_records('groupings_groups', [
+                'groupingid' => (int) $records['grouping']->id,
+                'groupid' => (int) $records['group']->id,
+            ]));
+            $this->assertSame(1, $DB->count_records('local_rtcsync_deliverymember', [
+                'courseid' => (int) $course->id,
+                'groupid' => (int) $records['group']->id,
+                'userid' => (int) $student['user']->id,
+            ]));
+        }
+        $this->assertSame(1, $DB->count_records('local_rtcsync_deliverycm', [
+            'cmid' => (int) $previousquiz->cmid,
+        ]));
+        $this->assertSame(1, $DB->count_records('local_rtcsync_deliverycm', [
+            'cmid' => (int) $currentquiz->cmid,
+        ]));
+        $this->assertSame(1, $DB->count_records('local_rtcsync_deliverycmhist', [
+            'cmid' => (int) $previousquiz->cmid,
+            'courseid' => (int) $course->id,
+            'deliveryid' => 771,
+        ]));
+        $this->assertSame(1, $DB->count_records('local_rtcsync_deliverycmhist', [
+            'cmid' => (int) $currentquiz->cmid,
+            'courseid' => (int) $course->id,
+            'deliveryid' => 772,
+        ]));
+        $this->assertSame(1, $DB->count_records('local_rtcsync_history', [
+            'userid' => (int) $student['user']->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9711,
+        ]));
+        $this->assertSame(1, $DB->count_records('local_rtcsync_history', [
+            'userid' => (int) $student['user']->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9712,
+        ]));
+        $this->assertFalse($DB->record_exists('groups_members', [
+            'groupid' => (int) $previousgroup->id,
+            'userid' => (int) $student['user']->id,
+        ]), 'Replayed withdrawn-delivery rosters must not restore out-of-scope activity membership.');
+        $this->assertTrue($DB->record_exists('groups_members', [
+            'groupid' => (int) $currentgroup->id,
+            'userid' => (int) $student['user']->id,
+        ]));
+
         try {
             \local_rtcsync\local\delivery_activity_access::require_student_module_access(
                 (int) $course->id,

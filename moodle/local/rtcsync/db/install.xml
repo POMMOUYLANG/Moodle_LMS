@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<XMLDB PATH="local/rtcsync/db" VERSION="2026103100" COMMENT="XMLDB file for RTC Sync">
+<XMLDB PATH="local/rtcsync/db" VERSION="2026110200" COMMENT="XMLDB file for RTC Sync">
   <TABLES>
     <TABLE NAME="local_rtcsync_formcfg" COMMENT="Per-course SMS formative sync configuration">
       <FIELDS>
@@ -248,6 +248,25 @@
       <INDEXES>
         <INDEX NAME="groupuser_uix" UNIQUE="true" FIELDS="groupid,userid"/>
         <INDEX NAME="courseuser_ix" UNIQUE="false" FIELDS="courseid,userid"/>
+      </INDEXES>
+    </TABLE>
+    <TABLE NAME="local_rtcsync_creditowner" COMMENT="Exact parent ownership for RTC credit courses">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="creditcourseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="parentcourseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="idnumber" TYPE="char" LENGTH="100" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+        <KEY NAME="creditcourse_fk" TYPE="foreign-unique" FIELDS="creditcourseid" REFTABLE="course" REFFIELDS="id"/>
+        <KEY NAME="parentcourse_fk" TYPE="foreign" FIELDS="parentcourseid" REFTABLE="course" REFFIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="idnumber_uix" UNIQUE="true" FIELDS="idnumber"/>
+        <INDEX NAME="parentcourse_ix" UNIQUE="false" FIELDS="parentcourseid"/>
       </INDEXES>
     </TABLE>
   </TABLES>

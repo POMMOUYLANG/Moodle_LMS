@@ -278,7 +278,7 @@ final class student_history
     /** Validate live RTC and Moodle identity without requiring a history marker. */
     private function require_current_rtc_student_identity(array $rtcuser): void
     {
-        global $DB, $USER;
+        global $CFG, $DB, $USER;
 
         if (empty($USER->id) || !empty($USER->deleted) || !empty($USER->suspended) || isguestuser()) {
             throw new \moodle_exception('studenthistorydenied', 'local_rtcsync');
@@ -323,13 +323,40 @@ final class student_history
         $moodleemail = \core_text::strtolower(trim((string) ($USER->email ?? '')));
         $moodleidnumber = trim((string) ($USER->idnumber ?? ''));
         $managedidnumber = trim((string) ($manageduser->idnumber ?? ''));
+        // The schema intentionally does not make idnumbers unique. Sync rejects
+        // duplicate mappings when it writes, but manual edits or restored data
+        // can still create them. Never let two Moodle accounts authenticate as
+        // the same stable RTC user.
+        $stableusermatches = $expectedidnumber === '' ? [] : $DB->get_records('user', [
+            'idnumber' => $expectedidnumber,
+            'deleted' => 0,
+            'mnethostid' => (int) $CFG->mnet_localhost_id,
+        ], '', 'id', 0, 2);
+        // Keep deleted-account markers as tombstones: RTC user IDs are stable
+        // and must not authenticate a second Moodle account after deletion.
+        $stablemarkermatches = $expectedidnumber === '' ? [] : $DB->get_records(
+            'local_rtcsync_user',
+            ['idnumber' => $expectedidnumber],
+            '',
+            'userid',
+            0,
+            2
+        );
+        $stableuseridentityvalid = count($stableusermatches) <= 1
+            && (!$stableusermatches || (int) reset($stableusermatches)->id === (int) $USER->id);
+        $stablemarkeridentityvalid = count($stablemarkermatches) === 1
+            && (int) reset($stablemarkermatches)->userid === (int) $USER->id;
         $canonicalidentity = $expectedidnumber !== ''
             && $moodleidnumber === $expectedidnumber
-            && $managedidnumber === $expectedidnumber;
+            && $managedidnumber === $expectedidnumber
+            && $stableuseridentityvalid
+            && $stablemarkeridentityvalid;
         $legacyidentity = $expectedidnumber !== ''
             && $idcard !== ''
             && $moodleidnumber === $idcard
             && $managedidnumber === $expectedidnumber
+            && $stableuseridentityvalid
+            && $stablemarkeridentityvalid
             && $DB->count_records('user', [
                 'idnumber' => $idcard,
                 'deleted' => 0,

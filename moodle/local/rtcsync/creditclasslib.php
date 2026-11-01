@@ -64,7 +64,21 @@ trait local_rtcsync_credit_class_external
 
         $categorycontext = context_coursecat::instance((int) $parentcourse->category);
         require_capability('moodle/course:create', $categorycontext);
-        $existing = $DB->get_record('course', ['idnumber' => $idnumber], '*', IGNORE_MISSING);
+        $existing = self::get_unique_credit_course($idnumber);
+        if ($existing) {
+            self::require_credit_course_owner(
+                (int) $existing->id,
+                (string) $existing->idnumber,
+                $idnumber,
+                (int) $parentcourse->id
+            );
+        } else if (self::get_credit_owner_by_idnumber($idnumber)) {
+            throw new invalid_parameter_exception(
+                'This credit idnumber is reserved by an ownership record whose Moodle course no longer resolves. '
+                . 'Have the LMS data owner review the exact course and parent mapping before retrying.'
+            );
+        }
+
         $record = (object) [
             'fullname' => trim((string) $credit['name']),
             'shortname' => trim((string) $credit['shortname']),
@@ -77,30 +91,47 @@ trait local_rtcsync_credit_class_external
             'numsections' => 1,
         ];
 
-        if ($existing) {
-            $context = context_course::instance((int) $existing->id);
-            self::validate_context($context);
-            require_capability('moodle/course:update', $context);
-            $record->id = (int) $existing->id;
-            update_course($record);
-            $courseid = (int) $existing->id;
-        } else {
-            $saved = create_course($record);
-            $courseid = (int) $saved->id;
-        }
-
         $teachers = self::valid_userids($credit['teacher_userids'] ?? [], 'creditteacher');
         $students = self::valid_userids($credit['student_userids'] ?? [], 'creditstudent');
-        self::reconcile_credit_role(
-            $courseid,
-            (string) $credit['teacher_role_shortname'],
-            $teachers
-        );
-        self::reconcile_credit_role(
-            $courseid,
-            (string) $credit['student_role_shortname'],
-            $students
-        );
+
+        // Course creation/update, the durable owner link, and managed role
+        // reconciliation must commit together.
+        $transaction = $DB->start_delegated_transaction();
+        try {
+            if ($existing) {
+                $context = context_course::instance((int) $existing->id);
+                self::validate_context($context);
+                require_capability('moodle/course:update', $context);
+                $record->id = (int) $existing->id;
+                update_course($record);
+                $courseid = (int) $existing->id;
+            } else {
+                $saved = create_course($record);
+                $courseid = (int) $saved->id;
+                $now = time();
+                $DB->insert_record('local_rtcsync_creditowner', (object) [
+                    'creditcourseid' => $courseid,
+                    'parentcourseid' => (int) $parentcourse->id,
+                    'idnumber' => $idnumber,
+                    'timecreated' => $now,
+                    'timemodified' => $now,
+                ]);
+            }
+
+            self::reconcile_credit_role(
+                $courseid,
+                (string) $credit['teacher_role_shortname'],
+                $teachers
+            );
+            self::reconcile_credit_role(
+                $courseid,
+                (string) $credit['student_role_shortname'],
+                $students
+            );
+            $transaction->allow_commit();
+        } catch (\Throwable $exception) {
+            $transaction->rollback($exception);
+        }
 
         return [
             'id' => $courseid,
@@ -124,6 +155,81 @@ trait local_rtcsync_credit_class_external
         ]);
     }
 
+    /** Resolve a credit course by its non-unique Moodle idnumber without guessing. */
+    private static function get_unique_credit_course(string $idnumber)
+    {
+        global $DB;
+
+        $matches = $DB->get_records('course', ['idnumber' => $idnumber], 'id', '*', 0, 2);
+        if (count($matches) > 1) {
+            throw new invalid_parameter_exception(
+                'Credit course idnumber matches multiple Moodle courses.'
+            );
+        }
+
+        return $matches ? reset($matches) : false;
+    }
+
+    /** Resolve an idnumber reservation without assuming its course row is intact. */
+    private static function get_credit_owner_by_idnumber(string $idnumber)
+    {
+        global $DB;
+
+        $matches = $DB->get_records('local_rtcsync_creditowner', ['idnumber' => $idnumber], 'id', '*', 0, 2);
+        if (count($matches) > 1) {
+            throw new invalid_parameter_exception(
+                'Credit ownership records contain an ambiguous RTC credit idnumber; no changes were made.'
+            );
+        }
+
+        return $matches ? reset($matches) : false;
+    }
+
+    /** Require an explicit exact parent link before changing an existing credit course. */
+    private static function require_credit_course_owner(
+        int $creditcourseid,
+        string $courseidnumber,
+        string $requestedidnumber,
+        int $parentcourseid
+    ): void {
+        global $DB;
+
+        $matches = $DB->get_records(
+            'local_rtcsync_creditowner',
+            ['creditcourseid' => $creditcourseid],
+            'id',
+            '*',
+            0,
+            2
+        );
+        if (!$matches) {
+            throw new invalid_parameter_exception(
+                'This legacy RTC credit course has no verified parent ownership record. '
+                . 'Do not sync or archive it by category; have the LMS data owner verify its exact parent '
+                . 'from authoritative RTC records before retrying.'
+            );
+        }
+        if (count($matches) > 1) {
+            throw new invalid_parameter_exception(
+                'This RTC credit course has ambiguous parent ownership records; no changes were made.'
+            );
+        }
+
+        $owner = reset($matches);
+        if ((string) $owner->idnumber !== $courseidnumber
+                || (string) $owner->idnumber !== $requestedidnumber) {
+            throw new invalid_parameter_exception(
+                'The RTC credit course idnumber no longer matches its ownership record; '
+                . 'have the LMS data owner review the exact course mapping before retrying.'
+            );
+        }
+        if ((int) $owner->parentcourseid !== $parentcourseid) {
+            throw new invalid_parameter_exception(
+                'The RTC credit course belongs to a different parent subject course; no changes were made.'
+            );
+        }
+    }
+
     public static function delete_credit_parameters(): external_function_parameters
     {
         return new external_function_parameters([
@@ -142,7 +248,7 @@ trait local_rtcsync_credit_class_external
 
         $params = self::validate_parameters(self::delete_credit_parameters(), ['credit' => $credit]);
         $credit = $params['credit'];
-        local_rtcsync_require_managed_course(
+        $parentcourse = local_rtcsync_require_managed_course(
             (int) $credit['courseid'],
             ['rtc-subject:']
         );
@@ -169,17 +275,35 @@ trait local_rtcsync_credit_class_external
             throw new invalid_parameter_exception('Credit idnumber must use the rtc-credit-course: prefix.');
         }
 
-        $course = $DB->get_record('course', ['idnumber' => $idnumber], '*', IGNORE_MISSING);
+        $course = self::get_unique_credit_course($idnumber);
         if (!$course) {
+            if (self::get_credit_owner_by_idnumber($idnumber)) {
+                throw new invalid_parameter_exception(
+                    'The RTC credit ownership record still reserves this idnumber but its Moodle course '
+                    . 'does not resolve. Have the LMS data owner review the exact mapping before retrying.'
+                );
+            }
             return ['deleted' => 0, 'courseid' => 0, 'idnumber' => $idnumber];
         }
+        self::require_credit_course_owner(
+            (int) $course->id,
+            (string) $course->idnumber,
+            $idnumber,
+            (int) $parentcourse->id
+        );
 
         $context = context_course::instance((int) $course->id);
         self::validate_context($context);
         require_capability('moodle/course:update', $context);
-        self::reconcile_credit_role((int) $course->id, (string) $credit['teacher_role_shortname'], []);
-        self::reconcile_credit_role((int) $course->id, (string) $credit['student_role_shortname'], []);
-        update_course((object) ['id' => (int) $course->id, 'visible' => 0]);
+        $transaction = $DB->start_delegated_transaction();
+        try {
+            self::reconcile_credit_role((int) $course->id, (string) $credit['teacher_role_shortname'], []);
+            self::reconcile_credit_role((int) $course->id, (string) $credit['student_role_shortname'], []);
+            update_course((object) ['id' => (int) $course->id, 'visible' => 0]);
+            $transaction->allow_commit();
+        } catch (\Throwable $exception) {
+            $transaction->rollback($exception);
+        }
 
         return ['deleted' => 1, 'courseid' => (int) $course->id, 'idnumber' => $idnumber];
     }
