@@ -1563,6 +1563,64 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame(77, (int) $result['deliveryid']);
     }
 
+    public function test_delivery_history_marker_grant_retry_updates_the_same_source_row(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        $course = $this->createManagedCourse();
+        $this->createDeliveryGrouping($course, 77);
+        $user = $this->createManagedUser();
+        $this->assertTrue(\local_rtcsync_external::prepare_delivery_course((int) $course->id)['ready']);
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+
+        $source = [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'historyaccess' => 1,
+            'historysourcetype' => 'delivery_participation',
+            'historysourceid' => 9208,
+            'deliveryid' => 77,
+        ];
+        $first = \local_rtcsync_external::sync_history_marker($source);
+        $initial = $DB->get_record('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9208,
+        ], '*', MUST_EXIST);
+        $DB->set_field('local_rtcsync_history', 'timemodified', time() - 60, ['id' => (int) $initial->id]);
+        $before = $DB->get_record('local_rtcsync_history', ['id' => (int) $initial->id], '*', MUST_EXIST);
+
+        $replay = \local_rtcsync_external::sync_history_marker($source);
+
+        $after = $DB->get_record('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9208,
+        ], '*', MUST_EXIST);
+        $this->assertSame(1, (int) $first['applied']);
+        $this->assertSame(1, (int) $replay['applied']);
+        $this->assertSame((int) $initial->id, (int) $after->id);
+        $this->assertSame((int) $initial->timecreated, (int) $after->timecreated);
+        $this->assertGreaterThan((int) $before->timemodified, (int) $after->timemodified);
+        $this->assertSame(77, (int) $after->deliveryid);
+        $this->assertSame(1, $DB->count_records('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'delivery_participation',
+            'sourceid' => 9208,
+        ]));
+    }
+
     public function test_delivery_history_source_cannot_be_reassigned_to_another_delivery(): void
     {
         global $DB;
