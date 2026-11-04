@@ -266,7 +266,6 @@
       </KEYS>
       <INDEXES>
         <INDEX NAME="idnumber_uix" UNIQUE="true" FIELDS="idnumber"/>
-        <INDEX NAME="parentcourse_ix" UNIQUE="false" FIELDS="parentcourseid"/>
       </INDEXES>
     </TABLE>
   </TABLES>

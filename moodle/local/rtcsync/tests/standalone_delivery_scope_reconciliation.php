@@ -181,11 +181,11 @@ $preflightapi = delivery_scope_contract_region(
     'public static function prepare_delivery_course_returns()'
 );
 delivery_scope_contract_expect(
-    $version !== false && strpos($version, '$plugin->version = 2026103101;') !== false
+    $version !== false && strpos($version, '$plugin->version = 2026110200;') !== false
         && $readme !== false && strpos($readme, '`2026103101`') !== false
         && strpos($externalsource, 'MIN_REVISIONED_HISTORY_SCOPE_VERSION = 2026103101;') !== false
         && strpos($preflightapi, 'MIN_REVISIONED_HISTORY_SCOPE_VERSION') !== false,
-    'the published Backend minimum must match the installed plugin contract version'
+    'the installed plugin revision must remain newer than the unchanged Backend minimum contract threshold'
 );
 
 $installxml = file_get_contents(dirname(__DIR__) . '/db/install.xml');

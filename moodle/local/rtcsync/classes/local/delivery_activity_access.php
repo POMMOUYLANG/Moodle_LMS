@@ -200,8 +200,14 @@ final class delivery_activity_access
                     delivery.deliveryid,
                     delivery.groupingid,
                     delivery.lineagestatus,
+                    delivery.lineagemanifestid,
                     delivery.managedavailability,
-                    deliverygrouping.idnumber AS groupingidnumber
+                    deliverygrouping.idnumber AS groupingidnumber,
+                    (SELECT COUNT(*)
+                       FROM {groupings} deliverygroupingidentity
+                      WHERE deliverygroupingidentity.courseid = cm.course
+                        AND deliverygroupingidentity.idnumber = deliverygrouping.idnumber
+                    ) AS groupingidentitycount
                FROM {course_modules} cm
           LEFT JOIN {local_rtcsync_deliverycm} delivery
                  ON delivery.cmid = cm.id
@@ -351,8 +357,14 @@ final class delivery_activity_access
                     delivery.deliveryid,
                     delivery.groupingid,
                     delivery.lineagestatus,
+                    delivery.lineagemanifestid,
                     delivery.managedavailability,
-                    deliverygrouping.idnumber AS groupingidnumber
+                    deliverygrouping.idnumber AS groupingidnumber,
+                    (SELECT COUNT(*)
+                       FROM {groupings} deliverygroupingidentity
+                      WHERE deliverygroupingidentity.courseid = cm.course
+                        AND deliverygroupingidentity.idnumber = deliverygrouping.idnumber
+                    ) AS groupingidentitycount
                FROM {course_modules} cm
           LEFT JOIN {local_rtcsync_deliverycm} delivery
                  ON delivery.cmid = cm.id
@@ -692,6 +704,10 @@ final class delivery_activity_access
                 return false;
             }
 
+            if (!self::has_unique_delivery_grouping($courseid, (int) $groupingmatch[1])) {
+                return false;
+            }
+
             if (!self::student_delivery_scope_allows($courseid, $userid, (int) $groupingmatch[1])) {
                 return false;
             }
@@ -1009,8 +1025,14 @@ final class delivery_activity_access
                     delivery.deliveryid,
                     delivery.groupingid,
                     delivery.lineagestatus,
+                    delivery.lineagemanifestid,
                     delivery.managedavailability,
-                    deliverygrouping.idnumber AS groupingidnumber
+                    deliverygrouping.idnumber AS groupingidnumber,
+                    (SELECT COUNT(*)
+                       FROM {groupings} deliverygroupingidentity
+                      WHERE deliverygroupingidentity.courseid = cm.course
+                        AND deliverygroupingidentity.idnumber = deliverygrouping.idnumber
+                    ) AS groupingidentitycount
                FROM {course_modules} cm
           LEFT JOIN {local_rtcsync_deliverycm} delivery
                  ON delivery.cmid = cm.id
@@ -1050,7 +1072,8 @@ final class delivery_activity_access
      * Check a live course-module row against its persisted, fail-closed guard.
      *
      * @param \stdClass $module Row with id, courseid, liveavailability,
-     *     livegroupingid, deliveryid, groupingid, managedavailability, and groupingidnumber.
+     *     livegroupingid, deliveryid, groupingid, lineagestatus, lineagemanifestid,
+     *     managedavailability, and groupingidnumber.
      * @param bool $allowsentinel Whether an unmapped module's impossible grouping is acceptable.
      * @return bool True when the mapping and live restriction agree.
      */
@@ -1070,7 +1093,8 @@ final class delivery_activity_access
         }
 
         if ($deliveryid > 0) {
-            if ($lineagestatus !== self::LINEAGE_CURRENT) {
+            if ($lineagestatus !== self::LINEAGE_CURRENT
+                    || trim((string) ($module->lineagemanifestid ?? '')) === '') {
                 return false;
             }
             if (self::has_conflicting_delivery_history_mapping(
@@ -1082,6 +1106,7 @@ final class delivery_activity_access
             }
 
             return $groupingid > 0
+                && (int) ($module->groupingidentitycount ?? 0) === 1
                 && (string) $module->groupingidnumber === 'rtc-delivery-grouping:' . $deliveryid
                 && ((int) $module->livegroupingid <= 0 || (int) $module->livegroupingid === $groupingid);
         }
@@ -1091,6 +1116,34 @@ final class delivery_activity_access
             && $groupingid < 0
             && $lineagestatus !== self::LINEAGE_CURRENT
             && $module->groupingidnumber === null;
+    }
+
+    /** Count matching RTC delivery grouping rows, capped at two for ambiguity checks. */
+    public static function delivery_grouping_count(int $courseid, int $deliveryid): int
+    {
+        global $DB;
+
+        if ($courseid <= 1 || $deliveryid <= 0) {
+            return 0;
+        }
+
+        return count($DB->get_records(
+            'groupings',
+            [
+                'courseid' => $courseid,
+                'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
+            ],
+            'id ASC',
+            'id',
+            0,
+            2
+        ));
+    }
+
+    /** Whether one delivery has exactly one grouping identity in the course. */
+    public static function has_unique_delivery_grouping(int $courseid, int $deliveryid): bool
+    {
+        return self::delivery_grouping_count($courseid, $deliveryid) === 1;
     }
 
     /**
@@ -1175,12 +1228,10 @@ final class delivery_activity_access
         }
 
         foreach ($normalizedids as $deliveryid) {
-            $groupingidnumber = 'rtc-delivery-grouping:' . $deliveryid;
-            if (!$DB->record_exists('groupings', [
-                'courseid' => $courseid,
-                'idnumber' => $groupingidnumber,
-            ])) {
-                throw new \invalid_parameter_exception('Every active delivery must have a grouping in this course.');
+            if (!self::has_unique_delivery_grouping($courseid, $deliveryid)) {
+                throw new \invalid_parameter_exception(
+                    'Every active delivery must have exactly one RTC grouping in this course.'
+                );
             }
         }
 
@@ -1938,6 +1989,7 @@ final class delivery_activity_access
         }
         $trustedcurrent = $existing
             && (int) $existing->lineagestatus === self::LINEAGE_CURRENT;
+        $unresolvedprevioushistory = false;
         if ($trustedcurrent) {
             [$deliveryid, $groupingid] = self::delivery_grouping_for_module(
                 (int) $cm->course,
@@ -1948,13 +2000,20 @@ final class delivery_activity_access
             if ((int) $existing->deliveryid > 0
                     && ((int) $existing->deliveryid !== $deliveryid
                         || (int) $existing->courseid !== (int) $cm->course)) {
-                self::retain_previous_delivery_history_mapping(
+                $historyverified = self::retain_previous_delivery_history_mapping(
                     $cmid,
                     (int) $existing->courseid,
                     (int) $existing->deliveryid,
                     (string) ($existing->lineagemanifestid ?? '')
                 );
-                $existing->lineagestatus = self::LINEAGE_HISTORICAL;
+                if ($historyverified) {
+                    $existing->lineagestatus = self::LINEAGE_HISTORICAL;
+                } else {
+                    // Keep the module locked and eligible for explicit review.
+                    $existing->lineagestatus = self::LINEAGE_UNREVIEWED;
+                    $existing->lineagemanifestid = null;
+                    $unresolvedprevioushistory = true;
+                }
             }
             if ($deliveryid > 0 && self::has_conflicting_delivery_history_mapping(
                 $cmid,
@@ -1966,7 +2025,9 @@ final class delivery_activity_access
                 // its original delivery; a new delivery needs a new course module.
                 $deliveryid = 0;
                 $groupingid = -max(1, $cmid);
-                $existing->lineagestatus = self::LINEAGE_HISTORICAL;
+                if (!$unresolvedprevioushistory) {
+                    $existing->lineagestatus = self::LINEAGE_HISTORICAL;
+                }
             }
         } else {
             // A current grouping identifies only today's delivery. It cannot
@@ -2025,23 +2086,32 @@ final class delivery_activity_access
         return true;
     }
 
-    /** Preserve old result scope without changing the module's current access restriction. */
+    /** Preserve a verified old result scope without changing the module's access restriction. */
     private static function retain_previous_delivery_history_mapping(
         int $cmid,
         int $courseid,
         int $deliveryid,
         string $manifestid = ''
-    ): void
+    ): bool
     {
         global $DB;
 
-        if ($deliveryid <= 0 || !$DB->get_manager()->table_exists('local_rtcsync_deliverycmhist')
-                || $DB->record_exists('local_rtcsync_deliverycmhist', [
+        if ($deliveryid <= 0 || trim($manifestid) === ''
+                || !$DB->get_manager()->table_exists('local_rtcsync_deliverycmhist')) {
+            return false;
+        }
+
+        $conditions = [
             'cmid' => $cmid,
             'courseid' => $courseid,
             'deliveryid' => $deliveryid,
-        ])) {
-            return;
+        ];
+        $history = $DB->get_record('local_rtcsync_deliverycmhist', $conditions, '*', IGNORE_MISSING);
+        if ($history) {
+            // A current mapping does not prove that older attempts belonged to
+            // this delivery. Existing history needs its own reviewed decision.
+            return (int) $history->lineageverified === 1
+                && trim((string) ($history->lineagemanifestid ?? '')) !== '';
         }
 
         $DB->insert_record('local_rtcsync_deliverycmhist', (object) [
@@ -2050,8 +2120,9 @@ final class delivery_activity_access
             'deliveryid' => $deliveryid,
             'timecreated' => time(),
             'lineageverified' => 1,
-            'lineagemanifestid' => $manifestid !== '' ? $manifestid : null,
+            'lineagemanifestid' => $manifestid,
         ]);
+        return true;
     }
 
     /** Whether a module has already belonged to a different delivery. */
@@ -2147,7 +2218,9 @@ final class delivery_activity_access
                 'id' => $groupingid,
                 'courseid' => $courseid,
             ], 'id,idnumber', IGNORE_MISSING);
-            if ($grouping && preg_match('/^rtc-delivery-grouping:([1-9][0-9]*)$/', (string) $grouping->idnumber, $matches)) {
+            if ($grouping
+                    && preg_match('/^rtc-delivery-grouping:([1-9][0-9]*)$/', (string) $grouping->idnumber, $matches)
+                    && self::has_unique_delivery_grouping($courseid, (int) $matches[1])) {
                 return [(int) $matches[1], $groupingid];
             }
             return [0, -max(1, $cmid)];
@@ -2164,7 +2237,9 @@ final class delivery_activity_access
         }
         if (count($matches) === 1) {
             $match = reset($matches);
-            return [(int) $match['deliveryid'], (int) $match['groupingid']];
+            if (self::has_unique_delivery_grouping($courseid, (int) $match['deliveryid'])) {
+                return [(int) $match['deliveryid'], (int) $match['groupingid']];
+            }
         }
 
         // Moodle's grouping condition treats a missing grouping as inaccessible.
@@ -2193,10 +2268,7 @@ final class delivery_activity_access
             $cmid,
             $availability
         );
-        if ($deliveryid <= 0 || count($DB->get_records('groupings', [
-            'courseid' => $courseid,
-            'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
-        ], 'id ASC', 'id')) !== 1) {
+        if ($deliveryid <= 0 || !self::has_unique_delivery_grouping($courseid, $deliveryid)) {
             return [0, -max(1, $cmid)];
         }
         return [$deliveryid, $resolvedgroupingid];

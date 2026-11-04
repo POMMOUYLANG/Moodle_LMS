@@ -735,7 +735,6 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         $creditowner->add_key('creditcourse_fk', XMLDB_KEY_FOREIGN_UNIQUE, ['creditcourseid'], 'course', ['id']);
         $creditowner->add_key('parentcourse_fk', XMLDB_KEY_FOREIGN, ['parentcourseid'], 'course', ['id']);
         $creditowner->add_index('idnumber_uix', XMLDB_INDEX_UNIQUE, ['idnumber']);
-        $creditowner->add_index('parentcourse_ix', XMLDB_INDEX_NOTUNIQUE, ['parentcourseid']);
         if (!$dbman->table_exists($creditowner)) {
             // Existing credits are deliberately not backfilled: category and
             // labels cannot prove an exact parent course.

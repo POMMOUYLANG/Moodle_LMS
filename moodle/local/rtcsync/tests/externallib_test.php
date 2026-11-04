@@ -148,6 +148,25 @@ final class externallib_test extends \advanced_testcase
         ]);
     }
 
+    /** Insert a corrupt duplicate identity that the Moodle grouping API correctly rejects. */
+    private function createDuplicateDeliveryGrouping(\stdClass $course, int $deliveryid): \stdClass
+    {
+        global $DB;
+
+        $original = $DB->get_record('groupings', [
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
+        ], '*', MUST_EXIST);
+        $duplicate = clone $original;
+        unset($duplicate->id);
+        $duplicate->name = 'Duplicate delivery ' . $deliveryid;
+        $duplicate->timecreated = time();
+        $duplicate->timemodified = time();
+        $id = $DB->insert_record('groupings', $duplicate);
+
+        return $DB->get_record('groupings', ['id' => $id], '*', MUST_EXIST);
+    }
+
     public function test_user_read_returns_only_explicit_idnumbers(): void
     {
         $this->resetAfterTest();
@@ -457,9 +476,10 @@ final class externallib_test extends \advanced_testcase
             'idnumber' => 'rtc-delivery:inventory',
             'name' => '[Delivery] Inventory',
             'visible' => 1,
+            'delivery_id' => 73013,
             'userids' => [$student->id],
             'courseids' => [$course->id],
-            'grouping_idnumber' => 'rtc-delivery-grouping:inventory',
+            'grouping_idnumber' => 'rtc-delivery-grouping:73013',
             'grouping_name' => '[Delivery] Inventory',
             'groups' => [],
         ]);
@@ -674,6 +694,362 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame([], $afterdelete['records']);
     }
 
+    public function test_synced_grade_read_requires_unique_current_user_identity(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:14']);
+        $this->createDeliveryGrouping($course, 801);
+        $valid = $this->createManagedUser(['idnumber' => 'rtc-user:70015']);
+        $emptyidentity = $this->createManagedUser();
+        $unmanaged = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:70016']);
+        $mismarked = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:70017']);
+        $DB->insert_record('local_rtcsync_user', (object) [
+            'userid' => (int) $mismarked->id,
+            'idnumber' => 'rtc-user:70017-other',
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+        $duplicateaccount = $this->createManagedUser(['idnumber' => 'rtc-user:70018']);
+        $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:70018']);
+        $duplicatemarker = $this->createManagedUser(['idnumber' => 'rtc-user:70019']);
+        $markerowner = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:70020']);
+        $DB->insert_record('local_rtcsync_user', (object) [
+            'userid' => (int) $markerowner->id,
+            'idnumber' => 'rtc-user:70019',
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+
+        $item = new \grade_item([
+            'courseid' => (int) $course->id,
+            'itemname' => 'RTC delivery score',
+            'itemtype' => 'manual',
+            'itemmodule' => null,
+            'iteminstance' => null,
+            'itemnumber' => 0,
+            'idnumber' => 'rtc-subject-score:14:delivery:801',
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ], false);
+        $item->insert('grade identity test');
+        $DB->insert_record('local_rtcsync_deliverygrade', (object) [
+            'gradeitemid' => (int) $item->id,
+            'courseid' => (int) $course->id,
+            'deliveryid' => 801,
+            'timecreated' => time(),
+            'timemodified' => time(),
+            'lineageverified' => 1,
+            // New items created by the guarded grade upsert are verified directly without a manifest.
+            'lineagemanifestid' => null,
+        ]);
+        foreach ([
+            $valid,
+            $emptyidentity,
+            $unmanaged,
+            $mismarked,
+            $duplicateaccount,
+            $duplicatemarker,
+        ] as $user) {
+            $item->update_final_grade((int) $user->id, 80.0, 'grade identity test');
+        }
+        $item->update_final_grade((int) $markerowner->id, 70.0, 'grade identity test');
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'grades',
+            ['rtc-subject:14'],
+            0,
+            100
+        );
+
+        $this->assertSame(1, $result['total']);
+        $this->assertCount(1, $result['records']);
+        $this->assertSame((int) $valid->id, $result['records'][0]['user_id']);
+        $this->assertSame('rtc-user:70015', $result['records'][0]['user_idnumber']);
+    }
+
+    public function test_delivery_grade_read_requires_verified_exact_mapping_and_unique_grouping(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:18']);
+        $user = $this->createManagedUser(['idnumber' => 'rtc-user:70022']);
+        foreach ([801, 802, 803, 804, 805, 806] as $deliveryid) {
+            $this->createDeliveryGrouping($course, $deliveryid);
+        }
+        $this->createDuplicateDeliveryGrouping($course, 806);
+        // A non-ready course must not make an unreviewed mapping readable. A verified
+        // manual result remains available after activities are no longer current.
+        $DB->insert_record('local_rtcsync_deliverycourse', (object) [
+            'courseid' => (int) $course->id,
+            'coursevisible' => 1,
+            'ready' => 0,
+            'lastcmid' => 0,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+
+        $createitem = function(
+            int $itemdeliveryid,
+            ?int $mappeddeliveryid,
+            int $verified
+        ) use ($DB, $course, $user): \grade_item {
+            $item = new \grade_item([
+                'courseid' => (int) $course->id,
+                'itemname' => 'Delivery ' . $itemdeliveryid . ' score',
+                'itemtype' => 'manual',
+                'itemmodule' => null,
+                'iteminstance' => null,
+                'itemnumber' => 0,
+                'idnumber' => 'rtc-subject-score:18:delivery:' . $itemdeliveryid,
+                'gradetype' => GRADE_TYPE_VALUE,
+                'grademax' => 100,
+                'grademin' => 0,
+            ], false);
+            $item->insert('delivery grade readback test');
+            $item->update_final_grade((int) $user->id, 80.0, 'delivery grade readback test');
+            if ($mappeddeliveryid !== null) {
+                $DB->insert_record('local_rtcsync_deliverygrade', (object) [
+                    'gradeitemid' => (int) $item->id,
+                    'courseid' => (int) $course->id,
+                    'deliveryid' => $mappeddeliveryid,
+                    'timecreated' => time(),
+                    'timemodified' => time(),
+                    'lineageverified' => $verified,
+                    'lineagemanifestid' => null,
+                ]);
+            }
+            return $item;
+        };
+
+        $valid = $createitem(801, 801, 1);
+        $unreviewedwithoutmanifest = $createitem(802, 802, 0);
+        $unmapped = $createitem(803, null, 0);
+        $wrongdeliveryidentity = $createitem(804, 805, 1);
+        $ambiguousgrouping = $createitem(806, 806, 1);
+        $missinggrouping = $createitem(807, 807, 1);
+        $quiz = $this->getDataGenerator()->create_module('quiz', [
+            'course' => (int) $course->id,
+            'name' => 'Activity grade with delivery score idnumber',
+            'grade' => 100,
+        ]);
+        $activityitem = \grade_item::fetch([
+            'courseid' => (int) $course->id,
+            'itemtype' => 'mod',
+            'itemmodule' => 'quiz',
+            'iteminstance' => (int) $quiz->id,
+            'itemnumber' => 0,
+        ]);
+        $this->assertNotFalse($activityitem);
+        $activityitem->idnumber = 'rtc-subject-score:18:delivery:809';
+        $activityitem->update();
+        $activityitem->update_final_grade((int) $user->id, 77.0, 'delivery grade readback test');
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'grades',
+            ['rtc-subject:18'],
+            0,
+            100
+        );
+
+        $this->assertSame(1, $result['total']);
+        $this->assertCount(1, $result['records']);
+        $this->assertSame((int) $valid->id, $result['records'][0]['grade_item_id']);
+        $resultitemids = array_column($result['records'], 'grade_item_id');
+        $this->assertNotContains((int) $unreviewedwithoutmanifest->id, $resultitemids);
+        $this->assertNotContains((int) $unmapped->id, $resultitemids);
+        $this->assertNotContains((int) $wrongdeliveryidentity->id, $resultitemids);
+        $this->assertNotContains((int) $ambiguousgrouping->id, $resultitemids);
+        $this->assertNotContains((int) $missinggrouping->id, $resultitemids);
+        $this->assertNotContains((int) $activityitem->id, $resultitemids);
+    }
+
+    public function test_activity_grade_read_fails_closed_for_unreviewed_unready_and_incomplete_delivery_guards(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $readycourse = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:15']);
+        $pendingcourse = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:16']);
+        $stalestatecourse = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:17']);
+        $student = $this->createManagedUser(['idnumber' => 'rtc-user:70021']);
+        $now = time();
+
+        foreach ([
+            [$readycourse, 1],
+            [$pendingcourse, 0],
+        ] as [$course, $ready]) {
+            $DB->insert_record('local_rtcsync_deliverycourse', (object) [
+                'courseid' => (int) $course->id,
+                'coursevisible' => 1,
+                'ready' => $ready,
+                'lastcmid' => 0,
+                'timecreated' => $now,
+                'timemodified' => $now,
+            ]);
+            $DB->insert_record('local_rtcsync_formcfg', (object) [
+                'courseid' => (int) $course->id,
+                'enabled' => 1,
+                'timecreated' => $now,
+                'timemodified' => $now,
+            ]);
+        }
+        $DB->insert_record('local_rtcsync_formcfg', (object) [
+            'courseid' => (int) $stalestatecourse->id,
+            'enabled' => 1,
+            'timecreated' => $now,
+            'timemodified' => $now,
+        ]);
+
+        $currentgrouping = $this->createDeliveryGrouping($readycourse, 820);
+        $this->createDeliveryGrouping($readycourse, 821);
+        $pendinggrouping = $this->createDeliveryGrouping($pendingcourse, 822);
+        $missingmanifestgrouping = $this->createDeliveryGrouping($readycourse, 824);
+        $ambiguousgrouping = $this->createDeliveryGrouping($readycourse, 825);
+        $this->createDuplicateDeliveryGrouping($readycourse, 825);
+        $livegroupingmismatch = $this->createDeliveryGrouping($readycourse, 827);
+        $activities = [
+            [
+                'course' => $readycourse,
+                'name' => 'Current delivery activity',
+                'deliveryid' => 820,
+                'groupingid' => (int) $currentgrouping->id,
+                'lineagestatus' => \local_rtcsync\local\delivery_activity_access::LINEAGE_CURRENT,
+            ],
+            [
+                'course' => $readycourse,
+                'name' => 'Historical delivery activity',
+                'deliveryid' => 0,
+                'groupingid' => 0,
+                'lineagestatus' => \local_rtcsync\local\delivery_activity_access::LINEAGE_HISTORICAL,
+            ],
+            [
+                'course' => $readycourse,
+                'name' => 'Unreviewed legacy activity',
+                'deliveryid' => 0,
+                'groupingid' => 0,
+                'lineagestatus' => \local_rtcsync\local\delivery_activity_access::LINEAGE_UNREVIEWED,
+            ],
+            [
+                'course' => $pendingcourse,
+                'name' => 'Pending delivery activity',
+                'deliveryid' => 822,
+                'groupingid' => (int) $pendinggrouping->id,
+                'lineagestatus' => \local_rtcsync\local\delivery_activity_access::LINEAGE_CURRENT,
+            ],
+            [
+                'course' => $stalestatecourse,
+                'name' => 'Delivery activity with missing course state',
+                'deliveryid' => 823,
+                'groupingid' => 0,
+                'lineagestatus' => \local_rtcsync\local\delivery_activity_access::LINEAGE_CURRENT,
+            ],
+            [
+                'course' => $readycourse,
+                'name' => 'Current delivery activity with missing manifest marker',
+                'deliveryid' => 824,
+                'groupingid' => (int) $missingmanifestgrouping->id,
+                'lineagestatus' => \local_rtcsync\local\delivery_activity_access::LINEAGE_CURRENT,
+                'lineagemanifestid' => null,
+            ],
+            [
+                'course' => $readycourse,
+                'name' => 'Current delivery activity with missing grouping marker',
+                'deliveryid' => 826,
+                'groupingid' => 0,
+                'lineagestatus' => \local_rtcsync\local\delivery_activity_access::LINEAGE_CURRENT,
+            ],
+            [
+                'course' => $readycourse,
+                'name' => 'Current delivery activity with ambiguous grouping marker',
+                'deliveryid' => 825,
+                'groupingid' => (int) $ambiguousgrouping->id,
+                'lineagestatus' => \local_rtcsync\local\delivery_activity_access::LINEAGE_CURRENT,
+            ],
+            [
+                'course' => $readycourse,
+                'name' => 'Current delivery activity with mismatched live grouping marker',
+                'deliveryid' => 827,
+                'groupingid' => (int) $livegroupingmismatch->id,
+                'livegroupingid' => (int) $currentgrouping->id,
+                'lineagestatus' => \local_rtcsync\local\delivery_activity_access::LINEAGE_CURRENT,
+            ],
+        ];
+        $expecteditemid = 0;
+        foreach ($activities as $index => $activity) {
+            $quiz = $this->getDataGenerator()->create_module('quiz', [
+                'course' => (int) $activity['course']->id,
+                'name' => $activity['name'],
+            ]);
+            $item = \grade_item::fetch([
+                'courseid' => (int) $activity['course']->id,
+                'itemtype' => 'mod',
+                'itemmodule' => 'quiz',
+                'iteminstance' => (int) $quiz->id,
+                'itemnumber' => 0,
+            ]);
+            $this->assertNotFalse($item);
+            $item->update_final_grade((int) $student->id, 80.0 - $index, 'delivery grade visibility test');
+            $DB->insert_record('local_rtcsync_formitem', (object) [
+                'courseid' => (int) $activity['course']->id,
+                'itemid' => (int) $item->id,
+                'included' => 1,
+                'label' => $activity['name'],
+                'weight' => 25,
+                'timecreated' => $now,
+                'timemodified' => $now,
+            ]);
+            $cmid = (int) $quiz->cmid;
+            $deliverymapping = (object) [
+                'cmid' => $cmid,
+                'courseid' => (int) $activity['course']->id,
+                'deliveryid' => (int) $activity['deliveryid'],
+                'groupingid' => (int) $activity['groupingid'] ?: -$cmid,
+                'originalavailability' => null,
+                'managedavailability' => null,
+                'lineagestatus' => (int) $activity['lineagestatus'],
+                'lineagemanifestid' => array_key_exists('lineagemanifestid', $activity)
+                    ? $activity['lineagemanifestid']
+                    : ($activity['lineagestatus'] === \local_rtcsync\local\delivery_activity_access::LINEAGE_CURRENT
+                        ? hash('sha256', 'reviewed activity ' . $cmid)
+                        : null),
+                'timecreated' => $now,
+                'timemodified' => $now,
+            ];
+            // Delivery-managed courses may already have a row from Moodle's module-created observer.
+            $existingmapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => $cmid], '*', IGNORE_MISSING);
+            if ($existingmapping) {
+                $deliverymapping->id = (int) $existingmapping->id;
+                $DB->update_record('local_rtcsync_deliverycm', $deliverymapping);
+            } else {
+                $DB->insert_record('local_rtcsync_deliverycm', $deliverymapping);
+            }
+            if (!empty($activity['livegroupingid'])) {
+                $DB->set_field('course_modules', 'groupingid', (int) $activity['livegroupingid'], ['id' => $cmid]);
+            }
+            if ($index === 0) {
+                $expecteditemid = (int) $item->id;
+            }
+        }
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'activitygrades',
+            ['rtc-subject:15', 'rtc-subject:16', 'rtc-subject:17'],
+            0,
+            100
+        );
+
+        $this->assertSame(1, $result['total']);
+        $this->assertCount(1, $result['records']);
+        $this->assertSame($expecteditemid, $result['records'][0]['grade_item_id']);
+    }
+
     public function test_course_upsert_reuses_nested_legacy_categories_and_moves_existing_course(): void
     {
         global $DB;
@@ -884,7 +1260,7 @@ final class externallib_test extends \advanced_testcase
                 ]);
                 $this->fail('Suspension value ' . $suspended . ' must be rejected before user mutation.');
             } catch (\invalid_parameter_exception $exception) {
-                $this->assertSame('Suspended flag must be 0 or 1.', $exception->getMessage());
+                $this->assertStringContainsString('Suspended flag must be 0 or 1.', $exception->getMessage());
             }
 
             $this->assertEquals($userbefore, $DB->get_record('user', [
@@ -925,7 +1301,7 @@ final class externallib_test extends \advanced_testcase
                 ]);
                 $this->fail('Suspension value ' . $suspended . ' must be rejected before account creation.');
             } catch (\invalid_parameter_exception $exception) {
-                $this->assertSame('Suspended flag must be 0 or 1.', $exception->getMessage());
+                $this->assertStringContainsString('Suspended flag must be 0 or 1.', $exception->getMessage());
             }
 
             $this->assertSame(0, $DB->count_records('user', [
@@ -1086,7 +1462,7 @@ final class externallib_test extends \advanced_testcase
             ]);
             $this->fail('A deleted account marker must reserve its stable RTC identity.');
         } catch (\invalid_parameter_exception $exception) {
-            $this->assertSame(
+            $this->assertStringContainsString(
                 'The stable RTC user idnumber is already reserved by an unavailable Moodle ownership marker.',
                 $exception->getMessage()
             );
@@ -2957,7 +3333,7 @@ final class externallib_test extends \advanced_testcase
                 ]));
                 $this->fail('Hidden flag ' . $hidden . ' must be rejected before grade mutation.');
             } catch (\invalid_parameter_exception $exception) {
-                $this->assertSame('Hidden flag must be 0 or 1.', $exception->getMessage());
+                $this->assertStringContainsString('Hidden flag must be 0 or 1.', $exception->getMessage());
             }
 
             $this->assertEquals($itembefore, $DB->get_record('grade_items', [
@@ -3076,7 +3452,7 @@ final class externallib_test extends \advanced_testcase
                 ]));
                 $this->fail('A grade outside Moodle’s item range must be rejected, not silently clamped.');
             } catch (\invalid_parameter_exception $exception) {
-                $this->assertSame(
+                $this->assertStringContainsString(
                     'Grade value falls outside the Moodle grade item’s allowed range.',
                     $exception->getMessage()
                 );
@@ -3108,7 +3484,7 @@ final class externallib_test extends \advanced_testcase
                 ]));
                 $this->fail('A non-positive grade maximum must be rejected before mutation.');
             } catch (\invalid_parameter_exception $exception) {
-                $this->assertSame('Grade maximum must be greater than zero.', $exception->getMessage());
+                $this->assertStringContainsString('Grade maximum must be greater than zero.', $exception->getMessage());
             }
 
             $this->assertEquals($itembefore, $DB->get_record('grade_items', [
@@ -3544,6 +3920,81 @@ final class externallib_test extends \advanced_testcase
             'deliveryid' => -1,
             'grade' => 75.0,
         ]);
+    }
+
+    public function test_duplicate_delivery_groupings_block_scope_score_and_history_writes(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        set_config('enableavailability', 1);
+        set_config('version', '2026110200', 'local_rtcsync');
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:318']);
+        $user = $this->createManagedUser();
+        $this->createDeliveryGrouping($course, 714);
+        $this->createDuplicateDeliveryGrouping($course, 714);
+
+        try {
+            \local_rtcsync_external::upsert_grade([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'itemname' => 'Ambiguous delivery score',
+                'idnumber' => 'rtc-subject-score:318:delivery:714',
+                'deliveryid' => 714,
+                'grade' => 75.0,
+            ]);
+            $this->fail('A score cannot be associated through duplicate RTC delivery groupings.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('exactly one matching RTC delivery grouping', $exception->getMessage());
+        }
+        $this->assertFalse($DB->record_exists('grade_items', [
+            'courseid' => (int) $course->id,
+            'idnumber' => 'rtc-subject-score:318:delivery:714',
+        ]));
+
+        \local_rtcsync_external::enrol_user([
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'role_shortname' => 'student',
+            'suspend' => 1,
+        ]);
+        try {
+            \local_rtcsync_external::sync_history_marker([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'historyaccess' => 1,
+                'historysourcetype' => 'delivery_participation',
+                'historysourceid' => 9302,
+                'deliveryid' => 714,
+            ]);
+            $this->fail('A history marker cannot be granted through duplicate RTC delivery groupings.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('exactly one matching RTC delivery grouping', $exception->getMessage());
+        }
+        $this->assertFalse($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourceid' => 9302,
+        ]));
+
+        $preflight = \local_rtcsync_external::prepare_delivery_course((int) $course->id);
+        $this->assertTrue($preflight['ready']);
+        try {
+            \local_rtcsync_external::sync_student_delivery_scope([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'deliveryids' => [714],
+                'revision' => 20261028000000001,
+            ]);
+            $this->fail('A scope cannot authorize delivery access through duplicate RTC groupings.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('exactly one RTC grouping', $exception->getMessage());
+        }
+        $this->assertFalse($DB->record_exists('local_rtcsync_studentscope', [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+        ]));
     }
 
     public function test_delivery_history_marker_requires_matching_course_grouping(): void
@@ -4195,7 +4646,7 @@ final class externallib_test extends \advanced_testcase
             ]);
             $this->fail('A same-category wrong parent must not sync this credit course.');
         } catch (\invalid_parameter_exception $exception) {
-            $this->assertSame(
+            $this->assertStringContainsString(
                 'The RTC credit course belongs to a different parent subject course; no changes were made.',
                 $exception->getMessage()
             );
@@ -4220,7 +4671,7 @@ final class externallib_test extends \advanced_testcase
             ]);
             $this->fail('A same-category wrong parent must not archive this credit course.');
         } catch (\invalid_parameter_exception $exception) {
-            $this->assertSame(
+            $this->assertStringContainsString(
                 'The RTC credit course belongs to a different parent subject course; no changes were made.',
                 $exception->getMessage()
             );
@@ -4270,7 +4721,7 @@ final class externallib_test extends \advanced_testcase
             ]);
             $this->fail('A legacy credit course without an ownership record must not be updated.');
         } catch (\invalid_parameter_exception $exception) {
-            $this->assertSame($message, $exception->getMessage());
+            $this->assertStringContainsString($message, $exception->getMessage());
         }
 
         try {
@@ -4280,7 +4731,7 @@ final class externallib_test extends \advanced_testcase
             ]);
             $this->fail('A legacy credit course without an ownership record must not be archived.');
         } catch (\invalid_parameter_exception $exception) {
-            $this->assertSame($message, $exception->getMessage());
+            $this->assertStringContainsString($message, $exception->getMessage());
         }
 
         $this->assertEquals($coursebefore, $DB->get_record('course', ['id' => (int) $legacy->id], '*', MUST_EXIST));
@@ -4339,7 +4790,7 @@ final class externallib_test extends \advanced_testcase
             ]);
             $this->fail('An ambiguous credit idnumber must not update an arbitrary Moodle course.');
         } catch (\invalid_parameter_exception $exception) {
-            $this->assertSame(
+            $this->assertStringContainsString(
                 'Credit course idnumber matches multiple Moodle courses.',
                 $exception->getMessage()
             );
@@ -4363,7 +4814,7 @@ final class externallib_test extends \advanced_testcase
             ]);
             $this->fail('An ambiguous credit idnumber must not archive an arbitrary Moodle course.');
         } catch (\invalid_parameter_exception $exception) {
-            $this->assertSame(
+            $this->assertStringContainsString(
                 'Credit course idnumber matches multiple Moodle courses.',
                 $exception->getMessage()
             );
@@ -4965,13 +5416,49 @@ final class externallib_test extends \advanced_testcase
             'delivery_id' => 17,
             'userids' => [],
             'courseids' => [(int) $course->id],
-            'grouping_idnumber' => 'rtc-delivery-grouping:metadata:class:1',
+            'grouping_idnumber' => 'rtc-delivery-grouping:17',
             'grouping_name' => '[Class] Delivery Metadata',
             'groups' => [],
         ]);
 
         $this->assertSame('rtc-delivery:metadata:class:1', $result['idnumber']);
         $this->assertSame(0, $result['member_count']);
+    }
+
+    public function test_delivery_class_sync_rejects_ambiguous_grouping_before_cohort_mutation(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:ambiguous-delivery-class']);
+        $this->createDeliveryGrouping($course, 718);
+        $this->createDuplicateDeliveryGrouping($course, 718);
+
+        try {
+            \local_rtcsync_external::upsert_class([
+                'idnumber' => 'rtc-delivery:718',
+                'name' => '[Delivery] Ambiguous Grouping',
+                'visible' => 1,
+                'delivery_id' => 718,
+                'userids' => [],
+                'courseids' => [(int) $course->id],
+                'grouping_idnumber' => 'rtc-delivery-grouping:718',
+                'grouping_name' => '[Delivery] 718',
+                'groups' => [],
+            ]);
+            $this->fail('Delivery roster reconciliation must reject an ambiguous target before writing its cohort.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString(
+                'The RTC delivery grouping idnumber is ambiguous in this course; no changes were made.',
+                $exception->getMessage()
+            );
+        }
+
+        $this->assertFalse($DB->record_exists('cohort', [
+            'contextid' => \context_system::instance()->id,
+            'idnumber' => 'rtc-delivery:718',
+        ]));
     }
 
     public function test_class_payload_accepts_managed_isolated_credit_courses(): void

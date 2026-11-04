@@ -42,10 +42,44 @@ $excluded = [
     '.phpunit.result.cache',
     '.phpunit.cache',
 ];
+$isphpunit = ($arguments[0] ?? null) === 'vendor/bin/phpunit';
+$testsuffixindex = array_search('--test-suffix', $arguments, true);
+$isrtcsyncphpunit = $isphpunit
+    && in_array('local/rtcsync/tests', $arguments, true)
+    && $testsuffixindex !== false
+    && ($arguments[$testsuffixindex + 1] ?? null) === '_test.php';
+
+if ($isphpunit) {
+    $valueoptions = ['--bootstrap', '--configuration', '-c', '--filter', '--test-suffix', '--testsuite'];
+    $skipoptionvalue = false;
+    foreach (array_slice($arguments, 1) as $argument) {
+        if ($skipoptionvalue) {
+            $skipoptionvalue = false;
+            continue;
+        }
+        if (in_array($argument, $valueoptions, true)) {
+            $skipoptionvalue = true;
+            continue;
+        }
+
+        $normalizedargument = str_replace('\\', '/', $argument);
+        if (preg_match(
+            '~^local/rtcsync/tests/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+_test\\.php$~D',
+            $normalizedargument
+        ) === 1) {
+            // PHPUnit can target one test file directly without a test-suffix option.
+            $isrtcsyncphpunit = true;
+            break;
+        }
+    }
+}
+
 $sourceentries = new FilesystemIterator($source, FilesystemIterator::SKIP_DOTS);
 foreach ($sourceentries as $entry) {
     $name = $entry->getFilename();
-    if (in_array($name, $excluded, true) || $name === '.git') {
+    // The selected RTC Sync PHPUnit suite does not load the separate web document root.
+    // Its only public/ reference is an un-suffixed standalone script excluded by PHPUnit.
+    if (in_array($name, $excluded, true) || $name === '.git' || ($isrtcsyncphpunit && $name === 'public')) {
         continue;
     }
 

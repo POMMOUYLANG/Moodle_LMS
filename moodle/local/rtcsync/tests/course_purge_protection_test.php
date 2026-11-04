@@ -182,6 +182,16 @@ final class course_purge_protection_test extends advanced_testcase
         $historypage = $this->getDataGenerator()->create_module('page', ['course' => $course->id]);
         $this->addUnresolvedHistory($course, (int) $historypage->cmid);
         $unrelatedpage = $this->getDataGenerator()->create_module('page', ['course' => $course->id]);
+        // Module creation in a managed course adds an unreviewed guard row. Remove it here so
+        // this fixture represents an activity with no direct delivery mapping or history.
+        $unrelatedmapping = $DB->get_record('local_rtcsync_deliverycm', [
+            'cmid' => (int) $unrelatedpage->cmid,
+        ], '*', MUST_EXIST);
+        $this->assertSame(
+            \local_rtcsync\local\delivery_activity_access::LINEAGE_UNREVIEWED,
+            (int) $unrelatedmapping->lineagestatus
+        );
+        $DB->delete_records('local_rtcsync_deliverycm', ['id' => (int) $unrelatedmapping->id]);
         $this->redirectPurgeHookToRtcSync();
 
         course_delete_module((int) $unrelatedpage->cmid);

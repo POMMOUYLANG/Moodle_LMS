@@ -535,7 +535,8 @@ trait local_rtcsync_credit_class_external
         self::validate_delivery_group_ownership(
             $class['courseids'],
             $groupingidnumber,
-            $class['groups']
+            $class['groups'],
+            (int) $class['visible'] === 1
         );
 
         $cohort = $DB->get_record('cohort', [
@@ -726,15 +727,30 @@ trait local_rtcsync_credit_class_external
     private static function validate_delivery_group_ownership(
         array $courseids,
         string $groupingidnumber,
-        array $groups
+        array $groups,
+        bool $visible
     ): void {
         global $DB;
 
-        if (!str_starts_with($groupingidnumber, 'rtc-delivery-grouping:')) {
+        // A cancellation ignores the submitted group snapshot and empties every
+        // retained shell, so ambiguity must not prevent safe membership cleanup.
+        if (!$visible || !str_starts_with($groupingidnumber, 'rtc-delivery-grouping:')) {
             return;
         }
 
+        if (preg_match('/^rtc-delivery-grouping:([1-9][0-9]*)$/', $groupingidnumber, $matches) !== 1) {
+            throw new invalid_parameter_exception('Delivery grouping idnumber must contain one positive delivery ID.');
+        }
+
         foreach ($courseids as $courseid) {
+            if (\local_rtcsync\local\delivery_activity_access::delivery_grouping_count(
+                (int) $courseid,
+                (int) $matches[1]
+            ) > 1) {
+                throw new invalid_parameter_exception(
+                    'The RTC delivery grouping idnumber is ambiguous in this course; no changes were made.'
+                );
+            }
             $groupingid = (int) $DB->get_field('groupings', 'id', [
                 'courseid' => $courseid,
                 'idnumber' => $groupingidnumber,

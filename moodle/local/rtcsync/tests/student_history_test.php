@@ -454,6 +454,69 @@ final class student_history_test extends \advanced_testcase
         $this->assertNotContains('Unresolved activity grade', array_column($results['results'], 'item'));
     }
 
+    public function test_delivery_grouping_changes_do_not_expire_released_grades(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $student = $this->createHistoryStudent('duplicate-delivery-grouping');
+        $deliveryid = $this->historyDeliveryId($student['course']);
+        $this->createQuizGrade(
+            $student['course'],
+            $student['user'],
+            'Exact activity delivery result',
+            84.0
+        );
+        $manualitem = new \grade_item([
+            'courseid' => (int) $student['course']->id,
+            'itemname' => 'Exact manual delivery result',
+            'itemtype' => 'manual',
+            'itemmodule' => null,
+            'iteminstance' => null,
+            'itemnumber' => 0,
+            'idnumber' => 'rtc-subject-score:manual:delivery:' . $deliveryid,
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ], false);
+        $manualitem->insert('student-history-test');
+        $manualitem->update_final_grade((int) $student['user']->id, 76.0, 'student-history-test');
+        $this->mapHistoryGradeItem($student['course'], $manualitem, $deliveryid);
+
+        $this->setUser($student['user']);
+        $history = new \local_rtcsync\local\student_history();
+        $before = $history->visible_results()['results'];
+        $this->assertCount(2, $before);
+        $this->assertContains('Exact activity delivery result', array_column($before, 'item'));
+        $this->assertContains('Exact manual delivery result', array_column($before, 'item'));
+        $expecteditems = array_column($before, 'item');
+
+        // Simulate a duplicate legacy row; Moodle's grouping API rejects creating one.
+        $originalgrouping = $DB->get_record('groupings', [
+            'courseid' => (int) $student['course']->id,
+            'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
+        ], '*', MUST_EXIST);
+        $duplicategrouping = clone $originalgrouping;
+        unset($duplicategrouping->id);
+        $duplicategrouping->name = 'Duplicate delivery identity';
+        $duplicategrouping->timecreated = time();
+        $duplicategrouping->timemodified = time();
+        $duplicateid = (int) $DB->insert_record('groupings', $duplicategrouping);
+        $this->assertSame(
+            $expecteditems,
+            array_column($history->visible_results()['results'], 'item'),
+            'A duplicate live grouping identity must not expire verified released results.'
+        );
+
+        groups_delete_grouping((int) $originalgrouping->id);
+        groups_delete_grouping($duplicateid);
+        $this->assertSame(
+            $expecteditems,
+            array_column($history->visible_results()['results'], 'item'),
+            'Deleting mutable activity groupings must not expire verified released results.'
+        );
+    }
+
     public function test_grade_surface_revalidation_uses_fresh_active_rtc_identity(): void
     {
         global $DB, $SESSION;
@@ -604,6 +667,7 @@ final class student_history_test extends \advanced_testcase
     {
         $this->resetAfterTest();
         $student = $this->createHistoryStudent('cursor-pagination');
+        $otherstudent = $this->createHistoryStudent('cursor-other-student');
 
         for ($index = 1; $index <= \local_rtcsync\local\student_history::PAGE_SIZE + 1; $index++) {
             $itemrecord = $this->getDataGenerator()->create_grade_item([
@@ -645,6 +709,42 @@ final class student_history_test extends \advanced_testcase
         $this->assertSame(
             array_column($firstpage['results'], 'item'),
             array_column($previouspage['results'], 'item')
+        );
+
+        $otheritemrecord = $this->getDataGenerator()->create_grade_item([
+            'courseid' => (int) $otherstudent['course']->id,
+            'itemname' => 'Other student released result',
+            'itemtype' => 'manual',
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ]);
+        $otheritem = \grade_item::fetch(['id' => (int) $otheritemrecord->id]);
+        $this->assertNotFalse($otheritem);
+        $this->mapHistoryGradeItem(
+            $otherstudent['course'],
+            $otheritem,
+            $this->historyDeliveryId($otherstudent['course'])
+        );
+        $this->getDataGenerator()->create_grade_grade([
+            'itemid' => (int) $otheritem->id,
+            'userid' => (int) $otherstudent['user']->id,
+            'finalgrade' => 91.0,
+        ]);
+
+        $this->setUser($otherstudent['user']);
+        $otherpage = $history->visible_results();
+        $this->assertSame(['Other student released result'], array_column($otherpage['results'], 'item'));
+        try {
+            $history->visible_results((string) $firstpage['nextcursor']);
+            $this->fail('A history cursor issued to another student must not be reusable.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('Invalid student history cursor.', $exception->getMessage());
+        }
+        $this->assertSame(
+            ['Other student released result'],
+            array_column($history->visible_results()['results'], 'item'),
+            'Rejecting another student’s cursor must leave this student’s released history available.'
         );
     }
 
@@ -1353,6 +1453,7 @@ final class student_history_test extends \advanced_testcase
         ]);
         quiz_add_quiz_question((int) $question->id, $quiz);
         $quizsettings = \mod_quiz\quiz_settings::create((int) $quiz->id, (int) $student['user']->id);
+        $quizsettings->get_grade_calculator()->recompute_quiz_sumgrades();
         $attempt = quiz_prepare_and_start_new_attempt($quizsettings, 1, null, false, [], [], (int) $student['user']->id);
 
         \local_rtcsync\local\student_history::sync_marker(
@@ -1825,7 +1926,8 @@ final class student_history_test extends \advanced_testcase
             'courseid' => (int) $course->id,
             'deliveryid' => 771,
         ]));
-        $this->assertSame(1, $DB->count_records('local_rtcsync_deliverycmhist', [
+        // Current lineage lives in deliverycm; deliverycmhist records historical decisions.
+        $this->assertSame(0, $DB->count_records('local_rtcsync_deliverycmhist', [
             'cmid' => (int) $currentquiz->cmid,
             'courseid' => (int) $course->id,
             'deliveryid' => 772,

@@ -36,8 +36,10 @@ final class upgrade_test extends \advanced_testcase
         $this->assertNotNull($parentcoursekey);
         $this->assertSame(XMLDB_KEY_FOREIGN, $parentcoursekey->getType());
         $this->assertSame(['parentcourseid'], $parentcoursekey->getFields());
+        $this->assertSame('course', $parentcoursekey->getRefTable());
+        $this->assertSame(['id'], $parentcoursekey->getRefFields());
         $this->assertNotNull($creditowner->getIndex('idnumber_uix'));
-        $this->assertNotNull($creditowner->getIndex('parentcourse_ix'));
+        $this->assertNull($creditowner->getIndex('parentcourse_ix'));
         $expected = [
             ['local_rtcsync_deliverycm', 'cm_fk', ['cmid'], 'cm_uix'],
             ['local_rtcsync_deliverygrade', 'gradeitem_fk', ['gradeitemid'], 'gradeitem_uix'],
@@ -119,6 +121,14 @@ final class upgrade_test extends \advanced_testcase
         $this->assertTrue(xmldb_local_rtcsync_upgrade(2026103101));
 
         $this->assertTrue($dbman->table_exists($creditowner));
+        foreach (['id', 'creditcourseid', 'parentcourseid', 'idnumber', 'timecreated', 'timemodified'] as $fieldname) {
+            $this->assertTrue($dbman->field_exists($creditowner, new \xmldb_field($fieldname)), $fieldname);
+        }
+        $this->assertSame(1, $this->count_indexes_with_columns('local_rtcsync_creditowner', ['creditcourseid'], true));
+        $this->assertSame(1, $this->count_indexes_with_columns('local_rtcsync_creditowner', ['idnumber'], true));
+        // MySQL's XMLDB generator represents the parent FK with one backing index,
+        // which also serves parentcourse lookups; a duplicate explicit index is invalid XMLDB.
+        $this->assertSame(1, $this->count_indexes_with_columns('local_rtcsync_creditowner', ['parentcourseid'], false));
         $this->assertSame('2026110200', (string) get_config('local_rtcsync', 'version'));
         $this->assertSame(0, $DB->count_records('local_rtcsync_creditowner'));
         $this->assertEquals(
@@ -501,6 +511,234 @@ final class upgrade_test extends \advanced_testcase
         }
         foreach ($deliverymappingindexes as [$tablename, $field]) {
             $this->assertSame(1, $this->count_indexes_with_columns($tablename, [$field], true), $tablename);
+        }
+    }
+
+    public function test_upgrade_from_tracked_v2026102700_fixture_preserves_data_and_installs_latest_schema(): void
+    {
+        global $CFG, $DB;
+
+        $this->assertSame('phpunit-db', (string) $CFG->dbhost);
+        $this->assertSame('rtc_moodle_phpunit', (string) $CFG->dbname);
+        $this->resetAfterTest();
+
+        require_once($CFG->libdir . '/upgradelib.php');
+        require_once($CFG->dirroot . '/local/rtcsync/db/upgrade.php');
+
+        $fixturepath = $CFG->dirroot . '/local/rtcsync/tests/fixtures/upgrade-v2026102700-install.xml';
+        $datafixturepath = $CFG->dirroot . '/local/rtcsync/tests/fixtures/upgrade-v2026102700.json';
+        $latestinstallpath = $CFG->dirroot . '/local/rtcsync/db/install.xml';
+        $historicfile = new \xmldb_file($fixturepath);
+        $latestfile = new \xmldb_file($latestinstallpath);
+        $this->assertTrue($historicfile->loadXMLStructure());
+        $this->assertTrue($latestfile->loadXMLStructure());
+        $historicstructure = $historicfile->getStructure();
+        $lateststructure = $latestfile->getStructure();
+        $this->assertSame('2026102700', (string) $historicstructure->getVersion());
+        $latestversion = (string) $lateststructure->getVersion();
+        $this->assertSame('2026110200', $latestversion);
+
+        $datafixture = json_decode(file_get_contents($datafixturepath), true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame('5fc0d2e29ebffca4d43a42db1bc3a26221536cb2', $datafixture['schema_source_commit']);
+        $this->assertSame(2026102700, $datafixture['plugin_version']);
+        $this->assertSame('synthetic_representative_rows', $datafixture['fixture_type']);
+
+        $dbman = $DB->get_manager();
+        $latesttables = $lateststructure->getTables();
+        $latestSchemaInstalled = false;
+
+        try {
+            // Rebuild only this PHPUnit test database's plugin tables from the exact tracked v2026102700 XMLDB file.
+            foreach (array_reverse($latesttables) as $table) {
+                if ($dbman->table_exists($table)) {
+                    $dbman->drop_table($table);
+                }
+            }
+            $dbman->install_from_xmldb_file($fixturepath);
+
+            $this->assertFalse($dbman->table_exists(new \xmldb_table('local_rtcsync_linemanifest')));
+            $this->assertFalse($dbman->table_exists(new \xmldb_table('local_rtcsync_creditowner')));
+
+            $this->setAdminUser();
+            $deliveryid = (int) $datafixture['current_delivery_id'];
+            $historicaldeliveryid = (int) $datafixture['historical_delivery_id'];
+            $course = $this->getDataGenerator()->create_course([
+                'idnumber' => 'rtc-subject:upgrade-v2026102700-fixture',
+                'visible' => (int) $datafixture['course_visible'],
+            ]);
+            $student = $this->getDataGenerator()->create_user();
+            $grouping = $this->getDataGenerator()->create_grouping([
+                'courseid' => (int) $course->id,
+                'name' => 'Upgrade fixture delivery grouping',
+                'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
+            ]);
+            $item = new \grade_item([
+                'courseid' => (int) $course->id,
+                'itemname' => 'Upgrade fixture delivery grade',
+                'itemtype' => 'manual',
+                'itemmodule' => null,
+                'iteminstance' => null,
+                'itemnumber' => 0,
+                'idnumber' => 'rtc-subject-score:upgrade-fixture:delivery:' . $deliveryid,
+                'gradetype' => GRADE_TYPE_VALUE,
+                'grademax' => 100,
+                'grademin' => 0,
+            ], false);
+            $item->insert('upgrade-fixture');
+            $module = $this->getDataGenerator()->create_module('quiz', [
+                'course' => (int) $course->id,
+                'name' => 'Upgrade fixture delivery activity',
+                'grade' => 100,
+            ]);
+            $cmid = (int) $module->cmid;
+            $DB->set_field('course_modules', 'groupingid', (int) $grouping->id, ['id' => $cmid]);
+            $now = time();
+
+            $DB->insert_record('local_rtcsync_formcfg', (object) [
+                'courseid' => (int) $course->id,
+                'enabled' => 1,
+                'timecreated' => $now,
+                'timemodified' => $now,
+            ]);
+            $DB->insert_record('local_rtcsync_user', (object) [
+                'userid' => (int) $student->id,
+                'idnumber' => 'upgrade-fixture-student',
+                'timecreated' => $now,
+                'timemodified' => $now,
+            ]);
+            $deliverymapping = (object) [
+                'cmid' => $cmid,
+                'courseid' => (int) $course->id,
+                'deliveryid' => $deliveryid,
+                'groupingid' => (int) $grouping->id,
+                'originalavailability' => null,
+                'managedavailability' => null,
+                'timecreated' => $now,
+                'timemodified' => $now,
+            ];
+            $existingmapping = $DB->get_record(
+                'local_rtcsync_deliverycm',
+                ['cmid' => $cmid],
+                '*',
+                IGNORE_MISSING
+            );
+            if ($existingmapping) {
+                $deliverymapping->id = (int) $existingmapping->id;
+                $DB->update_record('local_rtcsync_deliverycm', $deliverymapping);
+            } else {
+                $DB->insert_record('local_rtcsync_deliverycm', $deliverymapping);
+            }
+            $DB->insert_record('local_rtcsync_deliverycmhist', (object) [
+                'cmid' => $cmid,
+                'courseid' => (int) $course->id,
+                'deliveryid' => $historicaldeliveryid,
+                'timecreated' => $now,
+            ]);
+            $DB->insert_record('local_rtcsync_deliverygrade', (object) [
+                'gradeitemid' => (int) $item->id,
+                'courseid' => (int) $course->id,
+                'deliveryid' => $deliveryid,
+                'timecreated' => $now,
+                'timemodified' => $now,
+            ]);
+            $deliverycourse = (object) [
+                'courseid' => (int) $course->id,
+                'coursevisible' => (int) $datafixture['course_visible'],
+                'ready' => (int) $datafixture['delivery_course_ready'],
+                'lastcmid' => $cmid,
+                'timecreated' => $now,
+                'timemodified' => $now,
+            ];
+            $existingdeliverycourse = $DB->get_record(
+                'local_rtcsync_deliverycourse',
+                ['courseid' => (int) $course->id],
+                '*',
+                IGNORE_MISSING
+            );
+            if ($existingdeliverycourse) {
+                $deliverycourse->id = (int) $existingdeliverycourse->id;
+                $DB->update_record('local_rtcsync_deliverycourse', $deliverycourse);
+            } else {
+                $DB->insert_record('local_rtcsync_deliverycourse', $deliverycourse);
+            }
+
+            set_config('version', (string) $datafixture['plugin_version'], 'local_rtcsync');
+            $this->assertTrue(xmldb_local_rtcsync_upgrade((int) $datafixture['plugin_version']));
+            $this->assertSame($latestversion, (string) get_config('local_rtcsync', 'version'));
+
+            foreach ($latesttables as $expectedtable) {
+                $tablename = $expectedtable->getName();
+                $table = new \xmldb_table($tablename);
+                $this->assertTrue($dbman->table_exists($table), $tablename);
+                foreach ($expectedtable->getFields() as $expectedfield) {
+                    $fieldname = $expectedfield->getName();
+                    $this->assertTrue(
+                        $dbman->field_exists($table, new \xmldb_field($fieldname)),
+                        $tablename . '.' . $fieldname
+                    );
+                }
+            }
+
+            $formcfg = $DB->get_record('local_rtcsync_formcfg', ['courseid' => (int) $course->id], '*', MUST_EXIST);
+            $this->assertSame(1, (int) $formcfg->enabled);
+            $manageduser = $DB->get_record('local_rtcsync_user', ['userid' => (int) $student->id], '*', MUST_EXIST);
+            $this->assertSame('upgrade-fixture-student', $manageduser->idnumber);
+
+            $currentmapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => $cmid], '*', MUST_EXIST);
+            $this->assertSame($deliveryid, (int) $currentmapping->deliveryid);
+            $this->assertSame((int) $grouping->id, (int) $currentmapping->groupingid);
+            $this->assertSame(0, (int) $currentmapping->lineagestatus);
+            $this->assertNull($currentmapping->lineagemanifestid);
+
+            $historicalmapping = $DB->get_record('local_rtcsync_deliverycmhist', [
+                'cmid' => $cmid,
+                'courseid' => (int) $course->id,
+                'deliveryid' => $historicaldeliveryid,
+            ], '*', MUST_EXIST);
+            $this->assertSame(0, (int) $historicalmapping->lineageverified);
+            $this->assertNull($historicalmapping->lineagemanifestid);
+
+            $grademapping = $DB->get_record(
+                'local_rtcsync_deliverygrade',
+                ['gradeitemid' => (int) $item->id],
+                '*',
+                MUST_EXIST
+            );
+            $this->assertSame($deliveryid, (int) $grademapping->deliveryid);
+            $this->assertSame(0, (int) $grademapping->lineageverified);
+            $this->assertNull($grademapping->lineagemanifestid);
+
+            $deliverystate = $DB->get_record(
+                'local_rtcsync_deliverycourse',
+                ['courseid' => (int) $course->id],
+                '*',
+                MUST_EXIST
+            );
+            $this->assertSame(1, (int) $deliverystate->coursevisible);
+            $this->assertSame(0, (int) $deliverystate->ready);
+            $this->assertSame(0, (int) $deliverystate->lastcmid);
+            $this->assertSame(0, (int) $DB->get_field('course', 'visible', ['id' => (int) $course->id]));
+            $this->assertSame(0, $DB->count_records('local_rtcsync_linemanifest'));
+            $this->assertSame(0, $DB->count_records('local_rtcsync_lineageaudit'));
+            $this->assertSame(0, $DB->count_records('local_rtcsync_creditowner'));
+
+            $this->assertSame(1, $this->count_indexes_with_columns('local_rtcsync_deliverycm', ['cmid'], true));
+            $this->assertSame(1, $this->count_indexes_with_columns('local_rtcsync_deliverygrade', ['gradeitemid'], true));
+            $this->assertSame(1, $this->count_indexes_with_columns('local_rtcsync_deliverycourse', ['courseid'], true));
+            $this->assertTrue($this->has_index_with_columns('local_rtcsync_studentscope', ['userid', 'courseid'], false));
+
+            $latestSchemaInstalled = true;
+        } finally {
+            if (!$latestSchemaInstalled) {
+                // Keep the disposable PHPUnit database at the current schema even if a migration assertion fails.
+                foreach (array_reverse($latesttables) as $table) {
+                    if ($dbman->table_exists($table)) {
+                        $dbman->drop_table($table);
+                    }
+                }
+                $dbman->install_from_xmldb_file($latestinstallpath);
+                set_config('version', $latestversion, 'local_rtcsync');
+            }
         }
     }
 

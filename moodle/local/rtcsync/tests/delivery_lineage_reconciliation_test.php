@@ -843,6 +843,94 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
             (int) $user->id
         );
 
+        $DB->set_field('local_rtcsync_deliverycm', 'lineagemanifestid', null, [
+            'cmid' => (int) $target['cm']->id,
+            'courseid' => (int) $target['course']->id,
+        ]);
+        $this->assertSame(
+            [],
+            $history->visible_results()['results'],
+            'A current module mapping without reviewed manifest provenance must not release its grade.'
+        );
+        $this->assertFalse(delivery_activity_access::student_module_content_is_in_current_delivery(
+            (int) $target['course']->id,
+            (int) $target['cm']->id,
+            (int) $user->id
+        ));
+        try {
+            delivery_activity_access::require_student_module_access(
+                (int) $target['course']->id,
+                (int) $target['cm']->id,
+                (int) $user->id
+            );
+            $this->fail('A current module without reviewed manifest provenance must be inaccessible.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('activityiscurrentlyhidden', $exception->errorcode);
+        }
+        $DB->set_field('local_rtcsync_deliverycm', 'lineagemanifestid', 'current-release', [
+            'cmid' => (int) $target['cm']->id,
+            'courseid' => (int) $target['course']->id,
+        ]);
+        $this->assertSame(81.0, $history->visible_results()['results'][0]['grade']);
+
+        // Deliberately reproduce a duplicate identity that cannot be created through Moodle's API.
+        $duplicategrouping = (object) [
+            'courseid' => (int) $target['course']->id,
+            'name' => 'Ambiguous duplicate delivery identity',
+            'idnumber' => 'rtc-delivery-grouping:' . (int) $target['deliveryid'],
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ];
+        $duplicategrouping->id = $DB->insert_record('groupings', $duplicategrouping);
+        try {
+            delivery_activity_access::require_student_module_access(
+                (int) $target['course']->id,
+                (int) $target['cm']->id,
+                (int) $user->id
+            );
+            $this->fail('A duplicate RTC delivery grouping must close an already-mapped current activity.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('activityiscurrentlyhidden', $exception->errorcode);
+        }
+        $this->assertFalse(delivery_activity_access::student_module_content_is_in_current_delivery(
+            (int) $target['course']->id,
+            (int) $target['cm']->id,
+            (int) $user->id
+        ));
+        $this->assertFalse(delivery_activity_access::calendar_event_is_in_current_delivery((object) [
+            'courseid' => (int) $target['course']->id,
+            'eventtype' => 'group',
+            'groupid' => (int) $group->id,
+        ], (int) $user->id));
+        $ambiguousresults = $history->visible_results()['results'];
+        $this->assertCount(
+            1,
+            $ambiguousresults,
+            'An ambiguous live grouping closes activity access without expiring the reviewed released result.'
+        );
+        $this->assertSame(81.0, $ambiguousresults[0]['grade']);
+        $this->assertSame(
+            [0, -(int) $target['cm']->id],
+            delivery_activity_access::manifest_grouping_reference(
+                (int) $target['course']->id,
+                (int) $target['grouping']->id,
+                (int) $target['cm']->id,
+                (string) $DB->get_field('course_modules', 'availability', ['id' => (int) $target['cm']->id])
+            )
+        );
+        $DB->delete_records('groupings', ['id' => (int) $duplicategrouping->id]);
+        delivery_activity_access::require_student_module_access(
+            (int) $target['course']->id,
+            (int) $target['cm']->id,
+            (int) $user->id
+        );
+        $this->assertTrue(delivery_activity_access::calendar_event_is_in_current_delivery((object) [
+            'courseid' => (int) $target['course']->id,
+            'eventtype' => 'group',
+            'groupid' => (int) $group->id,
+        ], (int) $user->id));
+        $this->assertCount(1, $history->visible_results()['results']);
+
         $gradebeforetransfer = $DB->get_record('grade_grades', [
             'itemid' => (int) $item->id,
             'userid' => (int) $user->id,
@@ -962,6 +1050,132 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
         $this->assertEquals($before, $after);
         $this->assertSame(0, $DB->count_records('local_rtcsync_linemanifest', ['manifestid' => 'preview-only-manifest']));
         $this->assertSame(0, $DB->count_records('local_rtcsync_lineageaudit', ['manifestid' => 'preview-only-manifest']));
+    }
+
+    public function test_transfer_keeps_existing_unverified_history_quarantined_until_review(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $target = $this->createTarget('partial-history-transfer', 910081);
+        $user = $this->getDataGenerator()->create_user([
+            'username' => 'lineage-partial-history@example.test',
+            'email' => 'lineage-partial-history@example.test',
+            'idnumber' => 'LINEAGE-PARTIAL-HISTORY',
+        ]);
+        $DB->insert_record('local_rtcsync_user', (object) [
+            'userid' => (int) $user->id,
+            'idnumber' => (string) $user->idnumber,
+            'timecreated' => time(),
+            'timemodified' => time(),
+        ]);
+
+        $manual = enrol_get_plugin('manual');
+        $instance = $DB->get_record('enrol', [
+            'courseid' => (int) $target['course']->id,
+            'enrol' => 'manual',
+        ], '*', IGNORE_MISSING);
+        if (!$instance) {
+            $manual->add_default_instance($target['course']);
+            $instance = $DB->get_record('enrol', [
+                'courseid' => (int) $target['course']->id,
+                'enrol' => 'manual',
+            ], '*', MUST_EXIST);
+        }
+        $studentrole = $DB->get_record('role', ['shortname' => 'student'], '*', MUST_EXIST);
+        $manual->enrol_user($instance, (int) $user->id, (int) $studentrole->id, 0, 0, ENROL_USER_SUSPENDED);
+        student_history::sync_marker(
+            (int) $user->id,
+            (int) $target['course']->id,
+            1,
+            'delivery_participation',
+            943081,
+            (int) $target['deliveryid']
+        );
+
+        $item = \grade_item::fetch([
+            'courseid' => (int) $target['course']->id,
+            'itemtype' => 'mod',
+            'itemmodule' => 'quiz',
+            'iteminstance' => (int) $target['module']->id,
+            'itemnumber' => 0,
+        ]);
+        $this->assertNotFalse($item);
+        $item->update_final_grade((int) $user->id, 81.0, 'lineage-partial-history-test');
+
+        $ready = false;
+        for ($attempt = 0; $attempt < 5 && !$ready; $attempt++) {
+            $ready = delivery_activity_access::prepare_course((int) $target['course']->id, 1);
+        }
+        $this->assertTrue($ready);
+        $json = $this->manifest($target, 'current', null, 'partial-history-current-manifest');
+        $preview = delivery_lineage_reconciliation::preview($json);
+        $this->assertTrue($preview['valid'], implode('; ', $preview['errors']));
+        $applied = $this->applyManifest($json, $preview['plan_sha256']);
+        $this->assertTrue($applied['applied']);
+
+        // A current approval must not validate an unresolved historical row.
+        $DB->insert_record('local_rtcsync_deliverycmhist', (object) [
+            'cmid' => (int) $target['cm']->id,
+            'courseid' => (int) $target['course']->id,
+            'deliveryid' => (int) $target['deliveryid'],
+            'timecreated' => time(),
+            'lineageverified' => 0,
+            'lineagemanifestid' => null,
+        ]);
+        $this->setUser($user);
+        $history = new student_history();
+        $this->assertSame(81.0, $history->visible_results()['results'][0]['grade']);
+
+        $nextdeliveryid = (int) $target['deliveryid'] + 1000;
+        $nextgrouping = $this->getDataGenerator()->create_grouping([
+            'courseid' => (int) $target['course']->id,
+            'name' => 'Next delivery grouping',
+            'idnumber' => 'rtc-delivery-grouping:' . $nextdeliveryid,
+        ]);
+        $DB->set_field('course_modules', 'groupingid', (int) $nextgrouping->id, ['id' => (int) $target['cm']->id]);
+        $this->assertTrue(delivery_activity_access::protect_course_module((int) $target['cm']->id, false));
+
+        $historical = $DB->get_record('local_rtcsync_deliverycmhist', [
+            'cmid' => (int) $target['cm']->id,
+            'courseid' => (int) $target['course']->id,
+            'deliveryid' => (int) $target['deliveryid'],
+        ], '*', MUST_EXIST);
+        $this->assertSame(0, (int) $historical->lineageverified);
+        $this->assertNull($historical->lineagemanifestid);
+        $mapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $target['cm']->id], '*', MUST_EXIST);
+        $this->assertSame(delivery_activity_access::LINEAGE_UNREVIEWED, (int) $mapping->lineagestatus);
+        $this->assertNull($mapping->lineagemanifestid);
+        $this->assertSame(0, (int) $mapping->deliveryid);
+        $this->assertSame(-(int) $target['cm']->id, (int) $mapping->groupingid);
+        $this->assertSame([], $history->visible_results()['results']);
+        $this->assertFalse(delivery_activity_access::student_module_content_is_in_current_delivery(
+            (int) $target['course']->id,
+            (int) $target['cm']->id,
+            (int) $user->id
+        ));
+
+        $this->setAdminUser();
+        $reviewedhistory = $this->manifest(
+            $target,
+            'historical',
+            [(int) $target['deliveryid']],
+            'reviewed-history-after-transfer'
+        );
+        $review = delivery_lineage_reconciliation::preview($reviewedhistory);
+        $this->assertTrue($review['valid'], implode('; ', $review['errors']));
+        $appliedreview = $this->applyManifest($reviewedhistory, $review['plan_sha256']);
+        $this->assertTrue($appliedreview['applied']);
+        $historical = $DB->get_record('local_rtcsync_deliverycmhist', [
+            'cmid' => (int) $target['cm']->id,
+            'courseid' => (int) $target['course']->id,
+            'deliveryid' => (int) $target['deliveryid'],
+        ], '*', MUST_EXIST);
+        $this->assertSame(1, (int) $historical->lineageverified);
+        $this->assertSame('reviewed-history-after-transfer', (string) $historical->lineagemanifestid);
+        $this->setUser($user);
+        $this->assertSame(81.0, $history->visible_results()['results'][0]['grade']);
     }
 
     public function test_apply_rejects_target_snapshot_changed_after_preview(): void

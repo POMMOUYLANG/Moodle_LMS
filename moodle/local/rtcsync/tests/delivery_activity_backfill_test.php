@@ -236,4 +236,71 @@ final class delivery_activity_backfill_test extends \advanced_testcase
             MUST_EXIST
         ));
     }
+
+    public function test_page_activity_current_mapping_is_quarantined_when_grouping_idnumber_is_duplicated(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        set_config('enableavailability', 1);
+        $course = $this->getDataGenerator()->create_course([
+            'idnumber' => 'rtc-subject:duplicate-page-grouping',
+        ]);
+        $deliveryid = 6604;
+        $grouping = $this->getDataGenerator()->create_grouping([
+            'courseid' => (int) $course->id,
+            'name' => 'Page activity delivery',
+            'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
+        ]);
+        // The core grouping API rejects duplicate IDs; insert the legacy/corrupt row directly.
+        $duplicategrouping = clone $grouping;
+        unset($duplicategrouping->id);
+        $duplicategrouping->name = 'Duplicate page activity delivery';
+        $duplicategrouping->timecreated = time();
+        $duplicategrouping->timemodified = time();
+        $DB->insert_record('groupings', $duplicategrouping);
+        $page = $this->getDataGenerator()->create_module('page', [
+            'course' => (int) $course->id,
+            'name' => 'Mapped page activity',
+        ]);
+        $cmid = (int) $page->cmid;
+        $availability = $this->groupingAvailability((int) $grouping->id);
+        $DB->set_field('course_modules', 'availability', $availability, ['id' => $cmid]);
+        $manifestid = hash('sha256', 'reviewed page delivery identity');
+        $now = time();
+        $mapping = (object) [
+            'cmid' => $cmid,
+            'courseid' => (int) $course->id,
+            'deliveryid' => $deliveryid,
+            'groupingid' => (int) $grouping->id,
+            'originalavailability' => $availability,
+            'managedavailability' => null,
+            'lineagestatus' => \local_rtcsync\local\delivery_activity_access::LINEAGE_CURRENT,
+            'lineagemanifestid' => $manifestid,
+            'timecreated' => $now,
+            'timemodified' => $now,
+        ];
+        // Moodle's module-created observer may already have inserted an unreviewed row.
+        $existingmapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => $cmid], '*', IGNORE_MISSING);
+        if ($existingmapping) {
+            $mapping->id = (int) $existingmapping->id;
+            $DB->update_record('local_rtcsync_deliverycm', $mapping);
+        } else {
+            $DB->insert_record('local_rtcsync_deliverycm', $mapping);
+        }
+
+        $this->assertTrue(\local_rtcsync\local\delivery_activity_access::protect_course_module($cmid, false));
+        $mapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => $cmid], '*', MUST_EXIST);
+        $history = $DB->get_record('local_rtcsync_deliverycmhist', [
+            'cmid' => $cmid,
+            'courseid' => (int) $course->id,
+            'deliveryid' => $deliveryid,
+        ], '*', MUST_EXIST);
+        $this->assertSame(0, (int) $mapping->deliveryid);
+        $this->assertSame(-$cmid, (int) $mapping->groupingid);
+        $this->assertSame(\local_rtcsync\local\delivery_activity_access::LINEAGE_HISTORICAL, (int) $mapping->lineagestatus);
+        $this->assertSame(1, (int) $history->lineageverified);
+        $this->assertSame($manifestid, (string) $history->lineagemanifestid);
+        $this->assertStringContainsString('"id":-' . $cmid, (string) $mapping->managedavailability);
+    }
 }

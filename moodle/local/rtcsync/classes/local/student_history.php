@@ -418,7 +418,7 @@ final class student_history
 
         require_once($CFG->libdir . '/gradelib.php');
 
-        $position = self::decode_results_cursor($cursor);
+        $position = self::decode_results_cursor($cursor, (int) $USER->id);
         $previous = $position !== null && $position['direction'] === 'previous';
         $cursorcondition = '';
         $cursorparams = [];
@@ -444,17 +444,13 @@ final class student_history
         // Apply Moodle's grade/category/item visibility rules before the bounded page window.
         // The path prefix catches hidden ancestors as well as the item's immediate category.
         $hiddenCategoryPathPrefix = $DB->sql_concat('hiddencategory.path', "'%'");
-        $deliveryGroupingIdnumber = $DB->sql_concat(
-            "'rtc-delivery-grouping:'",
-            $DB->sql_cast_to_char('history.deliveryid')
-        );
         // A Moodle module grade is one shared result. Match the activity guard:
         // any second delivery history row makes that result ambiguous, even if
         // the conflicting row is unverified and cannot independently release it.
         // user_program markers have no authoritative grade-item mapping. Only
-        // delivery markers can authorize grade rows through exact item mappings.
-        // Course visibility and enrolment status continue to block activities;
-        // this global page exposes only Moodle-visible released grade items.
+        // delivery markers with exact item mappings can authorize grade rows.
+        // Delivery groupings are mutable activity controls and must not expire
+        // released history when a delivery ends or its grouping is repaired.
         $records = $DB->get_records_sql(
             "SELECT DISTINCT gi.id AS id,
                     gg.id AS gradeid,
@@ -496,14 +492,15 @@ final class student_history
                  ON deliverymodule.cmid = cm.id
                 AND deliverymodule.courseid = c.id
                 AND deliverymodule.lineagestatus = 1
+                AND deliverymodule.lineagemanifestid IS NOT NULL
+                AND TRIM(deliverymodule.lineagemanifestid) <> ''
           LEFT JOIN {local_rtcsync_deliverycmhist} deliverymodulehistory
                  ON deliverymodulehistory.cmid = cm.id
                 AND deliverymodulehistory.courseid = c.id
                 AND deliverymodulehistory.deliveryid = history.deliveryid
                 AND deliverymodulehistory.lineageverified = 1
-          LEFT JOIN {groupings} deliverygrouping
-                 ON deliverygrouping.courseid = c.id
-                AND deliverygrouping.idnumber = {$deliveryGroupingIdnumber}
+                AND deliverymodulehistory.lineagemanifestid IS NOT NULL
+                AND TRIM(deliverymodulehistory.lineagemanifestid) <> ''
               WHERE history.userid = :userid
                 {$cursorcondition}
                 AND history.sourceid > 0
@@ -530,21 +527,7 @@ final class student_history
                            FROM {local_rtcsync_deliverygrade} invalidmodulegrade
                           WHERE invalidmodulegrade.gradeitemid = gi.id
                      )
-                     AND deliverygrouping.id IS NOT NULL)
-                )
-                AND (
-                    c.idnumber LIKE :subjectcourse
-                    OR EXISTS (
-                        SELECT 1
-                          FROM {local_rtcsync_deliverycourse} deliverycourse
-                         WHERE deliverycourse.courseid = c.id
-                    )
-                    OR EXISTS (
-                        SELECT 1
-                          FROM {groupings} managedgrouping
-                         WHERE managedgrouping.courseid = c.id
-                           AND managedgrouping.idnumber LIKE :deliverygrouping
-                    )
+                     )
                 )
                 AND c.showgrades = 1
                 AND gg.finalgrade IS NOT NULL
@@ -570,8 +553,6 @@ final class student_history
                 'participationscope' => 'delivery_participation',
                 'manualitemtype' => 'manual',
                 'moduleitemtype' => 'mod',
-                'subjectcourse' => 'rtc-subject:%',
-                'deliverygrouping' => 'rtc-delivery-grouping:%',
                 'categoryitemtype' => 'category',
                 'courseitemtype' => 'course',
                 'valuegradetype' => GRADE_TYPE_VALUE,
@@ -597,9 +578,9 @@ final class student_history
         $lastrecord = $recordvalues === [] ? null : $recordvalues[count($recordvalues) - 1];
         $hasprevious = $previous ? $hasmore : ($position !== null && $recordvalues !== []);
         $hasnext = $previous ? ($position !== null && $recordvalues !== []) : $hasmore;
-        $nextcursor = $lastrecord ? self::encode_results_cursor($lastrecord, 'next') : null;
+        $nextcursor = $lastrecord ? self::encode_results_cursor($lastrecord, 'next', (int) $USER->id) : null;
         $previouscursor = $hasprevious && $firstrecord
-            ? self::encode_results_cursor($firstrecord, 'previous')
+            ? self::encode_results_cursor($firstrecord, 'previous', (int) $USER->id)
             : null;
 
         $gradeids = array_map(static fn($record): int => (int) $record->gradeid, $records);
@@ -648,38 +629,52 @@ final class student_history
     }
 
     /**
-     * Encode a stable result position. The query still scopes every page to the current Moodle user.
+     * Encode a session- and user-bound result position.
      *
      * @param \stdClass $record Result row containing courseid, sortorder, and id.
      */
-    private static function encode_results_cursor(\stdClass $record, string $direction): string
+    private static function encode_results_cursor(\stdClass $record, string $direction, int $userid): string
     {
         $encoded = json_encode([
-            'version' => 1,
+            'version' => 2,
+            'scope' => 'released-results',
+            'userid' => $userid,
             'direction' => $direction,
             'courseid' => (int) $record->courseid,
             'sortorder' => (int) $record->sortorder,
             'itemid' => (int) $record->id,
         ], JSON_THROW_ON_ERROR);
 
-        return rtrim(strtr(base64_encode($encoded), '+/', '-_'), '=');
+        $payload = rtrim(strtr(base64_encode($encoded), '+/', '-_'), '=');
+        return $payload . '.' . hash_hmac('sha256', $payload, sesskey());
     }
 
     /**
-     * Decode and validate a result cursor; cursor values only affect ordering, never authorization.
+     * Decode a signed cursor and bind it to the current user and released-results scope.
      *
      * @return array{direction: string, courseid: int, sortorder: int, itemid: int}|null
      */
-    private static function decode_results_cursor(string $cursor): ?array
+    private static function decode_results_cursor(string $cursor, int $userid): ?array
     {
         if ($cursor === '') {
             return null;
         }
-        if (strlen($cursor) > 128 || preg_match('/\A[A-Za-z0-9_-]+\z/', $cursor) !== 1) {
+        if (strlen($cursor) > 320 || preg_match('/\A[A-Za-z0-9_.-]+\z/', $cursor) !== 1) {
             throw new \invalid_parameter_exception('Invalid student history cursor.');
         }
 
-        $base64 = strtr($cursor, '-_', '+/');
+        $separator = strrpos($cursor, '.');
+        if ($separator === false) {
+            throw new \invalid_parameter_exception('Invalid student history cursor.');
+        }
+        $payload = substr($cursor, 0, $separator);
+        $signature = substr($cursor, $separator + 1);
+        $expectedsignature = hash_hmac('sha256', $payload, sesskey());
+        if (strlen($signature) !== 64 || !hash_equals($expectedsignature, $signature)) {
+            throw new \invalid_parameter_exception('Invalid student history cursor.');
+        }
+
+        $base64 = strtr($payload, '-_', '+/');
         $padding = strlen($base64) % 4;
         if ($padding > 0) {
             $base64 .= str_repeat('=', 4 - $padding);
@@ -695,7 +690,10 @@ final class student_history
             throw new \invalid_parameter_exception('Invalid student history cursor.');
         }
         if (!is_array($position)
-            || ($position['version'] ?? null) !== 1
+            || ($position['version'] ?? null) !== 2
+            || ($position['scope'] ?? null) !== 'released-results'
+            || !is_int($position['userid'] ?? null)
+            || $position['userid'] !== $userid
             || !in_array($position['direction'] ?? null, ['next', 'previous'], true)
             || !is_int($position['courseid'] ?? null)
             || $position['courseid'] <= 0
@@ -760,11 +758,10 @@ final class student_history
             );
         }
         if ($sourcetype === 'delivery_participation'
-                && !$DB->record_exists('groupings', [
-                    'courseid' => $courseid,
-                    'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
-                ])) {
-            throw new \invalid_parameter_exception('Delivery history requires a matching RTC delivery grouping in the subject course.');
+                && !delivery_activity_access::has_unique_delivery_grouping($courseid, $deliveryid)) {
+            throw new \invalid_parameter_exception(
+                'Delivery history requires exactly one matching RTC delivery grouping in the subject course.'
+            );
         }
         if ($sourcetype === 'delivery_participation'
                 && (int) $enrolment->status === ENROL_USER_ACTIVE) {

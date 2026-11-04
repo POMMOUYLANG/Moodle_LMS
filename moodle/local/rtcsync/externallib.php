@@ -1292,7 +1292,7 @@ class local_rtcsync_external extends external_api
 
         return \local_rtcsync\local\delivery_activity_access::with_course_access_lock(
             (int) $course->id,
-            static function() use ($course, $grade): array {
+            static function() use ($course, $grade, $clear): array {
         global $DB;
 
         $deliveryid = (int) $grade['deliveryid'];
@@ -1308,11 +1308,13 @@ class local_rtcsync_external extends external_api
             if ($idnumber !== $expectedidnumber) {
                 throw new invalid_parameter_exception('Delivery score idnumber must include the matching subject and delivery IDs.');
             }
-            if (!$DB->record_exists('groupings', [
-                'courseid' => (int) $course->id,
-                'idnumber' => 'rtc-delivery-grouping:' . $deliveryid,
-            ])) {
-                throw new invalid_parameter_exception('Delivery-scoped scores require a matching RTC delivery grouping in the subject course.');
+            if (!\local_rtcsync\local\delivery_activity_access::has_unique_delivery_grouping(
+                (int) $course->id,
+                $deliveryid
+            )) {
+                throw new invalid_parameter_exception(
+                    'Delivery-scoped scores require exactly one matching RTC delivery grouping in the subject course.'
+                );
             }
         } else if (preg_match('/^rtc-subject-score:[1-9][0-9]*:delivery:[1-9][0-9]*$/', $idnumber)) {
             throw new invalid_parameter_exception('A delivery-scoped score requires a positive delivery ID.');
@@ -1344,6 +1346,31 @@ class local_rtcsync_external extends external_api
                 );
             }
         }
+        if ($existingitem && $existingitem->is_locked((int) $grade['userid'])) {
+            // Avoid changing grade item metadata before Moodle rejects a locked grade.
+            throw new \moodle_exception('gradeupdatefailed', 'local_rtcsync');
+        }
+
+        $value = $clear === 1 ? null : $grade['grade'];
+        if ($value !== null) {
+            // Validate against the requested manual-item range before ensure_grade_item() persists metadata.
+            $validationitem = $existingitem ? clone $existingitem : new grade_item([
+                'courseid' => (int) $course->id,
+                'itemtype' => 'manual',
+                'gradetype' => GRADE_TYPE_VALUE,
+                'grademax' => (float) $grade['grademax'],
+                'grademin' => 0,
+            ], false);
+            $validationitem->gradetype = GRADE_TYPE_VALUE;
+            $validationitem->grademax = (float) $grade['grademax'];
+            $validationitem->grademin = 0;
+            if ((float) $validationitem->bounded_grade((float) $value) !== (float) $value) {
+                throw new invalid_parameter_exception(
+                    'Grade value falls outside the Moodle grade item’s allowed range.'
+                );
+            }
+        }
+
         $item = self::ensure_grade_item(
             (int) $course->id,
             $idnumber,
@@ -1352,12 +1379,6 @@ class local_rtcsync_external extends external_api
             (int) $grade['hidden'] === 1
         );
 
-        $value = $clear === 1 ? null : $grade['grade'];
-        if ($value !== null && (float) $item->bounded_grade((float) $value) !== (float) $value) {
-            throw new invalid_parameter_exception(
-                'Grade value falls outside the Moodle grade item’s allowed range.'
-            );
-        }
         $gradeupdated = $item->update_final_grade(
             (int) $grade['userid'],
             $value,
@@ -1817,18 +1838,66 @@ class local_rtcsync_external extends external_api
                 $limit
             );
         } else if ($scope === 'grades') {
+            // Backend grade reconciliation keys by Moodle user ID. Require the
+            // current, unique RTC identity and reviewed delivery mapping before read-back.
+            $deliveryScoreIdnumber = $DB->sql_concat(
+                "'rtc-subject-score:'",
+                $DB->sql_substr('c.idnumber', strlen('rtc-subject:') + 1),
+                "':'",
+                "'delivery:'",
+                $DB->sql_cast_to_char('deliverygrade.deliveryid')
+            );
+            $deliveryGroupingIdnumber = $DB->sql_concat(
+                "'rtc-delivery-grouping:'",
+                $DB->sql_cast_to_char('deliverygrade.deliveryid')
+            );
             $where = "c.idnumber {$insql}
                       AND gi.idnumber LIKE :gradeprefix
+                      AND gi.itemtype = 'manual'
+                      AND deliverygrade.deliveryid > 0
+                      AND deliverygrade.lineageverified = 1
+                      AND gi.idnumber = {$deliveryScoreIdnumber}
+                      AND (
+                          SELECT COUNT(1)
+                            FROM {groupings} verifieddeliverygrouping
+                           WHERE verifieddeliverygrouping.courseid = c.id
+                             AND verifieddeliverygrouping.idnumber = {$deliveryGroupingIdnumber}
+                      ) = 1
                       AND u.deleted = 0
+                      AND u.mnethostid = :mnethostid
+                      AND managed.idnumber = u.idnumber
+                      AND TRIM(managed.idnumber) <> ''
+                      AND NOT EXISTS (
+                          SELECT 1
+                            FROM {user} duplicateuser
+                           WHERE duplicateuser.idnumber = managed.idnumber
+                             AND duplicateuser.deleted = 0
+                             AND duplicateuser.mnethostid = u.mnethostid
+                             AND duplicateuser.id <> u.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                            FROM {local_rtcsync_user} duplicatemarker
+                           WHERE duplicatemarker.idnumber = managed.idnumber
+                             AND duplicatemarker.userid <> u.id
+                      )
                       AND gg.finalgrade IS NOT NULL";
-            $queryparams = $inparams + ['gradeprefix' => 'rtc-subject-score:%'];
+            $queryparams = $inparams + [
+                'gradeprefix' => 'rtc-subject-score:%',
+                'mnethostid' => (int) $CFG->mnet_localhost_id,
+            ];
             $from = "FROM {course} c
                      JOIN {grade_items} gi
                        ON gi.courseid = c.id
+                     JOIN {local_rtcsync_deliverygrade} deliverygrade
+                       ON deliverygrade.gradeitemid = gi.id
+                      AND deliverygrade.courseid = c.id
                      JOIN {grade_grades} gg
                        ON gg.itemid = gi.id
                      JOIN {user} u
-                       ON u.id = gg.userid";
+                       ON u.id = gg.userid
+                     JOIN {local_rtcsync_user} managed
+                       ON managed.userid = u.id";
             $total = $DB->count_records_sql(
                 "SELECT COUNT(1) {$from} WHERE {$where}",
                 $queryparams
@@ -1838,7 +1907,7 @@ class local_rtcsync_external extends external_api
                         c.id AS course_id,
                         c.idnumber AS course_idnumber,
                         u.id AS user_id,
-                        u.idnumber AS user_idnumber,
+                        managed.idnumber AS user_idnumber,
                         gi.id AS grade_item_id,
                         gi.idnumber AS grade_item_idnumber,
                         gi.itemname AS grade_item_name,
@@ -1854,6 +1923,13 @@ class local_rtcsync_external extends external_api
                 $limit
             );
         } else if ($scope === 'activitygrades') {
+            // Formative sync must not turn a quarantined legacy attempt into a
+            // current SMS assessment. Delivery courses require a ready guard
+            // and an explicit current module mapping before read-back.
+            $deliveryGroupingIdnumber = $DB->sql_concat(
+                "'rtc-delivery-grouping:'",
+                $DB->sql_cast_to_char('activitydelivery.deliveryid')
+            );
             $where = "c.idnumber {$insql}
                       AND cfg.enabled = 1
                       AND syncitem.included = 1
@@ -1877,10 +1953,59 @@ class local_rtcsync_external extends external_api
                            WHERE duplicatemarker.idnumber = managed.idnumber
                              AND duplicatemarker.userid <> u.id
                       )
+                      AND (
+                          (
+                              NOT EXISTS (
+                                  SELECT 1
+                                    FROM {local_rtcsync_deliverycourse} deliverycoursestate
+                                   WHERE deliverycoursestate.courseid = c.id
+                              )
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                    FROM {groupings} deliverygroupingcourse
+                                   WHERE deliverygroupingcourse.courseid = c.id
+                                     AND deliverygroupingcourse.idnumber LIKE :deliverycoursepattern
+                              )
+                               AND NOT EXISTS (
+                                   SELECT 1
+                                     FROM {local_rtcsync_deliverycm} deliverytrackedmodule
+                                    WHERE deliverytrackedmodule.courseid = c.id
+                               )
+                          )
+                          OR (
+                              EXISTS (
+                                  SELECT 1
+                                    FROM {local_rtcsync_deliverycourse} readycourse
+                                   WHERE readycourse.courseid = c.id
+                                     AND readycourse.ready = 1
+                              )
+                              AND activitydelivery.lineagestatus = 1
+                              AND activitydelivery.deliveryid > 0
+                              AND activitydelivery.lineagemanifestid IS NOT NULL
+                              AND TRIM(activitydelivery.lineagemanifestid) <> ''
+                              AND activitydelivery.groupingid > 0
+                              AND (activitycm.groupingid <= 0
+                                   OR activitycm.groupingid = activitydelivery.groupingid)
+                              AND EXISTS (
+                                  SELECT 1
+                                    FROM {groupings} activityguardgrouping
+                                   WHERE activityguardgrouping.id = activitydelivery.groupingid
+                                     AND activityguardgrouping.courseid = c.id
+                                     AND activityguardgrouping.idnumber = {$deliveryGroupingIdnumber}
+                              )
+                              AND (
+                                  SELECT COUNT(1)
+                                    FROM {groupings} uniqueactivitygrouping
+                                   WHERE uniqueactivitygrouping.courseid = c.id
+                                     AND uniqueactivitygrouping.idnumber = {$deliveryGroupingIdnumber}
+                              ) = 1
+                          )
+                      )
                       AND gg.finalgrade IS NOT NULL";
             $queryparams = $inparams + [
                 'mnethostid' => (int) $CFG->mnet_localhost_id,
                 'stableuserprefix' => 'rtc-user:%',
+                'deliverycoursepattern' => 'rtc-delivery-grouping:%',
             ];
             $from = "FROM {course} c
                      JOIN {local_rtcsync_formcfg} cfg
@@ -1897,6 +2022,15 @@ class local_rtcsync_external extends external_api
                        ON u.id = gg.userid";
             $from .= "\n                     JOIN {local_rtcsync_user} managed
                        ON managed.userid = u.id";
+            $from .= "\n                LEFT JOIN {modules} activitymodule
+                       ON activitymodule.name = gi.itemmodule
+                LEFT JOIN {course_modules} activitycm
+                       ON activitycm.course = c.id
+                      AND activitycm.module = activitymodule.id
+                      AND activitycm.instance = gi.iteminstance
+                LEFT JOIN {local_rtcsync_deliverycm} activitydelivery
+                       ON activitydelivery.cmid = activitycm.id
+                      AND activitydelivery.courseid = c.id";
             $total = $DB->count_records_sql(
                 "SELECT COUNT(1) {$from} WHERE {$where}",
                 $queryparams
