@@ -248,10 +248,12 @@ try {
         . "    ]));\n"
         . "});\n";
     file_put_contents($probefile, $probeprogram);
+    // Quote the INI value so a temp directory containing # is not parsed as a comment.
+    $probeinipath = str_replace('\\', '/', $probefile);
     $command = [
         PHP_BINARY,
         '-d',
-        'auto_prepend_file=' . $probefile,
+        'auto_prepend_file="' . $probeinipath . '"',
         $clifile,
         '--check-manifest',
         '--manifest=' . $manifestfile,
