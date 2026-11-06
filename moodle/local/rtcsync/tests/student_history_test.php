@@ -142,24 +142,55 @@ final class student_history_test extends \advanced_testcase
                 'module' => $moduleid,
                 'instance' => (int) $item->iteminstance,
             ], MUST_EXIST);
-            if (!$DB->record_exists('local_rtcsync_deliverycmhist', [
+            $manifestid = 'student-history-' . substr(hash(
+                'sha256',
+                (int) $course->id . ':' . $cmid . ':' . $deliveryid
+            ), 0, 40);
+            $historyconditions = [
                 'cmid' => $cmid,
                 'courseid' => (int) $course->id,
                 'deliveryid' => $deliveryid,
-            ])) {
+            ];
+            if (!$DB->record_exists('local_rtcsync_deliverycmhist', $historyconditions)) {
                 $DB->insert_record('local_rtcsync_deliverycmhist', (object) [
                     'cmid' => $cmid,
                     'courseid' => (int) $course->id,
                     'deliveryid' => $deliveryid,
                     'timecreated' => time(),
                     'lineageverified' => 1,
-                    'lineagemanifestid' => 'student-history-fixture',
+                    'lineagemanifestid' => $manifestid,
                 ]);
             } else {
-                $DB->set_field('local_rtcsync_deliverycmhist', 'lineageverified', 1, [
+                $DB->set_field('local_rtcsync_deliverycmhist', 'lineageverified', 1, $historyconditions);
+                $DB->set_field('local_rtcsync_deliverycmhist', 'lineagemanifestid', $manifestid, $historyconditions);
+            }
+            if (!$DB->record_exists('local_rtcsync_lineageaudit', [
+                'manifestid' => $manifestid,
+                'recordtype' => 'module',
+                'targetid' => $cmid,
+            ])) {
+                $auditentry = [
                     'cmid' => $cmid,
                     'courseid' => (int) $course->id,
                     'deliveryid' => $deliveryid,
+                    'decision' => 'historical',
+                ];
+                $DB->insert_record('local_rtcsync_lineageaudit', (object) [
+                    'manifestid' => $manifestid,
+                    'manifesthash' => hash('sha256', $manifestid),
+                    'courseid' => (int) $course->id,
+                    'recordtype' => 'module',
+                    'targetid' => $cmid,
+                    'decision' => 'historical',
+                    'deliveryids' => json_encode([$deliveryid], JSON_THROW_ON_ERROR),
+                    'sourceidentity' => '{}',
+                    'targetidentity' => '{}',
+                    'reason' => 'Explicit student-history test fixture.',
+                    'entryhash' => hash('sha256', json_encode($auditentry, JSON_THROW_ON_ERROR)),
+                    'resultstate' => '{}',
+                    'parententryhash' => null,
+                    'parentresultstate' => null,
+                    'timecreated' => time(),
                 ]);
             }
             return;
@@ -167,6 +198,10 @@ final class student_history_test extends \advanced_testcase
 
         if ($item->itemtype === 'manual'
                 && !$DB->record_exists('local_rtcsync_deliverygrade', ['gradeitemid' => (int) $item->id])) {
+            $manifestid = 'student-history-grade-' . substr(hash(
+                'sha256',
+                (int) $course->id . ':' . (int) $item->id . ':' . $deliveryid
+            ), 0, 40);
             $DB->insert_record('local_rtcsync_deliverygrade', (object) [
                 'gradeitemid' => (int) $item->id,
                 'courseid' => (int) $course->id,
@@ -174,7 +209,30 @@ final class student_history_test extends \advanced_testcase
                 'timecreated' => time(),
                 'timemodified' => time(),
                 'lineageverified' => 1,
-                'lineagemanifestid' => 'student-history-fixture',
+                'lineagemanifestid' => $manifestid,
+            ]);
+            $entry = [
+                'gradeitemid' => (int) $item->id,
+                'courseid' => (int) $course->id,
+                'deliveryid' => $deliveryid,
+                'decision' => 'map',
+            ];
+            $DB->insert_record('local_rtcsync_lineageaudit', (object) [
+                'manifestid' => $manifestid,
+                'manifesthash' => hash('sha256', $manifestid),
+                'courseid' => (int) $course->id,
+                'recordtype' => 'gradeitem',
+                'targetid' => (int) $item->id,
+                'decision' => 'map',
+                'deliveryids' => json_encode([$deliveryid], JSON_THROW_ON_ERROR),
+                'sourceidentity' => '{}',
+                'targetidentity' => '{}',
+                'reason' => 'Explicit student-history test fixture.',
+                'entryhash' => hash('sha256', json_encode($entry, JSON_THROW_ON_ERROR)),
+                'resultstate' => '{}',
+                'parententryhash' => null,
+                'parentresultstate' => null,
+                'timecreated' => time(),
             ]);
         }
     }
@@ -367,7 +425,7 @@ final class student_history_test extends \advanced_testcase
         $this->assertNotContains('Course grade display off', $names);
     }
 
-    public function test_nonmanual_delivery_grade_mapping_is_hidden_from_activity_and_released_results(): void
+    public function test_released_grade_results_require_reviewed_audit_and_hide_nonmanual_mappings(): void
     {
         global $CFG, $DB;
 
@@ -393,15 +451,32 @@ final class student_history_test extends \advanced_testcase
         ], false);
         $manualitem->insert('student-history-test');
         $manualitem->update_final_grade((int) $student['user']->id, 79.0, 'student-history-test');
+        $deliveryid = $this->historyDeliveryId($student['course']);
         $DB->insert_record('local_rtcsync_deliverygrade', (object) [
             'gradeitemid' => (int) $manualitem->id,
             'courseid' => (int) $student['course']->id,
-            'deliveryid' => $this->historyDeliveryId($student['course']),
+            'deliveryid' => $deliveryid,
             'timecreated' => time(),
             'timemodified' => time(),
             'lineageverified' => 1,
-            'lineagemanifestid' => 'student-history-fixture',
+            // A newly synchronized score has exact current scope and no manifest audit.
+            'lineagemanifestid' => null,
         ]);
+        $reviewedmanualitem = new \grade_item([
+            'courseid' => (int) $student['course']->id,
+            'itemname' => 'Reviewed RTC delivery score',
+            'itemtype' => 'manual',
+            'itemmodule' => null,
+            'iteminstance' => null,
+            'itemnumber' => 0,
+            'idnumber' => 'rtc-reviewed-delivery-score',
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ], false);
+        $reviewedmanualitem->insert('student-history-test');
+        $reviewedmanualitem->update_final_grade((int) $student['user']->id, 68.0, 'student-history-test');
+        $this->mapHistoryGradeItem($student['course'], $reviewedmanualitem, $deliveryid);
         // deliverygrade is only a valid mapping for synchronized manual items.
         // A stale or malformed mapping on a module item must not expose the
         // activity grade through Moodle's independent activity overview.
@@ -417,8 +492,32 @@ final class student_history_test extends \advanced_testcase
 
         $this->setUser($student['user']);
         $results = (new \local_rtcsync\local\student_history())->visible_results();
-        $this->assertSame(['Approved RTC delivery score'], array_column($results['results'], 'item'));
-        $this->assertNotContains('Unresolved activity grade', array_column($results['results'], 'item'));
+        $resultnames = array_column($results['results'], 'item');
+        sort($resultnames, SORT_STRING);
+        $this->assertSame(['Approved RTC delivery score', 'Reviewed RTC delivery score'], $resultnames);
+
+        $reviewedmapping = $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $reviewedmanualitem->id,
+        ], '*', MUST_EXIST);
+        $reviewedaudit = $DB->get_record('local_rtcsync_lineageaudit', [
+            'manifestid' => (string) $reviewedmapping->lineagemanifestid,
+            'courseid' => (int) $student['course']->id,
+            'recordtype' => 'gradeitem',
+            'targetid' => (int) $reviewedmanualitem->id,
+            'decision' => 'map',
+        ], '*', MUST_EXIST);
+        $DB->delete_records('local_rtcsync_lineageaudit', ['id' => (int) $reviewedaudit->id]);
+        $resultswithoutaudit = (new \local_rtcsync\local\student_history())->visible_results();
+        $resultnameswithoutaudit = array_column($resultswithoutaudit['results'], 'item');
+        sort($resultnameswithoutaudit, SORT_STRING);
+        $this->assertSame(
+            ['Approved RTC delivery score'],
+            $resultnameswithoutaudit,
+            'A current sync mapping without a manifest stays visible, while a reviewed mapping without its audit is quarantined.'
+        );
+
+        unset($reviewedaudit->id);
+        $DB->insert_record('local_rtcsync_lineageaudit', $reviewedaudit);
 
         \local_rtcsync\local\delivery_activity_access::quarantine_nonmanual_delivery_grade_items(
             (int) $student['course']->id
@@ -450,7 +549,8 @@ final class student_history_test extends \advanced_testcase
         $this->assertSame('-', $overviewgrades[0]->get_content());
 
         $results = (new \local_rtcsync\local\student_history())->visible_results();
-        $this->assertSame(['Approved RTC delivery score'], array_column($results['results'], 'item'));
+        $this->assertContains('Approved RTC delivery score', array_column($results['results'], 'item'));
+        $this->assertContains('Reviewed RTC delivery score', array_column($results['results'], 'item'));
         $this->assertNotContains('Unresolved activity grade', array_column($results['results'], 'item'));
     }
 
@@ -1150,7 +1250,7 @@ final class student_history_test extends \advanced_testcase
             'itemnumber' => 0,
         ]);
         $this->assertNotFalse($currentgrade);
-        $currentgrade->itemname = 'Separately released current delivery result';
+        $currentgrade->itemname = 'Current-only mapped result';
         $currentgrade->update();
         $currentgrade->update_final_grade((int) $user->id, 94.0, 'student-history-test');
 
@@ -1232,7 +1332,7 @@ final class student_history_test extends \advanced_testcase
         );
         $resultswithcurrentdelivery = $history->visible_results();
         $this->assertSame(
-            ['Retained withdrawal result', 'Separately released current delivery result'],
+            ['Retained withdrawal result', 'Current-only mapped result'],
             array_column($resultswithcurrentdelivery['results'], 'item')
         );
 
@@ -1354,6 +1454,14 @@ final class student_history_test extends \advanced_testcase
             9001,
             77
         );
+        \local_rtcsync\local\student_history::sync_marker(
+            (int) $student['user']->id,
+            (int) $student['course']->id,
+            1,
+            'delivery_participation',
+            9002,
+            88
+        );
 
         $manual = new \grade_item([
             'courseid' => (int) $student['course']->id,
@@ -1374,12 +1482,77 @@ final class student_history_test extends \advanced_testcase
         $history = new \local_rtcsync\local\student_history();
         $history->require_current_rtc_student($this->rtcStudentIdentity($student['user']));
         $result = $history->visible_results();
+        $this->assertSame(
+            ['Previous delivery result', 'Other delivery result'],
+            array_column($result['results'], 'item'),
+            'An exact current mapping and marker continue to release a current activity result.'
+        );
+        $this->assertSame([74.0, 89.0], array_column($result['results'], 'grade'));
 
-        $this->assertSame(['Previous delivery result'], array_column($result['results'], 'item'));
-        $this->assertSame(74.0, $result['results'][0]['grade']);
+        $currentmapping = $DB->get_record(
+            'local_rtcsync_deliverycm',
+            ['cmid' => $othercmid],
+            '*',
+            MUST_EXIST
+        );
+        $currentaudit = $DB->get_record('local_rtcsync_lineageaudit', [
+            'manifestid' => (string) $currentmapping->lineagemanifestid,
+            'courseid' => (int) $student['course']->id,
+            'recordtype' => 'module',
+            'targetid' => $othercmid,
+        ], '*', MUST_EXIST);
+        $this->assertSame('current', (string) $currentaudit->decision);
+
+        // A current mapping without its exact current audit must not release
+        // the shared activity grade.
+        $DB->delete_records('local_rtcsync_lineageaudit', ['id' => (int) $currentaudit->id]);
+        $resultwithoutcurrentaudit = $history->visible_results();
+        $this->assertSame(['Previous delivery result'], array_column($resultwithoutcurrentaudit['results'], 'item'));
+
+        // Restore the reviewed record and confirm that the current result path
+        // remains available while no legacy history conflict is present.
+        unset($currentaudit->id);
+        $DB->insert_record('local_rtcsync_lineageaudit', $currentaudit);
+        $resultwithcurrentaudit = $history->visible_results();
+        $this->assertSame(
+            ['Previous delivery result', 'Other delivery result'],
+            array_column($resultwithcurrentaudit['results'], 'item')
+        );
+
+        // An independently reviewed current mapping cannot assign a legacy
+        // history row to that delivery without its own historical review.
+        $historyid = (int) $DB->insert_record('local_rtcsync_deliverycmhist', (object) [
+            'cmid' => $othercmid,
+            'courseid' => (int) $student['course']->id,
+            'deliveryid' => 88,
+            'timecreated' => time(),
+            'lineageverified' => 0,
+            'lineagemanifestid' => null,
+        ]);
+        $resultafterunverifiedhistory = $history->visible_results();
+        $this->assertSame(
+            ['Previous delivery result'],
+            array_column($resultafterunverifiedhistory['results'], 'item')
+        );
+        $DB->delete_records('local_rtcsync_deliverycmhist', ['id' => $historyid]);
+
+        // A same-delivery row bearing only current-manifest provenance is not
+        // historical evidence and must quarantine that shared activity grade.
+        $DB->insert_record('local_rtcsync_deliverycmhist', (object) [
+            'cmid' => $othercmid,
+            'courseid' => (int) $student['course']->id,
+            'deliveryid' => 88,
+            'timecreated' => time(),
+            // Simulate a row left by the former current-only promotion path.
+            'lineageverified' => 1,
+            'lineagemanifestid' => (string) $currentmapping->lineagemanifestid,
+        ]);
+        $resultafterquarantine = $history->visible_results();
+        $this->assertSame(['Previous delivery result'], array_column($resultafterquarantine['results'], 'item'));
+        $this->assertSame(74.0, $resultafterquarantine['results'][0]['grade']);
     }
 
-    public function test_reassigning_a_module_keeps_history_read_only_and_requires_a_new_activity_instance(): void
+    public function test_reassigning_a_module_quarantines_history_until_review_and_requires_a_new_instance(): void
     {
         global $CFG, $DB, $PAGE;
 
@@ -1486,12 +1659,28 @@ final class student_history_test extends \advanced_testcase
         $current = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => $cmid], '*', MUST_EXIST);
         $this->assertSame(0, (int) $current->deliveryid);
         $this->assertSame(-$cmid, (int) $current->groupingid);
-        $this->assertTrue($DB->record_exists('local_rtcsync_deliverycmhist', [
+        $this->assertSame(
+            \local_rtcsync\local\delivery_activity_access::LINEAGE_UNREVIEWED,
+            (int) $current->lineagestatus
+        );
+        $this->assertNull($current->lineagemanifestid);
+        $this->assertFalse($DB->record_exists('local_rtcsync_deliverycmhist', [
             'cmid' => $cmid,
             'courseid' => (int) $course->id,
             'deliveryid' => 771,
-        ]));
+        ]), 'A current-only decision must not synthesize historical lineage.');
+        $history = new \local_rtcsync\local\student_history();
+        $this->assertSame([], $history->visible_results()['results']);
+
+        // Only an explicit historical decision can release the old result.
+        $this->setAdminUser();
+        $this->reconcileHistoryModule($course, $cmid, 'historical', 771);
+        $current = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => $cmid], '*', MUST_EXIST);
         $historicalmanifestid = (string) $current->lineagemanifestid;
+        $this->assertSame(
+            \local_rtcsync\local\delivery_activity_access::LINEAGE_HISTORICAL,
+            (int) $current->lineagestatus
+        );
 
         $this->setAdminUser();
         try {
@@ -1558,7 +1747,7 @@ final class student_history_test extends \advanced_testcase
         $this->assertSame(
             ['Previous delivery released result'],
             array_column($results['results'], 'item'),
-            'Moving to another delivery must retain the previously released, exactly mapped result.'
+            'Only the separately reviewed historical decision may release the previous result.'
         );
         $this->assertSame([81.0], array_column($results['results'], 'grade'));
         $moduleinfo = get_fast_modinfo($course, (int) $student['user']->id);
@@ -1675,7 +1864,7 @@ final class student_history_test extends \advanced_testcase
             'itemnumber' => 0,
         ]);
         $this->assertNotFalse($currentgrade);
-        $currentgrade->itemname = 'Current delivery released result';
+        $currentgrade->itemname = 'Current-only mapped result';
         $currentgrade->update();
         $currentgrade->update_final_grade((int) $student['user']->id, 93.0, 'student-history-test');
         \local_rtcsync\local\student_history::sync_marker(
@@ -1994,9 +2183,9 @@ final class student_history_test extends \advanced_testcase
         $history->require_current_rtc_student($this->rtcStudentIdentity($student['user']));
         $resultsaftertransfer = $history->visible_results()['results'];
         $this->assertSame(
-            ['Previous delivery released result', 'Current delivery released result'],
+            ['Previous delivery released result', 'Current-only mapped result'],
             array_column($resultsaftertransfer, 'item'),
-            'A same-subject transfer retains the old result and releases the exact verified current result.'
+            'Current delivery results and separately reviewed previous results remain visible.'
         );
         $this->assertSame([81.0, 93.0], array_column($resultsaftertransfer, 'grade'));
 
@@ -2201,9 +2390,9 @@ final class student_history_test extends \advanced_testcase
         $history = new \local_rtcsync\local\student_history();
         $results = $history->visible_results();
         $this->assertSame(
-            ['Previous delivery released result', 'Current delivery released result'],
+            ['Previous delivery released result', 'Current-only mapped result'],
             array_column($results['results'], 'item'),
-            'A later delivery must retain every previously released, exactly mapped result.'
+            'A later delivery must retain reviewed history and the exact previously current result.'
         );
         $this->assertSame([81.0, 93.0], array_column($results['results'], 'grade'));
     }
@@ -2340,7 +2529,9 @@ final class student_history_test extends \advanced_testcase
         $remapped = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $page->cmid], '*', MUST_EXIST);
         $this->assertSame(0, (int) $remapped->deliveryid);
         $this->assertSame(-(int) $page->cmid, (int) $remapped->groupingid);
-        $this->assertTrue($DB->record_exists('local_rtcsync_deliverycmhist', [
+        $this->assertSame(\local_rtcsync\local\delivery_activity_access::LINEAGE_UNREVIEWED, (int) $remapped->lineagestatus);
+        $this->assertNull($remapped->lineagemanifestid);
+        $this->assertFalse($DB->record_exists('local_rtcsync_deliverycmhist', [
             'cmid' => (int) $page->cmid,
             'courseid' => (int) $course->id,
             'deliveryid' => 771,

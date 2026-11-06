@@ -869,6 +869,90 @@ final class externallib_test extends \advanced_testcase
         $this->assertNotContains((int) $activityitem->id, $resultitemids);
     }
 
+    public function test_delivery_grade_read_requires_exact_lineage_audit_for_manifest_mapping(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:19']);
+        $user = $this->createManagedUser(['idnumber' => 'rtc-user:70023']);
+        foreach ([901, 902, 903] as $deliveryid) {
+            $this->createDeliveryGrouping($course, $deliveryid);
+        }
+
+        $items = [];
+        foreach ([901, 902, 903] as $deliveryid) {
+            $item = new \grade_item([
+                'courseid' => (int) $course->id,
+                'itemname' => 'Reviewed delivery ' . $deliveryid,
+                'itemtype' => 'manual',
+                'itemmodule' => null,
+                'iteminstance' => null,
+                'itemnumber' => 0,
+                'idnumber' => 'rtc-subject-score:19:delivery:' . $deliveryid,
+                'gradetype' => GRADE_TYPE_VALUE,
+                'grademax' => 100,
+                'grademin' => 0,
+            ], false);
+            $item->insert('manifest grade readback test');
+            $item->update_final_grade((int) $user->id, 80.0, 'manifest grade readback test');
+            $items[$deliveryid] = $item;
+            $manifestid = 'grade-readback-' . $deliveryid;
+            $DB->insert_record('local_rtcsync_deliverygrade', (object) [
+                'gradeitemid' => (int) $item->id,
+                'courseid' => (int) $course->id,
+                'deliveryid' => $deliveryid,
+                'timecreated' => time(),
+                'timemodified' => time(),
+                'lineageverified' => 1,
+                'lineagemanifestid' => $manifestid,
+            ]);
+        }
+
+        $insertaudit = function(int $deliveryid, string $deliveryids) use ($DB, $course, $items): int {
+            $manifestid = 'grade-readback-' . $deliveryid;
+            return (int) $DB->insert_record('local_rtcsync_lineageaudit', (object) [
+                'manifestid' => $manifestid,
+                'manifesthash' => hash('sha256', $manifestid),
+                'courseid' => (int) $course->id,
+                'recordtype' => 'gradeitem',
+                'targetid' => (int) $items[$deliveryid]->id,
+                'decision' => 'map',
+                'deliveryids' => $deliveryids,
+                'sourceidentity' => '{}',
+                'targetidentity' => '{}',
+                'reason' => 'Explicit external grade readback test fixture.',
+                'entryhash' => hash('sha256', $manifestid . ':' . $deliveryids),
+                'resultstate' => '{}',
+                'parententryhash' => null,
+                'parentresultstate' => null,
+                'timecreated' => time(),
+            ]);
+        };
+        $insertaudit(902, '[999]');
+        $validauditid = $insertaudit(903, '[903]');
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'grades',
+            ['rtc-subject:19'],
+            0,
+            100
+        );
+        $this->assertSame(1, $result['total']);
+        $this->assertSame([(int) $items[903]->id], array_column($result['records'], 'grade_item_id'));
+
+        $DB->delete_records('local_rtcsync_lineageaudit', ['id' => $validauditid]);
+        $resultwithoutaudit = \local_rtcsync_external::get_managed_state(
+            'grades',
+            ['rtc-subject:19'],
+            0,
+            100
+        );
+        $this->assertSame(0, $resultwithoutaudit['total']);
+        $this->assertSame([], $resultwithoutaudit['records']);
+    }
+
     public function test_activity_grade_read_fails_closed_for_unreviewed_unready_and_incomplete_delivery_guards(): void
     {
         global $DB;
@@ -1030,6 +1114,26 @@ final class externallib_test extends \advanced_testcase
             } else {
                 $DB->insert_record('local_rtcsync_deliverycm', $deliverymapping);
             }
+            if ($index === 0) {
+                $currentdeliveryjson = json_encode([(int) $activity['deliveryid']], JSON_THROW_ON_ERROR);
+                $DB->insert_record('local_rtcsync_lineageaudit', (object) [
+                    'manifestid' => (string) $deliverymapping->lineagemanifestid,
+                    'manifesthash' => hash('sha256', (string) $deliverymapping->lineagemanifestid),
+                    'courseid' => (int) $activity['course']->id,
+                    'recordtype' => 'module',
+                    'targetid' => $cmid,
+                    'decision' => 'current',
+                    'deliveryids' => $currentdeliveryjson,
+                    'sourceidentity' => '{}',
+                    'targetidentity' => '{}',
+                    'reason' => 'Explicit current activity readback test fixture.',
+                    'entryhash' => hash('sha256', $cmid . ':' . $currentdeliveryjson),
+                    'resultstate' => '{}',
+                    'parententryhash' => null,
+                    'parentresultstate' => null,
+                    'timecreated' => $now,
+                ]);
+            }
             if (!empty($activity['livegroupingid'])) {
                 $DB->set_field('course_modules', 'groupingid', (int) $activity['livegroupingid'], ['id' => $cmid]);
             }
@@ -1048,6 +1152,188 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame(1, $result['total']);
         $this->assertCount(1, $result['records']);
         $this->assertSame($expecteditemid, $result['records'][0]['grade_item_id']);
+    }
+
+    public function test_activity_grade_read_requires_exact_current_module_lineage_audit(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:20']);
+        $student = $this->createManagedUser(['idnumber' => 'rtc-user:70024']);
+        $now = time();
+        $DB->insert_record('local_rtcsync_deliverycourse', (object) [
+            'courseid' => (int) $course->id,
+            'coursevisible' => 1,
+            'ready' => 1,
+            'lastcmid' => 0,
+            'timecreated' => $now,
+            'timemodified' => $now,
+        ]);
+        $DB->insert_record('local_rtcsync_formcfg', (object) [
+            'courseid' => (int) $course->id,
+            'enabled' => 1,
+            'timecreated' => $now,
+            'timemodified' => $now,
+        ]);
+
+        $items = [];
+        $moduleids = [];
+        foreach ([911, 912, 913] as $deliveryid) {
+            $grouping = $this->createDeliveryGrouping($course, $deliveryid);
+            $quiz = $this->getDataGenerator()->create_module('quiz', [
+                'course' => (int) $course->id,
+                'name' => 'Current delivery activity ' . $deliveryid,
+            ]);
+            $item = \grade_item::fetch([
+                'courseid' => (int) $course->id,
+                'itemtype' => 'mod',
+                'itemmodule' => 'quiz',
+                'iteminstance' => (int) $quiz->id,
+                'itemnumber' => 0,
+            ]);
+            $this->assertNotFalse($item);
+            $item->update_final_grade((int) $student->id, 80.0, 'activity lineage audit test');
+            $DB->insert_record('local_rtcsync_formitem', (object) [
+                'courseid' => (int) $course->id,
+                'itemid' => (int) $item->id,
+                'included' => 1,
+                'label' => 'Delivery ' . $deliveryid,
+                'weight' => 100,
+                'timecreated' => $now,
+                'timemodified' => $now,
+            ]);
+
+            $cmid = (int) $quiz->cmid;
+            $manifestid = 'activity-grade-audit-' . $deliveryid;
+            $mapping = (object) [
+                'cmid' => $cmid,
+                'courseid' => (int) $course->id,
+                'deliveryid' => $deliveryid,
+                'groupingid' => (int) $grouping->id,
+                'originalavailability' => null,
+                'managedavailability' => null,
+                'lineagestatus' => \local_rtcsync\local\delivery_activity_access::LINEAGE_CURRENT,
+                'lineagemanifestid' => $manifestid,
+                'timecreated' => $now,
+                'timemodified' => $now,
+            ];
+            $existingmapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => $cmid], '*', IGNORE_MISSING);
+            if ($existingmapping) {
+                $mapping->id = (int) $existingmapping->id;
+                $DB->update_record('local_rtcsync_deliverycm', $mapping);
+            } else {
+                $DB->insert_record('local_rtcsync_deliverycm', $mapping);
+            }
+            $items[$deliveryid] = $item;
+            $moduleids[$deliveryid] = $cmid;
+        }
+
+        $insertaudit = function(int $deliveryid, string $deliveryids) use ($DB, $course, $moduleids): int {
+            $manifestid = 'activity-grade-audit-' . $deliveryid;
+            return (int) $DB->insert_record('local_rtcsync_lineageaudit', (object) [
+                'manifestid' => $manifestid,
+                'manifesthash' => hash('sha256', $manifestid),
+                'courseid' => (int) $course->id,
+                'recordtype' => 'module',
+                'targetid' => (int) $moduleids[$deliveryid],
+                'decision' => 'current',
+                'deliveryids' => $deliveryids,
+                'sourceidentity' => '{}',
+                'targetidentity' => '{}',
+                'reason' => 'Explicit activity grade readback test fixture.',
+                'entryhash' => hash('sha256', $manifestid . ':' . $deliveryids),
+                'resultstate' => '{}',
+                'parententryhash' => null,
+                'parentresultstate' => null,
+                'timecreated' => time(),
+            ]);
+        };
+        $insertaudit(912, '[999]');
+        $validauditid = $insertaudit(913, '[913]');
+
+        $result = \local_rtcsync_external::get_managed_state(
+            'activitygrades',
+            ['rtc-subject:20'],
+            0,
+            100
+        );
+        $this->assertSame(1, $result['total']);
+        $this->assertSame([(int) $items[913]->id], array_column($result['records'], 'grade_item_id'));
+
+        $historyid = (int) $DB->insert_record('local_rtcsync_deliverycmhist', (object) [
+            'cmid' => $moduleids[913],
+            'courseid' => (int) $course->id,
+            'deliveryid' => 912,
+            'timecreated' => $now,
+            'lineageverified' => 0,
+            'lineagemanifestid' => null,
+        ]);
+        $resultwithconflictinghistory = \local_rtcsync_external::get_managed_state(
+            'activitygrades',
+            ['rtc-subject:20'],
+            0,
+            100
+        );
+        $this->assertSame(0, $resultwithconflictinghistory['total']);
+        $this->assertSame([], $resultwithconflictinghistory['records']);
+        $DB->delete_records('local_rtcsync_deliverycmhist', ['id' => $historyid]);
+
+        $historyid = (int) $DB->insert_record('local_rtcsync_deliverycmhist', (object) [
+            'cmid' => $moduleids[913],
+            'courseid' => (int) $course->id,
+            'deliveryid' => 913,
+            'timecreated' => $now,
+            'lineageverified' => 0,
+            'lineagemanifestid' => null,
+        ]);
+        $resultwithunverifiedcurrenthistory = \local_rtcsync_external::get_managed_state(
+            'activitygrades',
+            ['rtc-subject:20'],
+            0,
+            100
+        );
+        $this->assertSame(0, $resultwithunverifiedcurrenthistory['total']);
+        $this->assertSame([], $resultwithunverifiedcurrenthistory['records']);
+        $DB->delete_records('local_rtcsync_deliverycmhist', ['id' => $historyid]);
+
+        $historyid = (int) $DB->insert_record('local_rtcsync_deliverycmhist', (object) [
+            'cmid' => $moduleids[913],
+            'courseid' => (int) $course->id,
+            'deliveryid' => 913,
+            'timecreated' => $now,
+            'lineageverified' => 1,
+            'lineagemanifestid' => 'missing-historical-audit',
+        ]);
+        $resultwithstalehistory = \local_rtcsync_external::get_managed_state(
+            'activitygrades',
+            ['rtc-subject:20'],
+            0,
+            100
+        );
+        $this->assertSame(0, $resultwithstalehistory['total']);
+        $this->assertSame([], $resultwithstalehistory['records']);
+        $DB->delete_records('local_rtcsync_deliverycmhist', ['id' => $historyid]);
+
+        $resultafterhistorycleanup = \local_rtcsync_external::get_managed_state(
+            'activitygrades',
+            ['rtc-subject:20'],
+            0,
+            100
+        );
+        $this->assertSame(1, $resultafterhistorycleanup['total']);
+        $this->assertSame([(int) $items[913]->id], array_column($resultafterhistorycleanup['records'], 'grade_item_id'));
+
+        $DB->delete_records('local_rtcsync_lineageaudit', ['id' => $validauditid]);
+        $resultwithoutaudit = \local_rtcsync_external::get_managed_state(
+            'activitygrades',
+            ['rtc-subject:20'],
+            0,
+            100
+        );
+        $this->assertSame(0, $resultwithoutaudit['total']);
+        $this->assertSame([], $resultwithoutaudit['records']);
     }
 
     public function test_course_upsert_reuses_nested_legacy_categories_and_moves_existing_course(): void
@@ -3676,6 +3962,166 @@ final class externallib_test extends \advanced_testcase
         $mapping = $DB->get_record('local_rtcsync_deliverygrade', ['gradeitemid' => (int) $item->id], '*', MUST_EXIST);
         $this->assertSame(0, (int) $mapping->lineageverified);
         $this->assertNull($mapping->lineagemanifestid);
+    }
+
+    public function test_delivery_score_does_not_mutate_a_reviewed_dispositioned_grade_item(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:321']);
+        $deliveryid = 720;
+        $this->createDeliveryGrouping($course, $deliveryid);
+        $user = $this->createManagedUser();
+        $idnumber = 'rtc-subject-score:321:delivery:' . $deliveryid;
+        $item = new \grade_item([
+            'courseid' => (int) $course->id,
+            'itemname' => 'Archived delivery score',
+            'itemtype' => 'manual',
+            'itemmodule' => null,
+            'iteminstance' => null,
+            'itemnumber' => 0,
+            'idnumber' => $idnumber,
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ], false);
+        $item->insert('lineage-disposition-test');
+        $item->update_final_grade((int) $user->id, 54.0, 'lineage-disposition-test');
+        $manifestid = 'archived-delivery-score';
+        $DB->insert_record('local_rtcsync_deliverygrade', (object) [
+            'gradeitemid' => (int) $item->id,
+            'courseid' => (int) $course->id,
+            'deliveryid' => $deliveryid,
+            'timecreated' => time(),
+            'timemodified' => time(),
+            'lineageverified' => 0,
+            'lineagemanifestid' => $manifestid,
+        ]);
+        $DB->insert_record('local_rtcsync_lineageaudit', (object) [
+            'manifestid' => $manifestid,
+            'manifesthash' => hash('sha256', $manifestid),
+            'courseid' => (int) $course->id,
+            'recordtype' => 'gradeitem',
+            'targetid' => (int) $item->id,
+            'decision' => 'archive',
+            'deliveryids' => '[]',
+            'sourceidentity' => '{}',
+            'targetidentity' => '{}',
+            'reason' => 'The legacy score is retained without a delivery assignment.',
+            'entryhash' => hash('sha256', $manifestid . ':archive:' . $item->id),
+            'resultstate' => '{}',
+            'parententryhash' => null,
+            'parentresultstate' => null,
+            'timecreated' => time(),
+        ]);
+        $mappingbefore = $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+        ], '*', MUST_EXIST);
+
+        try {
+            \local_rtcsync_external::upsert_grade([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'itemname' => 'Attempted archived score rewrite',
+                'idnumber' => $idnumber,
+                'deliveryid' => $deliveryid,
+                'grade' => 88.0,
+                'grademax' => 200,
+                'hidden' => 1,
+            ]);
+            $this->fail('An archived grade item must not accept a delivery score write.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('matching audited map', $exception->getMessage());
+        }
+
+        $unchangeditem = \grade_item::fetch(['id' => (int) $item->id]);
+        $this->assertNotFalse($unchangeditem);
+        $this->assertSame('Archived delivery score', (string) $unchangeditem->itemname);
+        $this->assertSame(100.0, (float) $unchangeditem->grademax);
+        $this->assertSame(0, (int) $unchangeditem->hidden);
+        $this->assertSame(54.0, (float) $DB->get_field('grade_grades', 'finalgrade', [
+            'itemid' => (int) $item->id,
+            'userid' => (int) $user->id,
+        ]));
+        $this->assertEquals($mappingbefore, $DB->get_record('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+        ], '*', MUST_EXIST));
+    }
+
+    public function test_delivery_score_does_not_recreate_mapping_for_a_dispositioned_unmapped_item(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:322']);
+        $deliveryid = 721;
+        $this->createDeliveryGrouping($course, $deliveryid);
+        $user = $this->createManagedUser();
+        $idnumber = 'rtc-subject-score:322:delivery:' . $deliveryid;
+        $item = new \grade_item([
+            'courseid' => (int) $course->id,
+            'itemname' => 'Quarantined delivery score',
+            'itemtype' => 'manual',
+            'itemmodule' => null,
+            'iteminstance' => null,
+            'itemnumber' => 0,
+            'idnumber' => $idnumber,
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ], false);
+        $item->insert('lineage-disposition-test');
+        $item->update_final_grade((int) $user->id, 61.0, 'lineage-disposition-test');
+        $manifestid = 'quarantined-unmapped-delivery-score';
+        $DB->insert_record('local_rtcsync_lineageaudit', (object) [
+            'manifestid' => $manifestid,
+            'manifesthash' => hash('sha256', $manifestid),
+            'courseid' => (int) $course->id,
+            'recordtype' => 'gradeitem',
+            'targetid' => (int) $item->id,
+            'decision' => 'quarantine',
+            'deliveryids' => '[]',
+            'sourceidentity' => '{}',
+            'targetidentity' => '{}',
+            'reason' => 'The legacy score is retained without a delivery assignment.',
+            'entryhash' => hash('sha256', $manifestid . ':quarantine:' . $item->id),
+            'resultstate' => '{}',
+            'parententryhash' => null,
+            'parentresultstate' => null,
+            'timecreated' => time(),
+        ]);
+
+        try {
+            \local_rtcsync_external::upsert_grade([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'itemname' => 'Attempted quarantined score rewrite',
+                'idnumber' => $idnumber,
+                'deliveryid' => $deliveryid,
+                'grade' => 92.0,
+                'grademax' => 200,
+                'hidden' => 1,
+            ]);
+            $this->fail('A quarantined unmapped grade item must not accept a delivery score write.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('matching audited map', $exception->getMessage());
+        }
+
+        $unchangeditem = \grade_item::fetch(['id' => (int) $item->id]);
+        $this->assertNotFalse($unchangeditem);
+        $this->assertSame('Quarantined delivery score', (string) $unchangeditem->itemname);
+        $this->assertSame(100.0, (float) $unchangeditem->grademax);
+        $this->assertSame(0, (int) $unchangeditem->hidden);
+        $this->assertSame(61.0, (float) $DB->get_field('grade_grades', 'finalgrade', [
+            'itemid' => (int) $item->id,
+            'userid' => (int) $user->id,
+        ]));
+        $this->assertFalse($DB->record_exists('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+        ]));
     }
 
     public function test_legacy_score_request_cannot_rewrite_a_delivery_mapped_grade_item(): void

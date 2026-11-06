@@ -514,6 +514,144 @@ final class upgrade_test extends \advanced_testcase
         }
     }
 
+    public function test_2026102700_repair_preserves_duplicate_legacy_module_mappings_on_failure(): void
+    {
+        global $CFG, $DB;
+
+        $this->assertSame('phpunit-db', (string) $CFG->dbhost);
+        $this->assertSame('mysqli', (string) $CFG->dbtype);
+        $this->assertSame('rtc_moodle_phpunit', (string) $CFG->dbname);
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        require_once($CFG->libdir . '/upgradelib.php');
+        require_once($CFG->dirroot . '/local/rtcsync/db/upgrade.php');
+
+        $latestinstallpath = $CFG->dirroot . '/local/rtcsync/db/install.xml';
+        $latestfile = new \xmldb_file($latestinstallpath);
+        $this->assertTrue($latestfile->loadXMLStructure());
+        $latesttables = $latestfile->getStructure()->getTables();
+        $dbman = $DB->get_manager();
+        $latestSchemaRestored = false;
+
+        try {
+            // Rebuild only the guarded PHPUnit profile's plugin tables so the test can
+            // model the earlier partial schema without touching application data.
+            foreach (array_reverse($latesttables) as $table) {
+                if ($dbman->table_exists($table)) {
+                    $dbman->drop_table($table);
+                }
+            }
+            $dbman->install_from_xmldb_file($latestinstallpath);
+
+            // Reduce the current install schema to the relevant v2026102600 lineage state.
+            foreach ([
+                ['local_rtcsync_deliverycm', 'lineagestatus'],
+                ['local_rtcsync_deliverycm', 'lineagemanifestid'],
+                ['local_rtcsync_deliverycmhist', 'lineageverified'],
+                ['local_rtcsync_deliverycmhist', 'lineagemanifestid'],
+                ['local_rtcsync_deliverygrade', 'lineageverified'],
+                ['local_rtcsync_deliverygrade', 'lineagemanifestid'],
+            ] as [$tablename, $fieldname]) {
+                $table = new \xmldb_table($tablename);
+                $field = new \xmldb_field($fieldname);
+                if ($dbman->field_exists($table, $field)) {
+                    $dbman->drop_field($table, $field);
+                }
+            }
+            foreach ([
+                'local_rtcsync_linemanifest',
+                'local_rtcsync_lineageaudit',
+                'local_rtcsync_creditowner',
+            ] as $tablename) {
+                $table = new \xmldb_table($tablename);
+                if ($dbman->table_exists($table)) {
+                    $dbman->drop_table($table);
+                }
+            }
+
+            $course = $this->getDataGenerator()->create_course([
+                'idnumber' => 'rtc-subject:upgrade-duplicate-module-mapping',
+            ]);
+            $module = $this->getDataGenerator()->create_module('quiz', [
+                'course' => (int) $course->id,
+                'name' => 'Duplicate legacy mapping fixture',
+            ]);
+            $cmid = (int) $module->cmid;
+
+            $table = new \xmldb_table('local_rtcsync_deliverycm');
+            foreach ($DB->get_indexes('local_rtcsync_deliverycm') as $indexname => $index) {
+                if ((bool) ($index['unique'] ?? false)
+                        && array_values($index['columns'] ?? []) === ['cmid']) {
+                    $dbman->drop_index(
+                        $table,
+                        new \xmldb_index($indexname, XMLDB_INDEX_UNIQUE, ['cmid'])
+                    );
+                }
+            }
+            $this->assertSame(0, $this->count_indexes_with_columns('local_rtcsync_deliverycm', ['cmid'], true));
+            if (!$this->has_index_with_columns('local_rtcsync_deliverycm', ['cmid'], false)) {
+                $dbman->add_index(
+                    $table,
+                    new \xmldb_index('partial_cmid_ix', XMLDB_INDEX_NOTUNIQUE, ['cmid'])
+                );
+            }
+
+            $now = time();
+            foreach ([701, 702] as $deliveryid) {
+                $DB->insert_record('local_rtcsync_deliverycm', (object) [
+                    'cmid' => $cmid,
+                    'courseid' => (int) $course->id,
+                    'deliveryid' => $deliveryid,
+                    'groupingid' => 0,
+                    'originalavailability' => null,
+                    'managedavailability' => null,
+                    'timecreated' => $now,
+                    'timemodified' => $now,
+                ]);
+            }
+            $mappingconditions = ['cmid' => $cmid];
+            $mappingsbefore = $DB->get_records(
+                'local_rtcsync_deliverycm',
+                $mappingconditions,
+                'id ASC'
+            );
+            $this->assertCount(2, $mappingsbefore);
+
+            set_config('version', '2026102600', 'local_rtcsync');
+            $repairexception = null;
+            try {
+                xmldb_local_rtcsync_upgrade(2026102600);
+            } catch (\Throwable $exception) {
+                $repairexception = $exception;
+            }
+
+            $this->assertNotNull($repairexception, 'The unique-index repair must fail on duplicate legacy cmid rows.');
+            $this->assertInstanceOf(\ddl_change_structure_exception::class, $repairexception);
+            $this->assertStringContainsString('duplicate', strtolower((string) $repairexception->error));
+            $this->assertSame('2026102600', (string) get_config('local_rtcsync', 'version'));
+            $this->assertSame(0, $this->count_indexes_with_columns('local_rtcsync_deliverycm', ['cmid'], true));
+            $this->assertTrue($this->has_index_with_columns('local_rtcsync_deliverycm', ['cmid'], false));
+            $this->assertEquals(
+                $mappingsbefore,
+                $DB->get_records('local_rtcsync_deliverycm', $mappingconditions, 'id ASC'),
+                'A failed index repair must preserve every duplicate mapping row unchanged.'
+            );
+            $this->assertSame(2, $DB->count_records('local_rtcsync_deliverycm', $mappingconditions));
+        } finally {
+            foreach (array_reverse($latesttables) as $table) {
+                if ($dbman->table_exists($table)) {
+                    $dbman->drop_table($table);
+                }
+            }
+            $dbman->install_from_xmldb_file($latestinstallpath);
+            set_config('version', '2026110200', 'local_rtcsync');
+            $latestSchemaRestored = true;
+        }
+
+        $this->assertTrue($latestSchemaRestored, 'The disposable PHPUnit schema must be restored after DDL testing.');
+    }
+
     public function test_upgrade_from_tracked_v2026102700_fixture_preserves_data_and_installs_latest_schema(): void
     {
         global $CFG, $DB;

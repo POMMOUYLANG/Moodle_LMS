@@ -444,9 +444,32 @@ final class student_history
         // Apply Moodle's grade/category/item visibility rules before the bounded page window.
         // The path prefix catches hidden ancestors as well as the item's immediate category.
         $hiddenCategoryPathPrefix = $DB->sql_concat('hiddencategory.path', "'%'");
-        // A Moodle module grade is one shared result. Match the activity guard:
-        // any second delivery history row makes that result ambiguous, even if
-        // the conflicting row is unverified and cannot independently release it.
+        $deliveryGradeDeliveryIdsJson = $DB->sql_concat(
+            "'['",
+            $DB->sql_cast_to_char('deliverygrade.deliveryid'),
+            "']'"
+        );
+        $historicalDeliveryIdsJson = $DB->sql_concat(
+            "'['",
+            $DB->sql_cast_to_char('deliverymodulehistory.deliveryid'),
+            "']'"
+        );
+        $currentDeliveryIdsJson = $DB->sql_concat(
+            "'['",
+            $DB->sql_cast_to_char('deliverymodule.deliveryid'),
+            "']'"
+        );
+        $unresolvedDeliveryIdsJson = $DB->sql_concat(
+            "'['",
+            $DB->sql_cast_to_char('unresolveddeliveryhistory.deliveryid'),
+            "']'"
+        );
+        // A Moodle module grade is one shared result. Current and historical
+        // release paths each require an exact per-record audit decision. A
+        // current mapping must still match its marker delivery; a retired
+        // activity needs its own verified historical decision.
+        // Any unresolved same-delivery history keeps the shared grade quarantined;
+        // current lineage proves today's delivery, not the lineage of older attempts.
         // user_program markers have no authoritative grade-item mapping. Only
         // delivery markers with exact item mappings can authorize grade rows.
         // Delivery groupings are mutable activity controls and must not expire
@@ -482,6 +505,13 @@ final class student_history
                  ON deliverygrade.gradeitemid = gi.id
                 AND deliverygrade.courseid = c.id
                 AND deliverygrade.lineageverified = 1
+          LEFT JOIN {local_rtcsync_lineageaudit} deliverygradeaudit
+                 ON deliverygradeaudit.manifestid = deliverygrade.lineagemanifestid
+                AND deliverygradeaudit.courseid = c.id
+                AND deliverygradeaudit.recordtype = 'gradeitem'
+                AND deliverygradeaudit.targetid = gi.id
+                AND deliverygradeaudit.decision = 'map'
+                AND deliverygradeaudit.deliveryids = {$deliveryGradeDeliveryIdsJson}
           LEFT JOIN {modules} activitymodule
                  ON activitymodule.name = gi.itemmodule
           LEFT JOIN {course_modules} cm
@@ -494,6 +524,13 @@ final class student_history
                 AND deliverymodule.lineagestatus = 1
                 AND deliverymodule.lineagemanifestid IS NOT NULL
                 AND TRIM(deliverymodule.lineagemanifestid) <> ''
+          LEFT JOIN {local_rtcsync_lineageaudit} deliverymodulecurrentaudit
+                 ON deliverymodulecurrentaudit.manifestid = deliverymodule.lineagemanifestid
+                AND deliverymodulecurrentaudit.courseid = c.id
+                AND deliverymodulecurrentaudit.recordtype = 'module'
+                AND deliverymodulecurrentaudit.targetid = cm.id
+                AND deliverymodulecurrentaudit.decision = 'current'
+                AND deliverymodulecurrentaudit.deliveryids = {$currentDeliveryIdsJson}
           LEFT JOIN {local_rtcsync_deliverycmhist} deliverymodulehistory
                  ON deliverymodulehistory.cmid = cm.id
                 AND deliverymodulehistory.courseid = c.id
@@ -501,6 +538,13 @@ final class student_history
                 AND deliverymodulehistory.lineageverified = 1
                 AND deliverymodulehistory.lineagemanifestid IS NOT NULL
                 AND TRIM(deliverymodulehistory.lineagemanifestid) <> ''
+          LEFT JOIN {local_rtcsync_lineageaudit} deliverymodulehistoryaudit
+                 ON deliverymodulehistoryaudit.manifestid = deliverymodulehistory.lineagemanifestid
+                AND deliverymodulehistoryaudit.courseid = c.id
+                AND deliverymodulehistoryaudit.recordtype = 'module'
+                AND deliverymodulehistoryaudit.targetid = cm.id
+                AND deliverymodulehistoryaudit.decision = 'historical'
+                AND deliverymodulehistoryaudit.deliveryids = {$historicalDeliveryIdsJson}
               WHERE history.userid = :userid
                 {$cursorcondition}
                 AND history.sourceid > 0
@@ -508,11 +552,19 @@ final class student_history
                 AND history.deliveryid > 0
                 AND (
                     (gi.itemtype = :manualitemtype
-                     AND deliverygrade.deliveryid = history.deliveryid)
+                     AND deliverygrade.deliveryid = history.deliveryid
+                     AND (
+                         deliverygrade.lineagemanifestid IS NULL
+                         OR (TRIM(deliverygrade.lineagemanifestid) <> ''
+                             AND deliverygradeaudit.id IS NOT NULL)
+                     ))
                     OR
                     (gi.itemtype = :moduleitemtype
-                     AND (deliverymodule.deliveryid = history.deliveryid
-                          OR deliverymodulehistory.id IS NOT NULL)
+                     AND (
+                         deliverymodulehistoryaudit.id IS NOT NULL
+                         OR (deliverymodulecurrentaudit.id IS NOT NULL
+                             AND deliverymodule.deliveryid = history.deliveryid)
+                     )
                      AND (deliverymodule.cmid IS NULL
                           OR deliverymodule.deliveryid = history.deliveryid)
                      AND NOT EXISTS (
@@ -521,6 +573,29 @@ final class student_history
                           WHERE otherdeliveryhistory.cmid = cm.id
                             AND otherdeliveryhistory.courseid = c.id
                             AND otherdeliveryhistory.deliveryid <> history.deliveryid
+                     )
+                     AND NOT EXISTS (
+                         SELECT 1
+                           FROM {local_rtcsync_deliverycmhist} unresolveddeliveryhistory
+                          WHERE unresolveddeliveryhistory.cmid = cm.id
+                            AND unresolveddeliveryhistory.courseid = c.id
+                            AND unresolveddeliveryhistory.deliveryid = history.deliveryid
+                            AND (
+                                unresolveddeliveryhistory.lineageverified <> 1
+                                OR unresolveddeliveryhistory.lineagemanifestid IS NULL
+                                OR TRIM(unresolveddeliveryhistory.lineagemanifestid) = ''
+                                OR NOT EXISTS (
+                                    SELECT 1
+                                      FROM {local_rtcsync_lineageaudit} unresolvedhistoryaudit
+                                     WHERE unresolvedhistoryaudit.manifestid =
+                                        unresolveddeliveryhistory.lineagemanifestid
+                                       AND unresolvedhistoryaudit.courseid = c.id
+                                       AND unresolvedhistoryaudit.recordtype = 'module'
+                                       AND unresolvedhistoryaudit.targetid = cm.id
+                                       AND unresolvedhistoryaudit.decision = 'historical'
+                                       AND unresolvedhistoryaudit.deliveryids = {$unresolvedDeliveryIdsJson}
+                                )
+                            )
                      )
                      AND NOT EXISTS (
                          SELECT 1

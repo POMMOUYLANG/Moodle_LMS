@@ -42,7 +42,7 @@ final class delivery_activity_access
      * Whether this managed subject course has entered delivery-aware access.
      *
      * @param int $courseid Moodle course ID.
-     * @return bool True for a previously prepared course or a synced delivery grouping.
+     * @return bool True for a prepared course, synced delivery grouping, or retained module lineage.
      */
     public static function is_enabled(int $courseid): bool
     {
@@ -58,7 +58,17 @@ final class delivery_activity_access
                     'courseid' => $courseid,
                     'deliverypattern' => 'rtc-delivery-grouping:%',
                 ]
-            );
+            ) || self::has_tracked_delivery_module($courseid);
+    }
+
+    /** Whether retained module-lineage data still identifies this as a managed delivery course. */
+    private static function has_tracked_delivery_module(int $courseid): bool
+    {
+        global $DB;
+
+        return $courseid > 1
+            && $DB->get_manager()->table_exists('local_rtcsync_deliverycm')
+            && $DB->record_exists('local_rtcsync_deliverycm', ['courseid' => $courseid]);
     }
 
     /**
@@ -133,7 +143,7 @@ final class delivery_activity_access
             'courseid = :courseid AND idnumber LIKE :deliverypattern',
             ['courseid' => $courseid, 'deliverypattern' => 'rtc-delivery-grouping:%']
         );
-        if (!$state && !$hasdeliverygrouping) {
+        if (!$state && !$hasdeliverygrouping && !self::has_tracked_delivery_module($courseid)) {
             return;
         }
 
@@ -290,7 +300,7 @@ final class delivery_activity_access
             'courseid = :courseid AND idnumber LIKE :deliverypattern',
             ['courseid' => $courseid, 'deliverypattern' => 'rtc-delivery-grouping:%']
         );
-        if (!$state && !$hasdeliverygrouping) {
+        if (!$state && !$hasdeliverygrouping && !self::has_tracked_delivery_module($courseid)) {
             return;
         }
 
@@ -485,6 +495,11 @@ final class delivery_activity_access
                          WHERE g.courseid = c.id
                            AND g.idnumber LIKE :deliverypattern
                     )
+                    OR EXISTS (
+                        SELECT 1
+                          FROM {local_rtcsync_deliverycm} trackedmodule
+                         WHERE trackedmodule.courseid = c.id
+                    )
                 )
            ORDER BY c.id",
             [
@@ -534,7 +549,7 @@ final class delivery_activity_access
             'courseid = :courseid AND idnumber LIKE :deliverypattern',
             ['courseid' => $courseid, 'deliverypattern' => 'rtc-delivery-grouping:%']
         );
-        if (!$stateexists && !$hasdeliverygrouping) {
+        if (!$stateexists && !$hasdeliverygrouping && !self::has_tracked_delivery_module($courseid)) {
             return false;
         }
 
@@ -793,8 +808,15 @@ final class delivery_activity_access
             return false;
         }
 
+        $trackedmodulecondition = $DB->get_manager()->table_exists('local_rtcsync_deliverycm')
+            ? "OR EXISTS (
+                   SELECT 1
+                     FROM {local_rtcsync_deliverycm} trackedmodule
+                    WHERE trackedmodule.courseid = c.id
+               )"
+            : '';
         $courses = $DB->get_records_sql(
-            'SELECT DISTINCT c.id
+            "SELECT DISTINCT c.id
                FROM {course} c
                JOIN {context} ctx
                  ON ctx.instanceid = c.id
@@ -825,7 +847,8 @@ final class delivery_activity_access
                          WHERE deliverygrouping.courseid = c.id
                            AND deliverygrouping.idnumber LIKE :deliverypattern
                     )
-                )',
+                    {$trackedmodulecondition}
+                )",
             [
                 'coursecontext' => CONTEXT_COURSE,
                 'roleuserid' => $userid,
@@ -881,8 +904,15 @@ final class delivery_activity_access
             );
         }
 
+        $trackedmodulecondition = $DB->get_manager()->table_exists('local_rtcsync_deliverycm')
+            ? "OR EXISTS (
+                   SELECT 1
+                     FROM {local_rtcsync_deliverycm} trackedmodule
+                    WHERE trackedmodule.courseid = c.id
+               )"
+            : '';
         $courses = $DB->get_records_sql(
-            'SELECT DISTINCT c.id
+            "SELECT DISTINCT c.id
                FROM {course} c
                JOIN {context} ctx
                  ON ctx.instanceid = c.id
@@ -913,7 +943,8 @@ final class delivery_activity_access
                          WHERE deliverygrouping.courseid = c.id
                            AND deliverygrouping.idnumber LIKE :deliverypattern
                     )
-                )',
+                    {$trackedmodulecondition}
+                )",
             [
                 'coursecontext' => CONTEXT_COURSE,
                 'roleuserid' => $userid,
@@ -1627,15 +1658,17 @@ final class delivery_activity_access
         return false;
     }
 
-    /** Whether the delivery guard has been initialized for any course. */
+    /** Whether state, grouping, or retained module lineage identifies a delivery course. */
     public static function has_guarded_courses(): bool
     {
         global $DB;
 
-        if (!$DB->get_manager()->table_exists('local_rtcsync_deliverycourse')) {
-            return false;
-        }
-        return $DB->record_exists('local_rtcsync_deliverycourse', [])
+        $hasstate = $DB->get_manager()->table_exists('local_rtcsync_deliverycourse')
+            && $DB->record_exists('local_rtcsync_deliverycourse', []);
+        $hastrackedmodules = $DB->get_manager()->table_exists('local_rtcsync_deliverycm')
+            && $DB->record_exists('local_rtcsync_deliverycm', []);
+        return $hasstate
+            || $hastrackedmodules
             || $DB->record_exists_sql(
                 "SELECT 1
                    FROM {groupings} g
@@ -1864,6 +1897,13 @@ final class delivery_activity_access
                 || !$DB->get_manager()->table_exists('local_rtcsync_deliverycourse')) {
             return;
         }
+        $trackedmodulecondition = $DB->get_manager()->table_exists('local_rtcsync_deliverycm')
+            ? "OR EXISTS (
+                   SELECT 1
+                     FROM {local_rtcsync_deliverycm} trackedmodule
+                    WHERE trackedmodule.courseid = c.id
+               )"
+            : '';
         $courses = $DB->get_records_sql(
             "SELECT DISTINCT c.id AS courseid
                FROM {course} c
@@ -1880,6 +1920,7 @@ final class delivery_activity_access
                          WHERE g.courseid = c.id
                            AND g.idnumber LIKE :deliverypattern
                     )
+                    {$trackedmodulecondition}
                 )
               ORDER BY c.id ASC",
             [
@@ -2000,19 +2041,21 @@ final class delivery_activity_access
             if ((int) $existing->deliveryid > 0
                     && ((int) $existing->deliveryid !== $deliveryid
                         || (int) $existing->courseid !== (int) $cm->course)) {
-                $historyverified = self::retain_previous_delivery_history_mapping(
+                $historyverified = self::has_reviewed_previous_delivery_history_mapping(
                     $cmid,
                     (int) $existing->courseid,
-                    (int) $existing->deliveryid,
-                    (string) ($existing->lineagemanifestid ?? '')
+                    (int) $existing->deliveryid
                 );
                 if ($historyverified) {
                     $existing->lineagestatus = self::LINEAGE_HISTORICAL;
                 } else {
-                    // Keep the module locked and eligible for explicit review.
+                    // Current approval cannot prove the lineage of older attempts.
+                    // Keep the old result scope quarantined until separate review.
                     $existing->lineagestatus = self::LINEAGE_UNREVIEWED;
                     $existing->lineagemanifestid = null;
                     $unresolvedprevioushistory = true;
+                    $deliveryid = 0;
+                    $groupingid = -max(1, $cmid);
                 }
             }
             if ($deliveryid > 0 && self::has_conflicting_delivery_history_mapping(
@@ -2086,18 +2129,18 @@ final class delivery_activity_access
         return true;
     }
 
-    /** Preserve a verified old result scope without changing the module's access restriction. */
-    private static function retain_previous_delivery_history_mapping(
+    /** Check for a separately reviewed historical mapping before retaining old result scope. */
+    private static function has_reviewed_previous_delivery_history_mapping(
         int $cmid,
         int $courseid,
-        int $deliveryid,
-        string $manifestid = ''
+        int $deliveryid
     ): bool
     {
         global $DB;
 
-        if ($deliveryid <= 0 || trim($manifestid) === ''
-                || !$DB->get_manager()->table_exists('local_rtcsync_deliverycmhist')) {
+        if ($deliveryid <= 0
+                || !$DB->get_manager()->table_exists('local_rtcsync_deliverycmhist')
+                || !$DB->get_manager()->table_exists('local_rtcsync_lineageaudit')) {
             return false;
         }
 
@@ -2107,22 +2150,33 @@ final class delivery_activity_access
             'deliveryid' => $deliveryid,
         ];
         $history = $DB->get_record('local_rtcsync_deliverycmhist', $conditions, '*', IGNORE_MISSING);
-        if ($history) {
-            // A current mapping does not prove that older attempts belonged to
-            // this delivery. Existing history needs its own reviewed decision.
-            return (int) $history->lineageverified === 1
-                && trim((string) ($history->lineagemanifestid ?? '')) !== '';
+        if (!$history) {
+            // Never promote a current-only manifest to historical evidence.
+            return false;
         }
 
-        $DB->insert_record('local_rtcsync_deliverycmhist', (object) [
-            'cmid' => $cmid,
+        // A row written by the former current-only promotion path can carry a
+        // verified flag and current manifest ID. Require the per-record audit
+        // decision itself to say historical for this exact delivery.
+        $manifestid = trim((string) ($history->lineagemanifestid ?? ''));
+        if ((int) $history->lineageverified !== 1 || $manifestid === '') {
+            return false;
+        }
+        $audit = $DB->get_record('local_rtcsync_lineageaudit', [
+            'manifestid' => $manifestid,
             'courseid' => $courseid,
-            'deliveryid' => $deliveryid,
-            'timecreated' => time(),
-            'lineageverified' => 1,
-            'lineagemanifestid' => $manifestid,
-        ]);
-        return true;
+            'recordtype' => 'module',
+            'targetid' => $cmid,
+            'decision' => 'historical',
+        ], 'deliveryids', IGNORE_MISSING);
+        if (!$audit) {
+            return false;
+        }
+        $approveddeliveryids = json_decode((string) $audit->deliveryids, true);
+        return is_array($approveddeliveryids)
+            && array_is_list($approveddeliveryids)
+            && count($approveddeliveryids) === 1
+            && $approveddeliveryids[0] === $deliveryid;
     }
 
     /** Whether a module has already belonged to a different delivery. */

@@ -291,16 +291,16 @@ final class delivery_activity_backfill_test extends \advanced_testcase
 
         $this->assertTrue(\local_rtcsync\local\delivery_activity_access::protect_course_module($cmid, false));
         $mapping = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => $cmid], '*', MUST_EXIST);
-        $history = $DB->get_record('local_rtcsync_deliverycmhist', [
+        $historyconditions = [
             'cmid' => $cmid,
             'courseid' => (int) $course->id,
             'deliveryid' => $deliveryid,
-        ], '*', MUST_EXIST);
+        ];
         $this->assertSame(0, (int) $mapping->deliveryid);
         $this->assertSame(-$cmid, (int) $mapping->groupingid);
-        $this->assertSame(\local_rtcsync\local\delivery_activity_access::LINEAGE_HISTORICAL, (int) $mapping->lineagestatus);
-        $this->assertSame(1, (int) $history->lineageverified);
-        $this->assertSame($manifestid, (string) $history->lineagemanifestid);
+        $this->assertSame(\local_rtcsync\local\delivery_activity_access::LINEAGE_UNREVIEWED, (int) $mapping->lineagestatus);
+        $this->assertNull($mapping->lineagemanifestid);
+        $this->assertFalse($DB->record_exists('local_rtcsync_deliverycmhist', $historyconditions));
         $this->assertStringContainsString('"id":-' . $cmid, (string) $mapping->managedavailability);
     }
 }

@@ -1346,6 +1346,36 @@ class local_rtcsync_external extends external_api
                 );
             }
         }
+        $latestgradeaudit = false;
+        if ($existingitem) {
+            $gradeaudits = $DB->get_records('local_rtcsync_lineageaudit', [
+                'courseid' => (int) $course->id,
+                'recordtype' => 'gradeitem',
+                'targetid' => (int) $existingitem->id,
+            ], 'id DESC', 'id,manifestid,decision,deliveryids', 0, 1);
+            $latestgradeaudit = $gradeaudits ? reset($gradeaudits) : false;
+        }
+        $mappingmanifestid = $existingdeliverymapping
+            ? (string) ($existingdeliverymapping->lineagemanifestid ?? '')
+            : '';
+        $hasmappingmanifest = $existingdeliverymapping
+            && $existingdeliverymapping->lineagemanifestid !== null;
+        // A null-manifest legacy row may receive current values but stays unverified.
+        // Once review recorded a decision, only its exact audited map remains writable.
+        if ($latestgradeaudit || $hasmappingmanifest) {
+            if (!$existingdeliverymapping
+                    || !$latestgradeaudit
+                    || trim($mappingmanifestid) === ''
+                    || $mappingmanifestid !== (string) $latestgradeaudit->manifestid
+                    || (int) $existingdeliverymapping->lineageverified !== 1
+                    || $deliveryid <= 0
+                    || (string) $latestgradeaudit->decision !== 'map'
+                    || (string) $latestgradeaudit->deliveryids !== json_encode([$deliveryid])) {
+                throw new invalid_parameter_exception(
+                    'A grade item with a reviewed lineage decision requires a matching audited map before it can be updated.'
+                );
+            }
+        }
         if ($existingitem && $existingitem->is_locked((int) $grade['userid'])) {
             // Avoid changing grade item metadata before Moodle rejects a locked grade.
             throw new \moodle_exception('gradeupdatefailed', 'local_rtcsync');
@@ -1851,11 +1881,32 @@ class local_rtcsync_external extends external_api
                 "'rtc-delivery-grouping:'",
                 $DB->sql_cast_to_char('deliverygrade.deliveryid')
             );
+            $deliveryGradeDeliveryIdsJson = $DB->sql_concat(
+                "'['",
+                $DB->sql_cast_to_char('deliverygrade.deliveryid'),
+                "']'"
+            );
             $where = "c.idnumber {$insql}
                       AND gi.idnumber LIKE :gradeprefix
                       AND gi.itemtype = 'manual'
                       AND deliverygrade.deliveryid > 0
                       AND deliverygrade.lineageverified = 1
+                      AND (
+                          deliverygrade.lineagemanifestid IS NULL
+                          OR (
+                              TRIM(deliverygrade.lineagemanifestid) <> ''
+                              AND EXISTS (
+                                  SELECT 1
+                                    FROM {local_rtcsync_lineageaudit} reviewedgradeaudit
+                                   WHERE reviewedgradeaudit.manifestid = deliverygrade.lineagemanifestid
+                                     AND reviewedgradeaudit.courseid = c.id
+                                     AND reviewedgradeaudit.recordtype = 'gradeitem'
+                                     AND reviewedgradeaudit.targetid = gi.id
+                                     AND reviewedgradeaudit.decision = 'map'
+                                     AND reviewedgradeaudit.deliveryids = {$deliveryGradeDeliveryIdsJson}
+                              )
+                          )
+                      )
                       AND gi.idnumber = {$deliveryScoreIdnumber}
                       AND (
                           SELECT COUNT(1)
@@ -1930,6 +1981,16 @@ class local_rtcsync_external extends external_api
                 "'rtc-delivery-grouping:'",
                 $DB->sql_cast_to_char('activitydelivery.deliveryid')
             );
+            $currentDeliveryIdsJson = $DB->sql_concat(
+                "'['",
+                $DB->sql_cast_to_char('activitydelivery.deliveryid'),
+                "']'"
+            );
+            $historicalDeliveryIdsJson = $DB->sql_concat(
+                "'['",
+                $DB->sql_cast_to_char('activityunresolvedhistory.deliveryid'),
+                "']'"
+            );
             $where = "c.idnumber {$insql}
                       AND cfg.enabled = 1
                       AND syncitem.included = 1
@@ -1983,6 +2044,46 @@ class local_rtcsync_external extends external_api
                               AND activitydelivery.deliveryid > 0
                               AND activitydelivery.lineagemanifestid IS NOT NULL
                               AND TRIM(activitydelivery.lineagemanifestid) <> ''
+                              AND EXISTS (
+                                  SELECT 1
+                                    FROM {local_rtcsync_lineageaudit} currentactivityaudit
+                                   WHERE currentactivityaudit.manifestid = activitydelivery.lineagemanifestid
+                                     AND currentactivityaudit.courseid = c.id
+                                     AND currentactivityaudit.recordtype = 'module'
+                                     AND currentactivityaudit.targetid = activitycm.id
+                                     AND currentactivityaudit.decision = 'current'
+                                     AND currentactivityaudit.deliveryids = {$currentDeliveryIdsJson}
+                              )
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                    FROM {local_rtcsync_deliverycmhist} activityotherhistory
+                                   WHERE activityotherhistory.cmid = activitycm.id
+                                     AND activityotherhistory.courseid = c.id
+                                     AND activityotherhistory.deliveryid <> activitydelivery.deliveryid
+                              )
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                    FROM {local_rtcsync_deliverycmhist} activityunresolvedhistory
+                                   WHERE activityunresolvedhistory.cmid = activitycm.id
+                                     AND activityunresolvedhistory.courseid = c.id
+                                     AND activityunresolvedhistory.deliveryid = activitydelivery.deliveryid
+                                     AND (
+                                         activityunresolvedhistory.lineageverified <> 1
+                                         OR activityunresolvedhistory.lineagemanifestid IS NULL
+                                         OR TRIM(activityunresolvedhistory.lineagemanifestid) = ''
+                                         OR NOT EXISTS (
+                                             SELECT 1
+                                               FROM {local_rtcsync_lineageaudit} activityhistoryaudit
+                                              WHERE activityhistoryaudit.manifestid =
+                                                  activityunresolvedhistory.lineagemanifestid
+                                                AND activityhistoryaudit.courseid = c.id
+                                                AND activityhistoryaudit.recordtype = 'module'
+                                                AND activityhistoryaudit.targetid = activitycm.id
+                                                AND activityhistoryaudit.decision = 'historical'
+                                                AND activityhistoryaudit.deliveryids = {$historicalDeliveryIdsJson}
+                                         )
+                                     )
+                              )
                               AND activitydelivery.groupingid > 0
                               AND (activitycm.groupingid <= 0
                                    OR activitycm.groupingid = activitydelivery.groupingid)
