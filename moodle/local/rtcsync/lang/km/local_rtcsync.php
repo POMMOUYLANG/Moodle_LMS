@@ -54,3 +54,4 @@ $string['studenthistorygrade'] = 'លទ្ធផលដែលបានប្រ�
 $string['studenthistorydenied'] = 'គណនីនេះមិនអាចមើលលទ្ធផលដែលបានប្រកាសបានទេ។';
 $string['studenthistoryreportonly'] = 'សូមប្រើទំព័រ «លទ្ធផលដែលបានប្រកាស» ដើម្បីមើលពិន្ទុសម្រាប់វគ្គសិក្សាបច្ចុប្បន្ន និងមុនៗ។';
 $string['taskdeliveryactivitybackfill'] = 'ធានាសុវត្ថិភាពសកម្មភាពក្នុងមុខវិជ្ជាដែលគ្រប់គ្រងតាមវគ្គសិក្សា';
+$string['deliveryactivitybackfillfailed'] = 'ការរៀបចំការការពារសកម្មភាពឡើងវិញក្នុងវគ្គសិក្សាសម្រាប់ការប្រគល់ បានបរាជ័យសម្រាប់មុខវិជ្ជា៖ {$a}។';

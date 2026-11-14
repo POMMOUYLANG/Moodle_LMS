@@ -175,17 +175,24 @@ delivery_scope_contract_expect(
 
 $version = file_get_contents(dirname(__DIR__) . '/version.php');
 $readme = file_get_contents(dirname(__DIR__) . '/README.md');
+$pluginversion = null;
+if ($version !== false && preg_match('/\$plugin->version\s*=\s*([0-9]+)\s*;/', $version, $pluginversionmatch)) {
+    $pluginversion = (int) $pluginversionmatch[1];
+}
+$minimumversion = null;
+if (preg_match('/MIN_REVISIONED_HISTORY_SCOPE_VERSION\s*=\s*([0-9]+)\s*;/', $externalsource, $minimumversionmatch)) {
+    $minimumversion = (int) $minimumversionmatch[1];
+}
 $preflightapi = delivery_scope_contract_region(
     $externalsource,
     'public static function prepare_delivery_course(int $courseid)',
     'public static function prepare_delivery_course_returns()'
 );
 delivery_scope_contract_expect(
-    $version !== false && strpos($version, '$plugin->version = 2026110200;') !== false
-        && $readme !== false && strpos($readme, '`2026103101`') !== false
-        && strpos($externalsource, 'MIN_REVISIONED_HISTORY_SCOPE_VERSION = 2026103101;') !== false
+    $pluginversion !== null && $minimumversion !== null && $pluginversion > $minimumversion
+        && $readme !== false && strpos($readme, 'below `' . $minimumversion . '`') !== false
         && strpos($preflightapi, 'MIN_REVISIONED_HISTORY_SCOPE_VERSION') !== false,
-    'the installed plugin revision must remain newer than the unchanged Backend minimum contract threshold'
+    'the installed plugin revision must remain newer than the Backend minimum contract threshold documented in README'
 );
 
 $installxml = file_get_contents(dirname(__DIR__) . '/db/install.xml');

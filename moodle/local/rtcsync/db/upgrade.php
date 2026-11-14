@@ -743,5 +743,50 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         upgrade_plugin_savepoint(true, 2026110200, 'local', 'rtcsync');
     }
 
+    if ($oldversion < 2026110600) {
+        $dbman = $DB->get_manager();
+        $coursesync = new xmldb_table('local_rtcsync_coursesync');
+        $coursesync->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $coursesync->add_field('idnumber', XMLDB_TYPE_CHAR, '100', null, XMLDB_NOTNULL);
+        // Deliberately no course FK: the revision fence must survive a course
+        // soft archive and retain evidence if the target row is purged manually.
+        $coursesync->add_field('courseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $coursesync->add_field('sourcerevision', XMLDB_TYPE_INTEGER, '18', null, XMLDB_NOTNULL);
+        $coursesync->add_field('idempotencykey', XMLDB_TYPE_CHAR, '128', null, XMLDB_NOTNULL);
+        $coursesync->add_field('payloadhash', XMLDB_TYPE_CHAR, '64', null, XMLDB_NOTNULL);
+        $coursesync->add_field('fencetoken', XMLDB_TYPE_CHAR, '32', null, XMLDB_NOTNULL, null, '');
+        $coursesync->add_field('coursevisible', XMLDB_TYPE_INTEGER, '1', null, XMLDB_NOTNULL, null, '1');
+        $coursesync->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $coursesync->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $coursesync->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $coursesync->add_index('idnumber_uix', XMLDB_INDEX_UNIQUE, ['idnumber']);
+        $coursesync->add_index('course_ix', XMLDB_INDEX_NOTUNIQUE, ['courseid']);
+        if (!$dbman->table_exists($coursesync)) {
+            // Existing subject state has no trustworthy source revision. Do
+            // not infer a baseline; the first versioned call establishes it.
+            $dbman->create_table($coursesync);
+        }
+        upgrade_plugin_savepoint(true, 2026110600, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026110800) {
+        $dbman = $DB->get_manager();
+        $coursesync = new xmldb_table('local_rtcsync_coursesync');
+        $fencetoken = new xmldb_field(
+            'fencetoken',
+            XMLDB_TYPE_CHAR,
+            '32',
+            null,
+            XMLDB_NOTNULL,
+            null,
+            '',
+            'payloadhash'
+        );
+        if ($dbman->table_exists($coursesync) && !$dbman->field_exists($coursesync, $fencetoken)) {
+            $dbman->add_field($coursesync, $fencetoken);
+        }
+        upgrade_plugin_savepoint(true, 2026110800, 'local', 'rtcsync');
+    }
+
     return true;
 }

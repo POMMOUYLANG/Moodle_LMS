@@ -57,3 +57,4 @@ $string['gradeupdatefailed'] = 'Moodle did not apply the RTC grade update. Check
 $string['deliverymoduledeletionblocked'] = 'This activity is in a delivery-aware course. Deleting it would remove Moodle attempts and grades, so RTC Sync has blocked the deletion. Keep the activity in Moodle; an archive or disposal decision does not authorize deleting its content.';
 $string['deliveryhistorymarkermismatch'] = 'The stored delivery history marker is bound to a different delivery. No marker was cleared.';
 $string['taskdeliveryactivitybackfill'] = 'Secure delivery-managed course activities';
+$string['deliveryactivitybackfillfailed'] = 'Delivery activity backfill failed for course(s): {$a}.';

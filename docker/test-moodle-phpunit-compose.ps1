@@ -58,6 +58,13 @@ $requiredSafetyMarkers = @(
     "if (`$ExpectedProjectName -cne `$composeProjectName)",
     "if (`$ExpectedDatabaseName -cne `$databaseName)",
     "if (`$Action -eq 'Initialize' -and -not `$AllowDatabaseReset)",
+    '$confirmedProfileInitialization = (',
+    '$isPinnedDatabaseImage = $containerImage -ceq ''mysql:8.4.13''',
+    '$databaseContainerNeedsRefresh = $isApprovedLegacyImage',
+    "image inspect 'mysql:8.4.13'",
+    "'up', '--detach', '--no-deps', '--pull', 'never', '--force-recreate', '--wait', 'phpunit-db'",
+    'SELECT VERSION()',
+    '$refreshedState.Health.Status -cne ''healthy''',
     'Get-Command docker -CommandType Application',
     'context show',
     'context inspect',
@@ -73,7 +80,7 @@ $requiredSafetyMarkers = @(
     'com.docker.compose.volume',
     'config --format json',
     'The resolved PHPUnit profile must contain only phpunit-db and phpunit-runner services.',
-    'The resolved target must use the local MySQL 8.4 image and publish no host ports.',
+    'The resolved target must use the local MySQL 8.4.13 image and publish no host ports.',
     'The resolved PHPUnit target must use only its isolated internal network.',
     '@($runnerService.volumes).Count -ne 5',
     '$containerMounts.Count -ne 1',
@@ -85,6 +92,37 @@ foreach ($marker in $requiredSafetyMarkers) {
     if (-not $runnerText.Contains($marker)) {
         throw "The PHPUnit runner is missing a required fail-closed target check: $marker"
     }
+}
+
+$initializationGate = [regex]::Match(
+    $runnerText,
+    '(?ms)\$confirmedProfileInitialization\s*=\s*\((?<body>.*?)\)'
+)
+$legacyImageGate = [regex]::Match(
+    $runnerText,
+    '(?ms)\$isApprovedLegacyImage\s*=\s*\(\s*\$containerImage\s+-ceq\s+''mysql:8\.4''\s+-and\s+\$confirmedProfileInitialization\s*\)'
+)
+$strictImageGuard = [regex]::Match(
+    $runnerText,
+    '\(-not \$isPinnedDatabaseImage -and -not \$isApprovedLegacyImage\)'
+)
+if (-not $initializationGate.Success -or
+        $initializationGate.Groups['body'].Value -notmatch '\$Action -eq ''Initialize''' -or
+        $initializationGate.Groups['body'].Value -notmatch '\$ConfirmDisposableTarget' -or
+        $initializationGate.Groups['body'].Value -notmatch '\$ExpectedProjectName -ceq \$composeProjectName' -or
+        $initializationGate.Groups['body'].Value -notmatch '\$ExpectedDatabaseName -ceq \$databaseName' -or
+        $initializationGate.Groups['body'].Value -notmatch '\$AllowDatabaseReset' -or
+        -not $legacyImageGate.Success -or -not $strictImageGuard.Success) {
+    throw 'The legacy mysql:8.4 container exception must require the exact confirmed Initialize request and stay rejected for Test.'
+}
+
+$databaseRefreshIndex = $runnerText.IndexOf('$refreshDatabaseArgs = $composeBaseArgs', [StringComparison]::Ordinal)
+$resolvedVolumesIndex = $runnerText.IndexOf('$resolvedVolumes = @($resolvedConfig.volumes.PSObject.Properties)', [StringComparison]::Ordinal)
+$pinnedImageCheckIndex = $runnerText.IndexOf('$targetDatabaseImageId = (& $dockerPath image inspect ''mysql:8.4.13''', [StringComparison]::Ordinal)
+$runnerCommandIndex = $runnerText.IndexOf('& $dockerPath @composeArgs', [StringComparison]::Ordinal)
+if ($resolvedVolumesIndex -lt 0 -or $pinnedImageCheckIndex -le $resolvedVolumesIndex -or
+        $databaseRefreshIndex -le $pinnedImageCheckIndex -or $runnerCommandIndex -le $databaseRefreshIndex) {
+    throw 'The old-profile refresh must follow complete read-only Compose/volume validation and local image verification, then precede PHPUnit initialization.'
 }
 
 $consentIndex = $runnerText.IndexOf('if (-not $ConfirmDisposableTarget)', [StringComparison]::Ordinal)
@@ -125,10 +163,10 @@ if ($composeText -match '(?m)^\s+ports\s*:') {
     throw 'The PHPUnit Compose stack must not publish host ports.'
 }
 $phpunitConfig = Get-Content -LiteralPath (Join-Path $repoRoot 'phpunit\config.php') -Raw
-if ($composeText -notmatch '(?m)^\s+image:\s*mysql:8\.4\s*$' -or
+if ($composeText -notmatch '(?m)^\s+image:\s*mysql:8\.4\.13\s*$' -or
         $phpunitConfig -notmatch '\$CFG->dbhost = ''phpunit-db'';' -or
         $phpunitConfig -notmatch '\$CFG->dbname = ''rtc_moodle_phpunit'';') {
-    throw 'The rehearsal target must be pinned to its local MySQL 8.4 service and dedicated schema.'
+    throw 'The rehearsal target must be pinned to its local MySQL 8.4.13 service and dedicated schema.'
 }
 $networkMatch = [regex]::Match($composeText, '(?ms)^networks:\r?\n(?<body>(?:[ \t]+.*(?:\r?\n|$))*)')
 if (-not $networkMatch.Success -or

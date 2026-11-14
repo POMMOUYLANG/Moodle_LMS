@@ -47,6 +47,13 @@ if ($ExpectedDatabaseName -cne $databaseName) {
 if ($Action -eq 'Initialize' -and -not $AllowDatabaseReset) {
     throw 'Initialize can rebuild the PHPUnit schema. Pass -AllowDatabaseReset only after confirming the isolated profile name and schema.'
 }
+$confirmedProfileInitialization = (
+    $Action -eq 'Initialize' -and
+    $ConfirmDisposableTarget -and
+    $ExpectedProjectName -ceq $composeProjectName -and
+    $ExpectedDatabaseName -ceq $databaseName -and
+    $AllowDatabaseReset
+)
 
 Write-Output "Disposable Moodle PHPUnit target confirmed: $composeProjectName / $databaseName"
 
@@ -98,7 +105,7 @@ $composeBaseArgs = @(
     '--env-file', $envPath,
     '-f', $composePath
 )
-$composeArgs = $composeBaseArgs + @('run', '--rm')
+$composeArgs = $composeBaseArgs + @('run', '--rm', '--pull', 'never')
 if ($Action -eq 'Test') {
     # Reuse the already-running disposable database without allowing Compose to start it.
     $composeArgs += @('--no-deps')
@@ -216,6 +223,7 @@ if ($LASTEXITCODE -ne 0) {
 if ($containerIds.Count -gt 1) {
     throw 'The isolated PHPUnit project contains unexpected containers. Inspect them manually; refusing to reuse the profile.'
 }
+$databaseContainerNeedsRefresh = $false
 if ($containerIds.Count -eq 1) {
     $containerLabelsJson = (& $dockerPath inspect $containerIds[0] --format '{{json .Config.Labels}}' 2>&1 | Out-String).Trim()
     $containerEnvironmentJson = (& $dockerPath inspect $containerIds[0] --format '{{json .Config.Env}}' 2>&1 | Out-String).Trim()
@@ -255,14 +263,21 @@ if ($containerIds.Count -eq 1) {
     $databaseEnvironmentMatches = @($expectedDatabaseEnvironment | Where-Object {
         $_ -cnotin $containerEnvironment
     }).Count -eq 0
+    $isPinnedDatabaseImage = $containerImage -ceq 'mysql:8.4.13'
+    $isApprovedLegacyImage = (
+        $containerImage -ceq 'mysql:8.4' -and
+        $confirmedProfileInitialization
+    )
     if (-not $containerProjectLabel -or -not $containerServiceLabel -or
             $containerProjectLabel.Value -cne $composeProjectName -or $containerServiceLabel.Value -cne 'phpunit-db' -or
-            $containerImage -cne 'mysql:8.4' -or $containerMounts.Count -ne 1 -or $databaseMounts.Count -ne 1 -or
+            (-not $isPinnedDatabaseImage -and -not $isApprovedLegacyImage) -or
+            $containerMounts.Count -ne 1 -or $databaseMounts.Count -ne 1 -or
             $containerNetworkNames.Count -ne 1 -or $containerNetworkNames[0] -cne $expectedNetworkName -or
             $hasContainerPortBindings -or -not $databaseEnvironmentMatches -or
             $existingVolumes.Count -ne $expectedVolumes.Count) {
         throw 'The existing container is not the expected isolated PHPUnit database. Refusing to reuse it.'
     }
+    $databaseContainerNeedsRefresh = $isApprovedLegacyImage
 }
 
 $networkNames = @(& $dockerPath network ls --filter "label=com.docker.compose.project=$composeProjectName" --format '{{.Name}}' 2>&1)
@@ -330,9 +345,9 @@ try {
     $runnerService = $runnerServiceProperty.Value
     $dbHasPublishedPorts = $null -ne $dbService.ports -and @($dbService.ports).Count -gt 0
     $runnerHasPublishedPorts = $null -ne $runnerService.ports -and @($runnerService.ports).Count -gt 0
-    if ($dbService.image -cne 'mysql:8.4' -or
+    if ($dbService.image -cne 'mysql:8.4.13' -or
             $dbHasPublishedPorts -or $runnerHasPublishedPorts) {
-        throw 'The resolved target must use the local MySQL 8.4 image and publish no host ports.'
+        throw 'The resolved target must use the local MySQL 8.4.13 image and publish no host ports.'
     }
     $networks = @($resolvedConfig.networks.PSObject.Properties)
     $networkProperty = $resolvedConfig.networks.PSObject.Properties['phpunit']
@@ -399,6 +414,75 @@ try {
                 ($resolvedVolumeProperty.Value.name -and
                     $resolvedVolumeProperty.Value.name -cne $volume.Name)) {
             throw "The resolved PHPUnit volume '$($volume.Key)' is external or escapes its checkout-specific name."
+        }
+    }
+
+    if ($Action -eq 'Initialize') {
+        $targetDatabaseImageId = (& $dockerPath image inspect 'mysql:8.4.13' --format '{{.Id}}' 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $targetDatabaseImageId -eq '') {
+            throw 'Pinned MySQL 8.4.13 is not available locally. The PHPUnit runner will not pull images.'
+        }
+    }
+
+    if ($databaseContainerNeedsRefresh) {
+        # Replace only the proven checkout-owned DB container. Keep its exact named volume and never pull.
+        $refreshDatabaseArgs = $composeBaseArgs + @(
+            'up', '--detach', '--no-deps', '--pull', 'never', '--force-recreate', '--wait', 'phpunit-db'
+        )
+        & $dockerPath @refreshDatabaseArgs
+        $refreshExitCode = $LASTEXITCODE
+        if ($refreshExitCode -ne 0) {
+            throw 'Could not recreate the confirmed disposable PHPUnit database on the pinned local image.'
+        }
+
+        $refreshedContainerIds = @(& $dockerPath ps --all --quiet --filter "label=com.docker.compose.project=$composeProjectName" 2>&1)
+        if ($LASTEXITCODE -ne 0 -or $refreshedContainerIds.Count -ne 1) {
+            throw 'The refreshed PHPUnit profile does not contain exactly one database container; refusing schema initialization.'
+        }
+        $refreshedLabelsJson = (& $dockerPath inspect $refreshedContainerIds[0] --format '{{json .Config.Labels}}' 2>&1 | Out-String).Trim()
+        $refreshedEnvironmentJson = (& $dockerPath inspect $refreshedContainerIds[0] --format '{{json .Config.Env}}' 2>&1 | Out-String).Trim()
+        $refreshedImage = (& $dockerPath inspect $refreshedContainerIds[0] --format '{{.Config.Image}}' 2>&1 | Out-String).Trim()
+        $refreshedMountsJson = (& $dockerPath inspect $refreshedContainerIds[0] --format '{{json .Mounts}}' 2>&1 | Out-String).Trim()
+        $refreshedNetworksJson = (& $dockerPath inspect $refreshedContainerIds[0] --format '{{json .NetworkSettings.Networks}}' 2>&1 | Out-String).Trim()
+        $refreshedPortsJson = (& $dockerPath inspect $refreshedContainerIds[0] --format '{{json .HostConfig.PortBindings}}' 2>&1 | Out-String).Trim()
+        $refreshedStateJson = (& $dockerPath inspect $refreshedContainerIds[0] --format '{{json .State}}' 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $refreshedLabelsJson -eq '' -or $refreshedEnvironmentJson -eq '' -or
+                $refreshedMountsJson -eq '' -or $refreshedNetworksJson -eq '' -or $refreshedStateJson -eq '') {
+            throw 'Could not verify the refreshed PHPUnit database container; refusing schema initialization.'
+        }
+        try {
+            $refreshedLabels = $refreshedLabelsJson | ConvertFrom-Json
+            $refreshedEnvironment = @($refreshedEnvironmentJson | ConvertFrom-Json)
+            $refreshedMounts = @($refreshedMountsJson | ConvertFrom-Json)
+            $refreshedNetworks = $refreshedNetworksJson | ConvertFrom-Json
+            $refreshedPorts = $refreshedPortsJson | ConvertFrom-Json
+            $refreshedState = $refreshedStateJson | ConvertFrom-Json
+        } catch {
+            throw 'The refreshed PHPUnit database container returned invalid identity metadata.'
+        }
+        $refreshedProjectLabel = $refreshedLabels.PSObject.Properties['com.docker.compose.project']
+        $refreshedServiceLabel = $refreshedLabels.PSObject.Properties['com.docker.compose.service']
+        $refreshedNetworkNames = @($refreshedNetworks.PSObject.Properties.Name)
+        $refreshedDatabaseMounts = @($refreshedMounts | Where-Object {
+            $_.Type -eq 'volume' -and $_.Name -ceq $expectedVolumes[0].Name -and $_.Destination -eq '/var/lib/mysql'
+        })
+        $refreshedDatabaseEnvironmentMatches = @($expectedDatabaseEnvironment | Where-Object {
+            $_ -cnotin $refreshedEnvironment
+        }).Count -eq 0
+        $refreshedHasPortBindings = $null -ne $refreshedPorts -and @($refreshedPorts.PSObject.Properties).Count -gt 0
+        if (-not $refreshedProjectLabel -or -not $refreshedServiceLabel -or
+                $refreshedProjectLabel.Value -cne $composeProjectName -or $refreshedServiceLabel.Value -cne 'phpunit-db' -or
+                $refreshedImage -cne 'mysql:8.4.13' -or $refreshedMounts.Count -ne 1 -or
+                $refreshedDatabaseMounts.Count -ne 1 -or $refreshedNetworkNames.Count -ne 1 -or
+                $refreshedNetworkNames[0] -cne $expectedNetworkName -or $refreshedHasPortBindings -or
+                -not $refreshedDatabaseEnvironmentMatches -or $refreshedState.Status -cne 'running' -or
+                $refreshedState.Health.Status -cne 'healthy') {
+            throw 'The refreshed PHPUnit container does not match the confirmed dedicated profile; refusing schema initialization.'
+        }
+        $serverVersionCommand = 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --user=root --batch --skip-column-names -e "SELECT VERSION()"'
+        $serverVersion = (& $dockerPath exec $refreshedContainerIds[0] sh -c $serverVersionCommand 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $serverVersion -cne '8.4.13') {
+            throw 'The refreshed local PHPUnit database did not report MySQL 8.4.13; refusing schema initialization.'
         }
     }
 

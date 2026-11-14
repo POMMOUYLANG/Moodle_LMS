@@ -202,6 +202,7 @@ final class delivery_activity_access
             $deny();
         }
 
+        $currentmoduleauditcount = self::current_module_audit_count_sql();
         $module = $DB->get_record_sql(
             'SELECT cm.id,
                     cm.course AS courseid,
@@ -213,6 +214,7 @@ final class delivery_activity_access
                     delivery.lineagemanifestid,
                     delivery.managedavailability,
                     deliverygrouping.idnumber AS groupingidnumber,
+                    ' . $currentmoduleauditcount . ' AS currentmoduleauditcount,
                     (SELECT COUNT(*)
                        FROM {groupings} deliverygroupingidentity
                       WHERE deliverygroupingidentity.courseid = cm.course
@@ -359,6 +361,7 @@ final class delivery_activity_access
             $deny();
         }
 
+        $currentmoduleauditcount = self::current_module_audit_count_sql();
         $modules = $DB->get_records_sql(
             'SELECT cm.id,
                     cm.course AS courseid,
@@ -370,6 +373,7 @@ final class delivery_activity_access
                     delivery.lineagemanifestid,
                     delivery.managedavailability,
                     deliverygrouping.idnumber AS groupingidnumber,
+                    ' . $currentmoduleauditcount . ' AS currentmoduleauditcount,
                     (SELECT COUNT(*)
                        FROM {groupings} deliverygroupingidentity
                       WHERE deliverygroupingidentity.courseid = cm.course
@@ -1048,6 +1052,7 @@ final class delivery_activity_access
             return false;
         }
 
+        $currentmoduleauditcount = self::current_module_audit_count_sql();
         $module = $DB->get_record_sql(
             'SELECT cm.id,
                     cm.course AS courseid,
@@ -1059,6 +1064,7 @@ final class delivery_activity_access
                     delivery.lineagemanifestid,
                     delivery.managedavailability,
                     deliverygrouping.idnumber AS groupingidnumber,
+                    ' . $currentmoduleauditcount . ' AS currentmoduleauditcount,
                     (SELECT COUNT(*)
                        FROM {groupings} deliverygroupingidentity
                       WHERE deliverygroupingidentity.courseid = cm.course
@@ -1125,7 +1131,8 @@ final class delivery_activity_access
 
         if ($deliveryid > 0) {
             if ($lineagestatus !== self::LINEAGE_CURRENT
-                    || trim((string) ($module->lineagemanifestid ?? '')) === '') {
+                    || trim((string) ($module->lineagemanifestid ?? '')) === ''
+                    || (int) ($module->currentmoduleauditcount ?? 0) !== 1) {
                 return false;
             }
             if (self::has_conflicting_delivery_history_mapping(
@@ -1147,6 +1154,22 @@ final class delivery_activity_access
             && $groupingid < 0
             && $lineagestatus !== self::LINEAGE_CURRENT
             && $module->groupingidnumber === null;
+    }
+
+    /** Count exact current-module audit rows for the mapping loaded as delivery. */
+    private static function current_module_audit_count_sql(): string
+    {
+        global $DB;
+
+        $deliveryidsjson = $DB->sql_concat("'['", $DB->sql_cast_to_char('delivery.deliveryid'), "']'");
+        return '(SELECT COUNT(1)
+                   FROM {local_rtcsync_lineageaudit} currentmoduleaudit
+                  WHERE currentmoduleaudit.manifestid = delivery.lineagemanifestid
+                    AND currentmoduleaudit.courseid = cm.course
+                    AND currentmoduleaudit.recordtype = \'module\'
+                    AND currentmoduleaudit.targetid = cm.id
+                    AND currentmoduleaudit.decision = \'current\'
+                    AND currentmoduleaudit.deliveryids = ' . $deliveryidsjson . ')';
     }
 
     /** Count matching RTC delivery grouping rows, capped at two for ambiguity checks. */
@@ -1848,6 +1871,7 @@ final class delivery_activity_access
      * @param int $courselimit Maximum number of courses to inspect.
      * @param int $modulelimit Maximum modules per course in this run.
      * @return int Number of module rows guarded.
+     * @throws \moodle_exception If any course failed after the remaining batch was attempted.
      */
     public static function backfill_pending_courses(int $courselimit = 10, int $modulelimit = self::MODULE_PAGE_SIZE): int
     {
@@ -1862,23 +1886,48 @@ final class delivery_activity_access
 
         $states = $DB->get_records('local_rtcsync_deliverycourse', ['ready' => 0], 'id ASC', '*', 0, $courselimit);
         $processed = 0;
+        $failedcourseids = [];
+        $failuredetails = [];
         foreach ($states as $state) {
             $courseid = (int) $state->courseid;
-            $processed += self::with_course_lock($courseid, static function() use ($courseid, $modulelimit): int {
-                global $DB;
+            try {
+                $processed += self::with_course_lock($courseid, static function() use ($courseid, $modulelimit): int {
+                    global $DB;
 
-                $current = $DB->get_record('local_rtcsync_deliverycourse', ['courseid' => $courseid], '*', IGNORE_MISSING);
-                if (!$current || (int) $current->ready === 1) {
-                    return 0;
-                }
-                if (!self::supports_standard_grouping_restrictions()) {
+                    $current = $DB->get_record('local_rtcsync_deliverycourse', ['courseid' => $courseid], '*', IGNORE_MISSING);
+                    if (!$current || (int) $current->ready === 1) {
+                        return 0;
+                    }
+                    if (!self::supports_standard_grouping_restrictions()) {
+                        self::fail_closed_course($courseid);
+                        return 0;
+                    }
+                    self::lock_course($courseid);
+                    self::suspend_active_managed_students($courseid);
+                    return self::process_course_page($courseid, $modulelimit);
+                });
+            } catch (\Throwable $exception) {
+                $failuremessage = $exception->getMessage();
+                try {
+                    // Keep this course hidden and eligible for the next scheduled or explicit retry.
                     self::fail_closed_course($courseid);
-                    return 0;
+                } catch (\Throwable $failclosedexception) {
+                    $failuremessage .= '; fail-closed recovery failed: ' . $failclosedexception->getMessage();
                 }
-                self::lock_course($courseid);
-                self::suspend_active_managed_students($courseid);
-                return self::process_course_page($courseid, $modulelimit);
-            });
+                $failedcourseids[] = $courseid;
+                $failuredetails[] = 'Course ' . $courseid . ': ' . $failuremessage;
+                mtrace('Delivery activity backfill failed for course ' . $courseid . ': ' . $failuremessage);
+            }
+        }
+
+        if ($failedcourseids) {
+            throw new \moodle_exception(
+                'deliveryactivitybackfillfailed',
+                'local_rtcsync',
+                '',
+                implode(', ', $failedcourseids),
+                implode(PHP_EOL, $failuredetails)
+            );
         }
 
         return $processed;
@@ -2457,8 +2506,15 @@ final class delivery_activity_access
         $course = $DB->get_record('course', ['id' => $courseid], 'id,visible', IGNORE_MISSING);
         if ($course && (int) $course->visible !== 0) {
             $DB->set_field('course', 'visible', 0, ['id' => $courseid]);
-            rebuild_course_cache($courseid, true);
+            self::refresh_course_visibility_cache($courseid);
         }
+    }
+
+    /** Invalidate course modinfo and course-list caches after changing visibility. */
+    private static function refresh_course_visibility_cache(int $courseid): void
+    {
+        rebuild_course_cache($courseid, true);
+        \cache_helper::purge_by_event('changesincourse');
     }
 
     /** Suspend managed Student manual enrolments without deleting markers or roles. */
@@ -2500,8 +2556,8 @@ final class delivery_activity_access
     }
 
     /**
-     * Hide a course and suspend its managed RTC student enrollments after a
-     * synchronous module guard failure.
+     * Hide a course and suspend its managed RTC student enrollments after an
+     * access-preparation failure.
      */
     private static function fail_closed_course(int $courseid): void
     {
@@ -2513,8 +2569,8 @@ final class delivery_activity_access
         $state->timemodified = self::next_state_modified($state);
         $DB->update_record('local_rtcsync_deliverycourse', $state);
         $DB->set_field('course', 'visible', 0, ['id' => $courseid]);
-        rebuild_course_cache($courseid, true);
         self::suspend_active_managed_students($courseid);
+        self::refresh_course_visibility_cache($courseid);
     }
 
     /** Get or initialize guarded-access state for one managed subject course. */
@@ -2587,18 +2643,44 @@ final class delivery_activity_access
             return count($modules);
         }
         $ready = count($modules) < $limit;
+        if ($ready && $DB->is_transaction_started()) {
+            // Course-module observers can call this while Moodle's outer create/update transaction is open.
+            // Leave the course hidden and pending so a later post-commit backfill can finalize it without
+            // nesting a rollback that would also undo the caller's transaction.
+            $ready = false;
+        }
         $statemodified = self::next_state_modified($expectedstate);
-        if (!self::compare_and_update_course_state(
-                $expectedstate,
-                (int) $ready,
-                $lastcmid,
-                $statemodified
-        )) {
-            // An out-of-lock fail-closed signal changed the state while this
-            // page was running. Do not publish stale readiness or visibility.
+        if (!$ready) {
+            if (!self::compare_and_update_course_state(
+                    $expectedstate,
+                    0,
+                    $lastcmid,
+                    $statemodified
+            )) {
+                // An out-of-lock fail-closed signal changed the state while this
+                // page was running. Do not publish a stale cursor.
+                return count($modules);
+            }
             return count($modules);
         }
-        if ($ready) {
+
+        // Publish readiness and restore the requested course visibility as one
+        // database change. If the visibility write fails or is a silent no-op,
+        // the transaction must leave the course locked and not ready.
+        $transaction = $DB->start_delegated_transaction();
+        try {
+            if (!self::compare_and_update_course_state(
+                    $expectedstate,
+                    1,
+                    $lastcmid,
+                    $statemodified
+            )) {
+                // An out-of-lock fail-closed signal changed the state while this
+                // page was running. Do not publish stale readiness or visibility.
+                $transaction->allow_commit();
+                return count($modules);
+            }
+
             $restorevisible = (int) $DB->get_field(
                 'local_rtcsync_deliverycourse',
                 'coursevisible',
@@ -2625,7 +2707,33 @@ final class delivery_activity_access
                     'restorevisible' => $restorevisible,
                 ]
             );
-            rebuild_course_cache($courseid, true);
+            $actualvisibility = (int) $DB->get_field('course', 'visible', ['id' => $courseid], MUST_EXIST);
+            if ($actualvisibility !== $restorevisible) {
+                throw new \coding_exception('Could not restore course visibility after delivery access preparation.');
+            }
+
+            $transaction->allow_commit();
+        } catch (\Throwable $exception) {
+            $transaction->rollback($exception);
+        }
+
+        try {
+            self::refresh_course_visibility_cache($courseid);
+        } catch (\Throwable $exception) {
+            // The visibility transaction has committed, but a failed cache clear must remain retryable.
+            // Put the course back into pending state so scheduled backfill will retry the clear.
+            try {
+                self::fail_closed_course($courseid);
+            } catch (\Throwable $failclosedexception) {
+                throw new \moodle_exception(
+                    'error',
+                    'local_rtcsync',
+                    '',
+                    null,
+                    $exception->getMessage() . '; course lockdown failed: ' . $failclosedexception->getMessage()
+                );
+            }
+            throw $exception;
         }
 
         return count($modules);

@@ -843,6 +843,34 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
             (int) $user->id
         );
 
+        $currentaudit = $DB->get_record('local_rtcsync_lineageaudit', [
+            'manifestid' => 'current-release',
+            'courseid' => (int) $target['course']->id,
+            'recordtype' => 'module',
+            'targetid' => (int) $target['cm']->id,
+            'decision' => 'current',
+            'deliveryids' => json_encode([(int) $target['deliveryid']]),
+        ], '*', MUST_EXIST);
+        $DB->delete_records('local_rtcsync_lineageaudit', ['id' => (int) $currentaudit->id]);
+        $this->assertFalse(delivery_activity_access::student_module_content_is_in_current_delivery(
+            (int) $target['course']->id,
+            (int) $target['cm']->id,
+            (int) $user->id
+        ), 'A manifest ID without its exact current decision audit must not authorize activity access.');
+        try {
+            delivery_activity_access::require_student_module_access(
+                (int) $target['course']->id,
+                (int) $target['cm']->id,
+                (int) $user->id
+            );
+            $this->fail('A current module without its exact decision audit must be inaccessible.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('activityiscurrentlyhidden', $exception->errorcode);
+        }
+        $restoredaudit = clone $currentaudit;
+        unset($restoredaudit->id);
+        $DB->insert_record('local_rtcsync_lineageaudit', $restoredaudit);
+
         $DB->set_field('local_rtcsync_deliverycm', 'lineagemanifestid', null, [
             'cmid' => (int) $target['cm']->id,
             'courseid' => (int) $target['course']->id,
@@ -1126,7 +1154,7 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
         ]);
         $this->setUser($user);
         $history = new student_history();
-        $this->assertSame(81.0, $history->visible_results()['results'][0]['grade']);
+        $this->assertSame([], $history->visible_results()['results']);
 
         $nextdeliveryid = (int) $target['deliveryid'] + 1000;
         $nextgrouping = $this->getDataGenerator()->create_grouping([

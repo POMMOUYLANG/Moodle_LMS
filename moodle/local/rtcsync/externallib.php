@@ -12,6 +12,11 @@ require_once($CFG->libdir . '/enrollib.php');
 require_once($CFG->libdir . '/gradelib.php');
 require_once($CFG->libdir . '/grade/grade_item.php');
 
+/** Internal signal that a concurrent course-fence claim requires a fresh transaction. */
+final class local_rtcsync_course_sync_retry_exception extends \RuntimeException
+{
+}
+
 class local_rtcsync_external extends external_api
 {
     private const MIN_REVISIONED_HISTORY_SCOPE_VERSION = 2026103101;
@@ -40,6 +45,18 @@ class local_rtcsync_external extends external_api
                 'visible' => new external_value(PARAM_INT, 'Course visibility.', VALUE_DEFAULT, 1),
                 'startdate' => new external_value(PARAM_INT, 'Course start timestamp.', VALUE_DEFAULT, 0),
                 'enddate' => new external_value(PARAM_INT, 'Course end timestamp.', VALUE_DEFAULT, 0),
+                'source_revision' => new external_value(
+                    PARAM_RAW,
+                    'Optional positive RTC source revision.',
+                    VALUE_DEFAULT,
+                    ''
+                ),
+                'idempotency_key' => new external_value(
+                    PARAM_RAW,
+                    'Optional deterministic RTC course mutation key.',
+                    VALUE_DEFAULT,
+                    ''
+                ),
             ]),
         ]);
     }
@@ -57,66 +74,285 @@ class local_rtcsync_external extends external_api
             );
         }
 
+        $revision = self::parse_course_source_revision($course['source_revision'] ?? '');
+        $idempotencykey = trim((string) ($course['idempotency_key'] ?? ''));
+        if (($revision === null) !== ($idempotencykey === '')) {
+            throw new invalid_parameter_exception(
+                'Course source_revision and idempotency_key must be supplied together.'
+            );
+        }
+        if ($revision !== null) {
+            if (!preg_match('/\Artc-subject:([1-9][0-9]*)\z/', $course['idnumber'], $matches)
+                    || $idempotencykey !== 'rtc-course:' . $matches[1] . ':' . $revision) {
+                throw new invalid_parameter_exception(
+                    'Versioned course requests require the deterministic rtc-course:<subject id>:<source revision> idempotency key.'
+                );
+            }
+        }
+        if (!in_array((int) $course['visible'], [0, 1], true)) {
+            throw new invalid_parameter_exception('Course visibility must be 0 or 1.');
+        }
+
+        $canonicalpayload = self::canonical_course_source_payload($course);
+        $payloadhash = null;
+        if ($revision !== null) {
+            $encodedpayload = json_encode($canonicalpayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            if ($encodedpayload === false) {
+                throw new invalid_parameter_exception('Course payload cannot be canonicalized.');
+            }
+            $payloadhash = hash('sha256', $encodedpayload);
+        }
+
         $systemcontext = context_system::instance();
         self::validate_context($systemcontext);
         require_capability('moodle/category:manage', $systemcontext);
 
-        $categoryid = self::ensure_category_path(
-            $course['category_path'] ?? [],
-            $course['category_idnumber'],
-            $course['category_name']
+        return self::with_course_identity_lock(
+            (string) $course['idnumber'],
+            static function() use (
+                $DB,
+                $course,
+                $canonicalpayload,
+                $revision,
+                $idempotencykey,
+                $payloadhash
+            ): array {
+                // Never fall back to shortname matching: a reused display
+                // identifier must not let SMS overwrite a manual course. Use
+                // the unique sync-state row as the database revision fence;
+                // bounded retries resolve a concurrent first-row insert or a
+                // lost conditional claim using a fresh transaction snapshot.
+                for ($attempt = 0; $attempt < 3; $attempt++) {
+                    try {
+                        $transaction = $DB->start_delegated_transaction();
+                        try {
+                            $state = $DB->get_record(
+                                'local_rtcsync_coursesync',
+                                ['idnumber' => $course['idnumber']],
+                                '*',
+                                IGNORE_MISSING
+                            );
+                            $hadstate = (bool) $state;
+
+                            if ($state && $revision === null && (int) $state->sourcerevision > 0) {
+                                throw new invalid_parameter_exception(
+                                    'This RTC subject has opted into source revisions; unversioned course mutations are no longer accepted.'
+                                );
+                            }
+
+                            $existing = false;
+                            if ($state) {
+                                $storedrevision = (int) $state->sourcerevision;
+                                if ($storedrevision > 0) {
+                                    $existing = $DB->get_record(
+                                        'course',
+                                        ['id' => (int) $state->courseid],
+                                        '*',
+                                        IGNORE_MISSING
+                                    );
+                                    if (!$existing || (string) $existing->idnumber !== (string) $course['idnumber']) {
+                                        throw new invalid_parameter_exception(
+                                            'The versioned RTC course target is missing or no longer has its recorded stable identity.'
+                                        );
+                                    }
+                                } else if ($revision !== null) {
+                                    // Revision-zero rows are provisional legacy
+                                    // identity locks, not a positive source fence.
+                                    $matchingcourses = $DB->get_records(
+                                        'course',
+                                        ['idnumber' => $course['idnumber']],
+                                        'id ASC',
+                                        '*',
+                                        0,
+                                        2
+                                    );
+                                    if (count($matchingcourses) > 1) {
+                                        throw new invalid_parameter_exception(
+                                            'The versioned RTC course identity matches multiple Moodle courses.'
+                                        );
+                                    }
+                                    $existing = $matchingcourses ? reset($matchingcourses) : false;
+                                } else {
+                                    $existing = $DB->get_record('course', [
+                                        'idnumber' => $course['idnumber'],
+                                    ], '*', IGNORE_MISSING);
+                                }
+
+                                if ($existing) {
+                                    // Replays and stale no-ops still return this
+                                    // existing mapping under the ordinary update
+                                    // authorization boundary.
+                                    $coursecontext = context_course::instance((int) $existing->id);
+                                    self::validate_context($coursecontext);
+                                    require_capability('moodle/course:update', $coursecontext);
+                                }
+
+                                if ($revision !== null && $revision < $storedrevision) {
+                                    $result = self::course_sync_result($existing, $storedrevision, false, false);
+                                    $transaction->allow_commit();
+                                    return $result;
+                                }
+                                if ($revision !== null && $revision === $storedrevision) {
+                                    if ((string) $state->idempotencykey !== $idempotencykey
+                                            || !hash_equals((string) $state->payloadhash, (string) $payloadhash)) {
+                                        throw new invalid_parameter_exception(
+                                            'The course source revision was already used with a different key or payload.'
+                                        );
+                                    }
+                                    $result = self::course_sync_result($existing, $storedrevision, false, true);
+                                    $transaction->allow_commit();
+                                    return $result;
+                                }
+
+                                if ($revision === null) {
+                                    self::claim_legacy_course_identity($state, (string) $course['idnumber']);
+                                } else {
+                                    self::claim_course_source_revision(
+                                        $state,
+                                        (string) $course['idnumber'],
+                                        $revision,
+                                        $idempotencykey,
+                                        (string) $payloadhash
+                                    );
+                                }
+                            } else {
+                                if ($revision !== null) {
+                                    // Moodle's course idnumber index is deliberately
+                                    // non-unique. Do not establish a stable revision
+                                    // fence against an arbitrary duplicate target.
+                                    $matchingcourses = $DB->get_records(
+                                        'course',
+                                        ['idnumber' => $course['idnumber']],
+                                        'id ASC',
+                                        '*',
+                                        0,
+                                        2
+                                    );
+                                    if (count($matchingcourses) > 1) {
+                                        throw new invalid_parameter_exception(
+                                            'The versioned RTC course identity matches multiple Moodle courses.'
+                                        );
+                                    }
+                                    $existing = $matchingcourses ? reset($matchingcourses) : false;
+                                } else {
+                                    $existing = $DB->get_record('course', [
+                                        'idnumber' => $course['idnumber'],
+                                    ], '*', IGNORE_MISSING);
+                                }
+
+                                // Revision zero records identity serialization for
+                                // legacy writers. A versioned first call claims its
+                                // positive revision in this unique insert.
+                                $now = time();
+                                $claimtoken = bin2hex(random_bytes(16));
+                                $state = (object) [
+                                    'idnumber' => (string) $course['idnumber'],
+                                    'courseid' => $existing ? (int) $existing->id : 0,
+                                    'sourcerevision' => $revision ?? 0,
+                                    'idempotencykey' => $revision === null ? '' : $idempotencykey,
+                                    'payloadhash' => $revision === null ? '' : (string) $payloadhash,
+                                    'fencetoken' => $claimtoken,
+                                    'coursevisible' => (int) $canonicalpayload['visible'],
+                                    'timecreated' => $now,
+                                    'timemodified' => $now,
+                                ];
+                                try {
+                                    $state->id = $DB->insert_record('local_rtcsync_coursesync', $state);
+                                } catch (\dml_write_exception $exception) {
+                                    throw new local_rtcsync_course_sync_retry_exception(
+                                        'A concurrent first course-sync row claim must be retried.',
+                                        0,
+                                        $exception
+                                    );
+                                }
+                            }
+
+                            // The revision claim is held in this transaction
+                            // before category or course mutations begin.
+                            $categoryid = self::ensure_category_path(
+                                $course['category_path'] ?? [],
+                                $course['category_idnumber'],
+                                $course['category_name']
+                            );
+                            $categorycontext = context_coursecat::instance($categoryid);
+                            require_capability('moodle/course:create', $categorycontext);
+
+                            $data = (object) [
+                                'fullname' => $canonicalpayload['fullname'],
+                                'shortname' => $canonicalpayload['shortname'],
+                                'idnumber' => $canonicalpayload['idnumber'],
+                                'category' => $categoryid,
+                                'summary' => $canonicalpayload['summary'],
+                                'summaryformat' => FORMAT_HTML,
+                                'visible' => $canonicalpayload['visible'],
+                                'format' => 'topics',
+                                'numsections' => 1,
+                            ];
+
+                            if (!empty($canonicalpayload['startdate'])) {
+                                $data->startdate = $canonicalpayload['startdate'];
+                            }
+                            if (!empty($canonicalpayload['enddate'])) {
+                                $data->enddate = $canonicalpayload['enddate'];
+                            }
+
+                            if ($existing) {
+                                if (!$hadstate) {
+                                    $coursecontext = context_course::instance($existing->id);
+                                    self::validate_context($coursecontext);
+                                    require_capability('moodle/course:update', $coursecontext);
+                                }
+
+                                $data->id = $existing->id;
+                                $saved = \local_rtcsync\local\delivery_activity_access::synchronize_course_metadata(
+                                    (int) $existing->id,
+                                    static function() use ($data): void {
+                                        update_course($data);
+                                    },
+                                    (int) $data->visible
+                                );
+                            } else {
+                                $saved = create_course($data);
+                                \local_rtcsync\local\delivery_activity_access::ensure_grouping_ui_enabled((int) $saved->id);
+                                $saved = $DB->get_record('course', ['id' => (int) $saved->id], '*', MUST_EXIST);
+                            }
+
+                            $state->courseid = (int) $saved->id;
+                            $state->coursevisible = (int) $saved->visible;
+                            $state->timemodified = time();
+                            $DB->update_record('local_rtcsync_coursesync', $state);
+
+                            $result = [
+                                'id' => (int) $saved->id,
+                                'shortname' => $saved->shortname,
+                                'idnumber' => $saved->idnumber,
+                                'categoryid' => (int) $saved->category,
+                            ];
+                            if ($revision !== null) {
+                                $result += [
+                                    'source_revision' => $revision,
+                                    'applied' => 1,
+                                    'replayed' => 0,
+                                ];
+                            }
+                            $transaction->allow_commit();
+                            return $result;
+                        } catch (\Throwable $exception) {
+                            $transaction->rollback($exception);
+                        }
+                    } catch (local_rtcsync_course_sync_retry_exception $exception) {
+                        if ($attempt >= 2) {
+                            if ($exception->getPrevious()) {
+                                throw $exception->getPrevious();
+                            }
+                            throw new \moodle_exception('locktimeout');
+                        }
+                    }
+                }
+
+                throw new \moodle_exception('locktimeout');
+            }
         );
-        $categorycontext = context_coursecat::instance($categoryid);
-        require_capability('moodle/course:create', $categorycontext);
-
-        // Never fall back to shortname matching: a reused display identifier
-        // must not let SMS overwrite a manually managed Moodle course.
-        $existing = $DB->get_record('course', ['idnumber' => $course['idnumber']], '*', IGNORE_MISSING);
-
-        $data = (object) [
-            'fullname' => trim($course['fullname']),
-            'shortname' => trim($course['shortname']),
-            'idnumber' => trim($course['idnumber']),
-            'category' => $categoryid,
-            'summary' => $course['summary'],
-            'summaryformat' => FORMAT_HTML,
-            'visible' => (int) $course['visible'],
-            'format' => 'topics',
-            'numsections' => 1,
-        ];
-
-        if (!empty($course['startdate'])) {
-            $data->startdate = (int) $course['startdate'];
-        }
-        if (!empty($course['enddate'])) {
-            $data->enddate = (int) $course['enddate'];
-        }
-
-        if ($existing) {
-            $coursecontext = context_course::instance($existing->id);
-            self::validate_context($coursecontext);
-            require_capability('moodle/course:update', $coursecontext);
-
-            $data->id = $existing->id;
-            $saved = \local_rtcsync\local\delivery_activity_access::synchronize_course_metadata(
-                (int) $existing->id,
-                static function() use ($data): void {
-                    update_course($data);
-                },
-                (int) $data->visible
-            );
-        } else {
-            $saved = create_course($data);
-            \local_rtcsync\local\delivery_activity_access::ensure_grouping_ui_enabled((int) $saved->id);
-            $saved = $DB->get_record('course', ['id' => (int) $saved->id], '*', MUST_EXIST);
-        }
-
-        return [
-            'id' => (int) $saved->id,
-            'shortname' => $saved->shortname,
-            'idnumber' => $saved->idnumber,
-            'categoryid' => (int) $saved->category,
-        ];
     }
 
     public static function upsert_course_returns(): external_single_structure
@@ -126,7 +362,168 @@ class local_rtcsync_external extends external_api
             'shortname' => new external_value(PARAM_TEXT, 'Course shortname.'),
             'idnumber' => new external_value(PARAM_RAW, 'Course idnumber.'),
             'categoryid' => new external_value(PARAM_INT, 'Course category id.'),
+            'source_revision' => new external_value(PARAM_INT, 'Latest RTC source revision.', VALUE_OPTIONAL),
+            'applied' => new external_value(PARAM_INT, 'Whether the submitted versioned mutation was applied.', VALUE_OPTIONAL),
+            'replayed' => new external_value(PARAM_INT, 'Whether the submitted mutation was an idempotent replay.', VALUE_OPTIONAL),
         ]);
+    }
+
+    /** Parse a positive source revision without allowing PARAM_INT coercion to change its value. */
+    private static function parse_course_source_revision($value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (!is_int($value) && !is_string($value)) {
+            throw new invalid_parameter_exception('Course source_revision must be a positive integer.');
+        }
+
+        $revision = (string) $value;
+        $maximum = (string) PHP_INT_MAX;
+        if (!preg_match('/\A[1-9][0-9]{0,18}\z/', $revision)
+                || strlen($revision) > strlen($maximum)
+                || (strlen($revision) === strlen($maximum) && strcmp($revision, $maximum) > 0)) {
+            throw new invalid_parameter_exception('Course source_revision must be a positive PHP integer.');
+        }
+
+        return (int) $revision;
+    }
+
+    /** Canonical source-controlled course fields used to detect same-revision payload conflicts. */
+    private static function canonical_course_source_payload(array $course): array
+    {
+        $categorypath = [];
+        foreach ($course['category_path'] ?? [] as $node) {
+            $categorypath[] = [
+                'idnumber' => trim((string) $node['idnumber']),
+                'name' => trim((string) $node['name']),
+            ];
+        }
+
+        return [
+            'fullname' => trim((string) $course['fullname']),
+            'shortname' => trim((string) $course['shortname']),
+            'idnumber' => trim((string) $course['idnumber']),
+            'summary' => (string) $course['summary'],
+            'category_idnumber' => trim((string) $course['category_idnumber']),
+            'category_name' => trim((string) $course['category_name']),
+            'category_path' => $categorypath,
+            'visible' => (int) $course['visible'],
+            'startdate' => (int) $course['startdate'],
+            'enddate' => (int) $course['enddate'],
+        ];
+    }
+
+    /** Claim a strictly higher source revision before any course-side effects. */
+    private static function claim_course_source_revision(
+        \stdClass $state,
+        string $idnumber,
+        int $revision,
+        string $idempotencykey,
+        string $payloadhash
+    ): void {
+        global $DB;
+
+        $expectedrevision = (int) $state->sourcerevision;
+        if ($revision <= $expectedrevision) {
+            throw new \coding_exception('Course revision claims must be strictly increasing.');
+        }
+
+        $claimtoken = bin2hex(random_bytes(16));
+        $now = time();
+        $DB->execute(
+            'UPDATE {local_rtcsync_coursesync}
+                SET sourcerevision = :newrevision,
+                    idempotencykey = :idempotencykey,
+                    payloadhash = :payloadhash,
+                    fencetoken = :fencetoken,
+                    timemodified = :timemodified
+              WHERE id = :id
+                AND idnumber = :idnumber
+                AND sourcerevision = :expectedrevision
+                AND sourcerevision < :minimumrevision',
+            [
+                'newrevision' => $revision,
+                'idempotencykey' => $idempotencykey,
+                'payloadhash' => $payloadhash,
+                'fencetoken' => $claimtoken,
+                'timemodified' => $now,
+                'id' => (int) $state->id,
+                'idnumber' => $idnumber,
+                'expectedrevision' => $expectedrevision,
+                'minimumrevision' => $revision,
+            ]
+        );
+
+        // DML execute() does not expose a portable affected-row count. A
+        // per-attempt token distinguishes our conditional write from a newer
+        // transaction that won while this request was waiting.
+        $storedtoken = (string) $DB->get_field(
+            'local_rtcsync_coursesync',
+            'fencetoken',
+            ['id' => (int) $state->id],
+            MUST_EXIST
+        );
+        if (!hash_equals($claimtoken, $storedtoken)) {
+            throw new local_rtcsync_course_sync_retry_exception('A concurrent course revision claim won first.');
+        }
+
+        $state->sourcerevision = $revision;
+        $state->idempotencykey = $idempotencykey;
+        $state->payloadhash = $payloadhash;
+        $state->fencetoken = $claimtoken;
+        $state->timemodified = $now;
+    }
+
+    /** Fence legacy writes at revision zero until the first versioned claim. */
+    private static function claim_legacy_course_identity(\stdClass $state, string $idnumber): void
+    {
+        global $DB;
+
+        if ((int) $state->sourcerevision !== 0) {
+            throw new \coding_exception('Legacy course writes cannot claim a versioned course identity.');
+        }
+
+        $claimtoken = bin2hex(random_bytes(16));
+        $DB->execute(
+            'UPDATE {local_rtcsync_coursesync}
+                SET fencetoken = :fencetoken
+              WHERE id = :id
+                AND idnumber = :idnumber
+                AND sourcerevision = :sourcerevision',
+            [
+                'fencetoken' => $claimtoken,
+                'id' => (int) $state->id,
+                'idnumber' => $idnumber,
+                'sourcerevision' => 0,
+            ]
+        );
+
+        $storedtoken = (string) $DB->get_field(
+            'local_rtcsync_coursesync',
+            'fencetoken',
+            ['id' => (int) $state->id],
+            MUST_EXIST
+        );
+        if (!hash_equals($claimtoken, $storedtoken)) {
+            throw new local_rtcsync_course_sync_retry_exception('A versioned course claim won before the legacy write.');
+        }
+
+        $state->fencetoken = $claimtoken;
+    }
+
+    /** Return the stable Moodle course mapping with version outcome fields. */
+    private static function course_sync_result(\stdClass $course, int $revision, bool $applied, bool $replayed): array
+    {
+        return [
+            'id' => (int) $course->id,
+            'shortname' => (string) $course->shortname,
+            'idnumber' => (string) $course->idnumber,
+            'categoryid' => (int) $course->category,
+            'source_revision' => $revision,
+            'applied' => $applied ? 1 : 0,
+            'replayed' => $replayed ? 1 : 0,
+        ];
     }
 
     public static function upsert_user_parameters(): external_function_parameters
@@ -496,6 +893,22 @@ class local_rtcsync_external extends external_api
             foreach (array_reverse($locks) as $lock) {
                 $lock->release();
             }
+        }
+    }
+
+    /** Serialize course lookup/create retries for the same stable RTC idnumber. */
+    private static function with_course_identity_lock(string $idnumber, callable $callback)
+    {
+        $factory = \core\lock\lock_config::get_lock_factory('local_rtcsync_course_identity');
+        $lock = $factory->get_lock($idnumber, 1);
+        if (!$lock) {
+            throw new \moodle_exception('locktimeout');
+        }
+
+        try {
+            return $callback();
+        } finally {
+            $lock->release();
         }
     }
 

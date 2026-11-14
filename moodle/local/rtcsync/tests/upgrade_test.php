@@ -78,6 +78,17 @@ final class upgrade_test extends \advanced_testcase
             $this->assertNotNull($schema->getTable('local_rtcsync_lineageaudit')->getField($fieldname));
         }
         $this->assertNotNull($schema->getTable('local_rtcsync_linemanifest')->getIndex('parent_ix'));
+        $coursesync = $schema->getTable('local_rtcsync_coursesync');
+        $this->assertNotNull($coursesync);
+        foreach ([
+            'idnumber', 'courseid', 'sourcerevision', 'idempotencykey', 'payloadhash', 'fencetoken',
+            'coursevisible', 'timecreated', 'timemodified',
+        ] as $fieldname) {
+            $this->assertNotNull($coursesync->getField($fieldname), 'local_rtcsync_coursesync.' . $fieldname);
+        }
+        $this->assertSame('18', (string) $coursesync->getField('sourcerevision')->getLength());
+        $this->assertNotNull($coursesync->getIndex('idnumber_uix'));
+        $this->assertNull($coursesync->getKey('course_fk'));
     }
 
     public function test_upgrade_advances_revisioned_history_contract(): void
@@ -93,7 +104,7 @@ final class upgrade_test extends \advanced_testcase
         set_config('version', '2026103100', 'local_rtcsync');
 
         $this->assertTrue(xmldb_local_rtcsync_upgrade(2026103100));
-        $this->assertSame('2026110200', (string) get_config('local_rtcsync', 'version'));
+        $this->assertSame($this->latest_plugin_version(), (string) get_config('local_rtcsync', 'version'));
     }
 
     public function test_upgrade_creates_credit_owner_table_without_guessing_legacy_parent_courses(): void
@@ -129,13 +140,61 @@ final class upgrade_test extends \advanced_testcase
         // MySQL's XMLDB generator represents the parent FK with one backing index,
         // which also serves parentcourse lookups; a duplicate explicit index is invalid XMLDB.
         $this->assertSame(1, $this->count_indexes_with_columns('local_rtcsync_creditowner', ['parentcourseid'], false));
-        $this->assertSame('2026110200', (string) get_config('local_rtcsync', 'version'));
+        $this->assertSame($this->latest_plugin_version(), (string) get_config('local_rtcsync', 'version'));
         $this->assertSame(0, $DB->count_records('local_rtcsync_creditowner'));
         $this->assertEquals(
             $legacycoursebefore,
             $DB->get_record('course', ['id' => (int) $legacycourse->id], '*', MUST_EXIST),
             'The upgrade must not assign an owner based on a legacy credit idnumber or category.'
         );
+    }
+
+    public function test_upgrade_creates_course_revision_fence_without_guessing_legacy_baseline(): void
+    {
+        global $CFG, $DB;
+
+        $this->assertSame('phpunit-db', (string) $CFG->dbhost);
+        $this->assertSame('rtc_moodle_phpunit', (string) $CFG->dbname);
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        require_once($CFG->libdir . '/upgradelib.php');
+        require_once($CFG->dirroot . '/local/rtcsync/db/upgrade.php');
+
+        $legacycourse = $this->getDataGenerator()->create_course([
+            'idnumber' => 'rtc-subject:legacy-revision-baseline',
+            'fullname' => 'Legacy subject without source revision',
+        ]);
+        $legacycoursebefore = $DB->get_record('course', ['id' => (int) $legacycourse->id], '*', MUST_EXIST);
+        $coursesync = new \xmldb_table('local_rtcsync_coursesync');
+        $dbman = $DB->get_manager();
+        $this->assertTrue($dbman->table_exists($coursesync));
+        $dbman->drop_table($coursesync);
+
+        set_config('version', '2026110200', 'local_rtcsync');
+        $this->assertTrue(xmldb_local_rtcsync_upgrade(2026110200));
+
+        $this->assertTrue($dbman->table_exists($coursesync));
+        foreach ([
+            'id', 'idnumber', 'courseid', 'sourcerevision', 'idempotencykey', 'payloadhash', 'fencetoken',
+            'coursevisible', 'timecreated', 'timemodified',
+        ] as $fieldname) {
+            $this->assertTrue($dbman->field_exists($coursesync, new \xmldb_field($fieldname)), $fieldname);
+        }
+
+        // Existing v2026110600 installations receive the additive token field
+        // without recreating or seeding the retained course revision table.
+        $dbman->drop_field($coursesync, new \xmldb_field('fencetoken'));
+        set_config('version', '2026110600', 'local_rtcsync');
+        $this->assertTrue(xmldb_local_rtcsync_upgrade(2026110600));
+        $this->assertTrue($dbman->field_exists($coursesync, new \xmldb_field('fencetoken')));
+        $this->assertSame(0, $DB->count_records('local_rtcsync_coursesync'));
+        $this->assertEquals(
+            $legacycoursebefore,
+            $DB->get_record('course', ['id' => (int) $legacycourse->id], '*', MUST_EXIST),
+            'The revision migration must not invent a freshness baseline for an unversioned course.'
+        );
+        $this->assertSame($this->latest_plugin_version(), (string) get_config('local_rtcsync', 'version'));
     }
 
     public function test_upgrade_2026102600_creates_and_recreates_delivery_membership_schema(): void
@@ -292,7 +351,7 @@ final class upgrade_test extends \advanced_testcase
         ] as [$tablename, $field]) {
             $this->assertSame(1, $this->count_indexes_with_columns($tablename, [$field], true), $tablename);
         }
-        $this->assertSame('2026110200', (string) get_config('local_rtcsync', 'version'));
+        $this->assertSame($this->latest_plugin_version(), (string) get_config('local_rtcsync', 'version'));
         $this->assertSame(0, (int) $DB->get_field('local_rtcsync_deliverycm', 'lineagestatus', ['cmid' => $cmid]));
         $this->assertSame(0, (int) $DB->get_field('local_rtcsync_deliverygrade', 'lineageverified', ['gradeitemid' => (int) $item->id]));
 
@@ -304,7 +363,7 @@ final class upgrade_test extends \advanced_testcase
         $dbman->drop_field($audit, $resultstatefield);
         set_config('version', '2026102800', 'local_rtcsync');
         $this->assertTrue(xmldb_local_rtcsync_upgrade(2026102800));
-        $this->assertSame('2026110200', (string) get_config('local_rtcsync', 'version'));
+        $this->assertSame($this->latest_plugin_version(), (string) get_config('local_rtcsync', 'version'));
         $this->assertTrue($dbman->field_exists($audit, $resultstatefield));
 
         // A v2026102900 import must not gain fabricated file-verification evidence.
@@ -329,7 +388,7 @@ final class upgrade_test extends \advanced_testcase
         }
         set_config('version', '2026102900', 'local_rtcsync');
         $this->assertTrue(xmldb_local_rtcsync_upgrade(2026102900));
-        $this->assertSame('2026110200', (string) get_config('local_rtcsync', 'version'));
+        $this->assertSame($this->latest_plugin_version(), (string) get_config('local_rtcsync', 'version'));
         $this->assertNull($DB->get_field('local_rtcsync_linemanifest', 'sourcefilehash', ['id' => $import]));
         $this->assertSame(0, (int) $DB->get_field('local_rtcsync_linemanifest', 'sourcefileverified', ['id' => $import]));
         $this->assertSame(0, (int) $DB->get_field('local_rtcsync_linemanifest', 'sourcefileverifiedat', ['id' => $import]));
@@ -351,7 +410,7 @@ final class upgrade_test extends \advanced_testcase
         }
         set_config('version', '2026103000', 'local_rtcsync');
         $this->assertTrue(xmldb_local_rtcsync_upgrade(2026103000));
-        $this->assertSame('2026110200', (string) get_config('local_rtcsync', 'version'));
+        $this->assertSame($this->latest_plugin_version(), (string) get_config('local_rtcsync', 'version'));
         $this->assertNull($DB->get_field('local_rtcsync_linemanifest', 'parentmanifestid', ['id' => $import]));
         $this->assertNull($DB->get_field('local_rtcsync_linemanifest', 'parentmanifesthash', ['id' => $import]));
         foreach (['manifestjson', 'applyplanhash', 'parentmanifestid', 'parentmanifesthash'] as $fieldname) {
@@ -452,7 +511,7 @@ final class upgrade_test extends \advanced_testcase
 
         set_config('version', '2026102600', 'local_rtcsync');
         $this->assertTrue(xmldb_local_rtcsync_upgrade(2026102600));
-        $this->assertSame('2026110200', (string) get_config('local_rtcsync', 'version'));
+        $this->assertSame($this->latest_plugin_version(), (string) get_config('local_rtcsync', 'version'));
         foreach ($deliverymappingindexes as [$tablename, $field]) {
             $this->assertSame(1, $this->count_indexes_with_columns($tablename, [$field], true), $tablename);
         }
@@ -489,7 +548,7 @@ final class upgrade_test extends \advanced_testcase
         // disposable site at the latest schema without duplicate-table/index errors.
         set_config('version', (string) $oldversion, 'local_rtcsync');
         $this->assertTrue(xmldb_local_rtcsync_upgrade($oldversion));
-        $this->assertSame('2026110200', (string) get_config('local_rtcsync', 'version'));
+        $this->assertSame($this->latest_plugin_version(), (string) get_config('local_rtcsync', 'version'));
         $this->assertTrue($dbman->field_exists(
             new \xmldb_table('local_rtcsync_lineageaudit'),
             new \xmldb_field('resultstate')
@@ -645,7 +704,7 @@ final class upgrade_test extends \advanced_testcase
                 }
             }
             $dbman->install_from_xmldb_file($latestinstallpath);
-            set_config('version', '2026110200', 'local_rtcsync');
+            set_config('version', $this->latest_plugin_version(), 'local_rtcsync');
             $latestSchemaRestored = true;
         }
 
@@ -673,8 +732,9 @@ final class upgrade_test extends \advanced_testcase
         $historicstructure = $historicfile->getStructure();
         $lateststructure = $latestfile->getStructure();
         $this->assertSame('2026102700', (string) $historicstructure->getVersion());
-        $latestversion = (string) $lateststructure->getVersion();
-        $this->assertSame('2026110200', $latestversion);
+        $latestxmlversion = (string) $lateststructure->getVersion();
+        $this->assertSame('2026110600', $latestxmlversion, 'The XMLDB marker is separate from the installed plugin version.');
+        $latestpluginversion = $this->latest_plugin_version();
 
         $datafixture = json_decode(file_get_contents($datafixturepath), true, 512, JSON_THROW_ON_ERROR);
         $this->assertSame('5fc0d2e29ebffca4d43a42db1bc3a26221536cb2', $datafixture['schema_source_commit']);
@@ -723,6 +783,7 @@ final class upgrade_test extends \advanced_testcase
                 'grademin' => 0,
             ], false);
             $item->insert('upgrade-fixture');
+            $item->update_final_grade((int) $student->id, 77.0, 'upgrade-fixture');
             $module = $this->getDataGenerator()->create_module('quiz', [
                 'course' => (int) $course->id,
                 'name' => 'Upgrade fixture delivery activity',
@@ -802,7 +863,7 @@ final class upgrade_test extends \advanced_testcase
 
             set_config('version', (string) $datafixture['plugin_version'], 'local_rtcsync');
             $this->assertTrue(xmldb_local_rtcsync_upgrade((int) $datafixture['plugin_version']));
-            $this->assertSame($latestversion, (string) get_config('local_rtcsync', 'version'));
+            $this->assertSame($latestpluginversion, (string) get_config('local_rtcsync', 'version'));
 
             foreach ($latesttables as $expectedtable) {
                 $tablename = $expectedtable->getName();
@@ -845,6 +906,10 @@ final class upgrade_test extends \advanced_testcase
             $this->assertSame($deliveryid, (int) $grademapping->deliveryid);
             $this->assertSame(0, (int) $grademapping->lineageverified);
             $this->assertNull($grademapping->lineagemanifestid);
+            $this->assertSame(77.0, (float) $DB->get_field('grade_grades', 'finalgrade', [
+                'itemid' => (int) $item->id,
+                'userid' => (int) $student->id,
+            ], MUST_EXIST));
 
             $deliverystate = $DB->get_record(
                 'local_rtcsync_deliverycourse',
@@ -875,7 +940,7 @@ final class upgrade_test extends \advanced_testcase
                     }
                 }
                 $dbman->install_from_xmldb_file($latestinstallpath);
-                set_config('version', $latestversion, 'local_rtcsync');
+                set_config('version', $latestpluginversion, 'local_rtcsync');
             }
         }
     }
@@ -893,6 +958,16 @@ final class upgrade_test extends \advanced_testcase
         }
 
         return $count;
+    }
+
+    /** Read the authoritative installed plugin version from version.php. */
+    private function latest_plugin_version(): string
+    {
+        global $CFG;
+
+        $plugin = new \stdClass();
+        require($CFG->dirroot . '/local/rtcsync/version.php');
+        return (string) $plugin->version;
     }
 
     private function has_index_with_columns(string $table, array $columns, bool $unique): bool

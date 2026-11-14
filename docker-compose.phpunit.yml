@@ -1,6 +1,6 @@
 services:
   phpunit-db:
-    image: mysql:8.4
+    image: mysql:8.4.13
     profiles: [phpunit]
     environment:
       MYSQL_DATABASE: ${MOODLE_PHPUNIT_DB_NAME:?Set MOODLE_PHPUNIT_DB_NAME in phpunit/.env}

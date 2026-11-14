@@ -81,6 +81,516 @@ final class externallib_test extends \advanced_testcase
         return $this->getDataGenerator()->create_course($options);
     }
 
+    /** Build an RTC subject upsert with the agreed deterministic revision key. */
+    private function versionedCoursePayload(int $subjectid, int $revision, array $overrides = []): array
+    {
+        return array_replace([
+            'fullname' => 'Versioned RTC subject ' . $subjectid,
+            'shortname' => 'RTC-V-' . $subjectid,
+            'idnumber' => 'rtc-subject:' . $subjectid,
+            'summary' => 'Versioned subject fixture.',
+            'category_idnumber' => 'rtc-versioned-test:' . $subjectid,
+            'category_name' => 'RTC Versioned Test ' . $subjectid,
+            'category_path' => [],
+            'visible' => 1,
+            'startdate' => 0,
+            'enddate' => 0,
+            'source_revision' => $revision,
+            'idempotency_key' => 'rtc-course:' . $subjectid . ':' . $revision,
+        ], $overrides);
+    }
+
+    public function test_versioned_course_upsert_replays_exact_payload_without_reapplying(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $payload = $this->versionedCoursePayload(73101, 17);
+
+        $first = \local_rtcsync_external::upsert_course($payload);
+        $this->assertSame(1, $first['applied']);
+        $this->assertSame(0, $first['replayed']);
+        $this->assertSame(17, $first['source_revision']);
+        $state = $DB->get_record('local_rtcsync_coursesync', ['idnumber' => $payload['idnumber']], '*', MUST_EXIST);
+
+        // Simulate a local drift after the original source mutation. A replay
+        // acknowledges the already applied revision and does not overwrite it.
+        $DB->set_field('course', 'fullname', 'Manual Moodle drift', ['id' => (int) $first['id']]);
+        $replay = \local_rtcsync_external::upsert_course($payload);
+
+        $this->assertSame(0, $replay['applied']);
+        $this->assertSame(1, $replay['replayed']);
+        $this->assertSame(17, $replay['source_revision']);
+        $this->assertSame((int) $first['id'], (int) $replay['id']);
+        $this->assertSame('Manual Moodle drift', (string) $DB->get_field(
+            'course',
+            'fullname',
+            ['id' => (int) $first['id']],
+            MUST_EXIST
+        ));
+        $this->assertEquals($state, $DB->get_record(
+            'local_rtcsync_coursesync',
+            ['idnumber' => $payload['idnumber']],
+            '*',
+            MUST_EXIST
+        ));
+    }
+
+    public function test_versioned_course_replay_requires_course_update_capability(): void
+    {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $payload = $this->versionedCoursePayload(73106, 2);
+        $created = \local_rtcsync_external::upsert_course($payload);
+
+        $operator = $this->getDataGenerator()->create_user();
+        $systemcontext = \context_system::instance();
+        $coursecontext = \context_course::instance((int) $created['id']);
+        $categorycontext = \context_coursecat::instance((int) $created['categoryid']);
+        $roleid = create_role('RTC category-only sync operator', 'rtc_cat_only_sync', '');
+        assign_capability('moodle/category:manage', CAP_ALLOW, $roleid, $systemcontext->id);
+        assign_capability('moodle/course:create', CAP_ALLOW, $roleid, $categorycontext->id);
+        role_assign($roleid, (int) $operator->id, $systemcontext->id);
+        accesslib_clear_all_caches_for_unit_testing();
+
+        $this->assertTrue(has_capability('moodle/category:manage', $systemcontext, $operator));
+        $this->assertTrue(has_capability('moodle/course:create', $categorycontext, $operator));
+        $this->assertFalse(has_capability('moodle/course:update', $coursecontext, $operator));
+        $this->setUser($operator);
+        $this->expectException(\required_capability_exception::class);
+
+        // The exact-replay branch returns the existing course mapping but must
+        // not bypass the capability required by the original upsert path.
+        \local_rtcsync_external::upsert_course($payload);
+    }
+
+    public function test_versioned_course_same_revision_with_changed_payload_is_rejected(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $payload = $this->versionedCoursePayload(73102, 8);
+        $applied = \local_rtcsync_external::upsert_course($payload);
+        $conflictingkey = $payload;
+        $conflictingkey['idempotency_key'] = 'rtc-course:73102:7';
+        try {
+            \local_rtcsync_external::upsert_course($conflictingkey);
+            $this->fail('A same-revision request with a different idempotency key must be rejected.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('deterministic', $exception->getMessage());
+        }
+
+        $conflicting = $payload;
+        $conflicting['fullname'] = 'Conflicting payload at the same source revision';
+
+        try {
+            \local_rtcsync_external::upsert_course($conflicting);
+            $this->fail('A source revision cannot be reused for a different course payload.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('already used', $exception->getMessage());
+        }
+
+        $this->assertSame($payload['fullname'], (string) $DB->get_field(
+            'course',
+            'fullname',
+            ['id' => (int) $applied['id']],
+            MUST_EXIST
+        ));
+        $this->assertSame(8, (int) $DB->get_field(
+            'local_rtcsync_coursesync',
+            'sourcerevision',
+            ['idnumber' => $payload['idnumber']],
+            MUST_EXIST
+        ));
+    }
+
+    public function test_stale_course_revision_cannot_unarchive_course_or_create_categories(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $archived = $this->versionedCoursePayload(73103, 11, ['visible' => 0]);
+        $applied = \local_rtcsync_external::upsert_course($archived);
+        $stale = $this->versionedCoursePayload(73103, 10, [
+            'fullname' => 'Stale attempt to restore archived course',
+            'category_path' => [[
+                'idnumber' => 'rtc-stale-side-effect:73103',
+                'name' => 'Must not be created for a stale course revision',
+            ]],
+        ]);
+
+        $result = \local_rtcsync_external::upsert_course($stale);
+
+        $this->assertSame(0, $result['applied']);
+        $this->assertSame(0, $result['replayed']);
+        $this->assertSame(11, $result['source_revision']);
+        $this->assertSame((int) $applied['id'], (int) $result['id']);
+        $this->assertSame(0, (int) $DB->get_field(
+            'course',
+            'visible',
+            ['id' => (int) $applied['id']],
+            MUST_EXIST
+        ));
+        $this->assertFalse($DB->record_exists('course_categories', ['idnumber' => 'rtc-stale-side-effect:73103']));
+        $this->assertSame(11, (int) $DB->get_field(
+            'local_rtcsync_coursesync',
+            'sourcerevision',
+            ['idnumber' => $archived['idnumber']],
+            MUST_EXIST
+        ));
+
+        $restored = $this->versionedCoursePayload(73103, 12, ['visible' => 1]);
+        $higher = \local_rtcsync_external::upsert_course($restored);
+        $this->assertSame(1, $higher['applied']);
+        $this->assertSame(1, (int) $DB->get_field(
+            'course',
+            'visible',
+            ['id' => (int) $applied['id']],
+            MUST_EXIST
+        ));
+    }
+
+    public function test_mysql_course_revision_claim_serializes_competing_writes_and_first_row_races(): void
+    {
+        global $CFG, $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        if ($DB->get_dbfamily() !== 'mysql'
+                || (string) $CFG->dbhost !== 'phpunit-db'
+                || (string) $CFG->dbname !== 'rtc_moodle_phpunit') {
+            $this->markTestSkipped('This concurrency test requires the isolated MySQL PHPUnit database.');
+        }
+        if (!function_exists('proc_open')) {
+            $this->markTestSkipped('Independent PHP workers are required to test the database revision fence.');
+        }
+
+        $subjectid = random_int(7900000, 7999999);
+        $seed = \local_rtcsync_external::upsert_course($this->versionedCoursePayload($subjectid, 30));
+        $raceroot = make_temp_directory('local_rtcsync_course_revision_race');
+        try {
+            [$higherresult, $lowerresult] = $this->run_course_revision_race_pair(
+                $raceroot . '/existing-state',
+                $this->versionedCoursePayload($subjectid, 32, ['fullname' => 'Revision 32 wins']),
+                $this->versionedCoursePayload($subjectid, 31, [
+                    'fullname' => 'Stale revision 31',
+                    'category_path' => [[
+                        'idnumber' => 'rtc-race-stale:' . $subjectid,
+                        'name' => 'Must not be created by the losing revision',
+                    ]],
+                ]),
+            );
+
+            $this->assertSame(1, $higherresult['applied']);
+            $this->assertSame(32, $higherresult['source_revision']);
+            $this->assertSame(0, $lowerresult['applied']);
+            $this->assertSame(0, $lowerresult['replayed']);
+            $this->assertSame(32, $lowerresult['source_revision']);
+            $this->assertSame('Revision 32 wins', (string) $DB->get_field(
+                'course',
+                'fullname',
+                ['id' => (int) $seed['id']],
+                MUST_EXIST
+            ));
+            $this->assertSame(32, (int) $DB->get_field(
+                'local_rtcsync_coursesync',
+                'sourcerevision',
+                ['idnumber' => 'rtc-subject:' . $subjectid],
+                MUST_EXIST
+            ));
+            $this->assertFalse($DB->record_exists('course_categories', [
+                'idnumber' => 'rtc-race-stale:' . $subjectid,
+            ]));
+
+            $firstsubjectid = random_int(8000000, 8099999);
+            [$firsthigherresult, $firstlowerresult] = $this->run_course_revision_race_pair(
+                $raceroot . '/first-state',
+                $this->versionedCoursePayload($firstsubjectid, 42, ['fullname' => 'First claim revision 42']),
+                $this->versionedCoursePayload($firstsubjectid, 41, [
+                    'fullname' => 'Losing first claim revision 41',
+                    'category_path' => [[
+                        'idnumber' => 'rtc-first-claim-stale:' . $firstsubjectid,
+                        'name' => 'Must not be created by the losing first claim',
+                    ]],
+                ]),
+            );
+
+            $this->assertSame(1, $firsthigherresult['applied']);
+            $this->assertSame(42, $firsthigherresult['source_revision']);
+            $this->assertSame(0, $firstlowerresult['applied']);
+            $this->assertSame(0, $firstlowerresult['replayed']);
+            $this->assertSame(42, $firstlowerresult['source_revision']);
+            $this->assertSame(1, $DB->count_records('course', ['idnumber' => 'rtc-subject:' . $firstsubjectid]));
+            $this->assertSame(1, $DB->count_records(
+                'local_rtcsync_coursesync',
+                ['idnumber' => 'rtc-subject:' . $firstsubjectid]
+            ));
+            $this->assertFalse($DB->record_exists('course_categories', [
+                'idnumber' => 'rtc-first-claim-stale:' . $firstsubjectid,
+            ]));
+            $this->assertSame('First claim revision 42', (string) $DB->get_field(
+                'course',
+                'fullname',
+                ['idnumber' => 'rtc-subject:' . $firstsubjectid],
+                MUST_EXIST
+            ));
+        } finally {
+            remove_dir($raceroot);
+        }
+    }
+
+    /** Run independent workers that both read the same initial course state, then order the higher write first. */
+    private function run_course_revision_race_pair(string $barrierdir, array $higher, array $lower): array
+    {
+        if (!mkdir($barrierdir, 0770, true) && !is_dir($barrierdir)) {
+            throw new \RuntimeException('Could not create the course revision race barrier directory.');
+        }
+
+        $workers = [];
+        try {
+            $workers['higher'] = $this->start_course_revision_race_worker($barrierdir, 'higher', $higher);
+            $workers['lower'] = $this->start_course_revision_race_worker($barrierdir, 'lower', $lower);
+            $this->wait_for_course_revision_race_file($barrierdir . '/higher.ready');
+            $this->wait_for_course_revision_race_file($barrierdir . '/lower.ready');
+
+            file_put_contents($barrierdir . '/higher.release', 'go', LOCK_EX);
+            $higherresult = $this->finish_course_revision_race_worker($workers['higher']);
+            file_put_contents($barrierdir . '/lower.release', 'go', LOCK_EX);
+            $lowerresult = $this->finish_course_revision_race_worker($workers['lower']);
+
+            return [$higherresult, $lowerresult];
+        } finally {
+            file_put_contents($barrierdir . '/higher.release', 'cleanup', LOCK_EX);
+            file_put_contents($barrierdir . '/lower.release', 'cleanup', LOCK_EX);
+            foreach ($workers as &$worker) {
+                $this->stop_course_revision_race_worker($worker);
+            }
+            unset($worker);
+        }
+    }
+
+    /** Start one isolated PHP worker with its own local file-lock directory. */
+    private function start_course_revision_race_worker(string $barrierdir, string $name, array $payload): array
+    {
+        $workerpath = __DIR__ . '/fixtures/course_revision_race_worker.php';
+        $payloadjson = json_encode($payload, JSON_THROW_ON_ERROR);
+        $command = [
+            PHP_BINARY,
+            $workerpath,
+            base64_encode($payloadjson),
+            $barrierdir,
+            $name,
+        ];
+        $descriptors = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $pipes = [];
+        $process = proc_open($command, $descriptors, $pipes);
+        if (!is_resource($process)) {
+            throw new \RuntimeException('Could not start a course revision race worker.');
+        }
+        fclose($pipes[0]);
+
+        return [
+            'process' => $process,
+            'pipes' => $pipes,
+            'resultpath' => $barrierdir . '/' . $name . '.result.json',
+        ];
+    }
+
+    /** Wait for one worker's barrier or result file without touching the database. */
+    private function wait_for_course_revision_race_file(string $path): void
+    {
+        $deadline = microtime(true) + 60;
+        while (!is_file($path) && microtime(true) < $deadline) {
+            usleep(10000);
+        }
+        $this->assertFileExists($path, 'A course revision race worker did not reach its barrier in time.');
+    }
+
+    /** Collect a completed worker result and close its process resources. */
+    private function finish_course_revision_race_worker(array &$worker): array
+    {
+        $process = $worker['process'];
+        $deadline = microtime(true) + 60;
+        do {
+            $status = proc_get_status($process);
+            if (!$status['running']) {
+                break;
+            }
+            usleep(10000);
+        } while (microtime(true) < $deadline);
+
+        if (!empty($status['running'])) {
+            proc_terminate($process);
+            $this->fail('A course revision race worker did not finish in time.');
+        }
+
+        $stdout = stream_get_contents($worker['pipes'][1]);
+        $stderr = stream_get_contents($worker['pipes'][2]);
+        fclose($worker['pipes'][1]);
+        fclose($worker['pipes'][2]);
+        $closecode = proc_close($process);
+        $worker['process'] = null;
+        $worker['pipes'] = [];
+
+        $exitcode = (int) $status['exitcode'];
+        if ($exitcode < 0) {
+            $exitcode = $closecode;
+        }
+        $this->assertSame(0, $exitcode, 'Worker output: ' . $stdout . "\n" . $stderr);
+        $this->assertFileExists($worker['resultpath']);
+        $result = json_decode((string) file_get_contents($worker['resultpath']), true, 512, JSON_THROW_ON_ERROR);
+        $this->assertIsArray($result);
+        $this->assertArrayHasKey('result', $result, (string) ($result['error'] ?? 'Worker returned no result.'));
+
+        return $result['result'];
+    }
+
+    /** Release or terminate a worker if an assertion interrupted the race test. */
+    private function stop_course_revision_race_worker(array &$worker): void
+    {
+        if (empty($worker['process']) || !is_resource($worker['process'])) {
+            return;
+        }
+        $status = proc_get_status($worker['process']);
+        if ($status['running']) {
+            proc_terminate($worker['process']);
+        }
+        foreach ($worker['pipes'] as $pipe) {
+            if (is_resource($pipe)) {
+                fclose($pipe);
+            }
+        }
+        proc_close($worker['process']);
+        $worker['process'] = null;
+        $worker['pipes'] = [];
+    }
+
+    public function test_legacy_course_upsert_is_allowed_until_versioned_fence_is_established(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $legacy = [
+            'fullname' => 'Legacy RTC subject',
+            'shortname' => 'RTC-LEGACY-73104',
+            'idnumber' => 'rtc-subject:73104',
+            'summary' => '',
+            'category_idnumber' => 'rtc-legacy-test:73104',
+            'category_name' => 'RTC Legacy Test 73104',
+            'visible' => 1,
+        ];
+        $first = \local_rtcsync_external::upsert_course($legacy);
+        $versioned = $this->versionedCoursePayload(73104, 3);
+        \local_rtcsync_external::upsert_course($versioned);
+        $legacy['fullname'] = 'Legacy write after revision opt-in';
+
+        try {
+            \local_rtcsync_external::upsert_course($legacy);
+            $this->fail('An unversioned mutation must not bypass an established revision fence.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('opted into source revisions', $exception->getMessage());
+        }
+
+        $this->assertSame($versioned['fullname'], (string) $DB->get_field(
+            'course',
+            'fullname',
+            ['id' => (int) $first['id']],
+            MUST_EXIST
+        ));
+    }
+
+    public function test_first_versioned_course_upsert_rejects_duplicate_stable_idnumber(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $idnumber = 'rtc-subject:73107';
+        $first = $this->getDataGenerator()->create_course([
+            'idnumber' => $idnumber,
+            'shortname' => 'RTC-DUPLICATE-73107-A',
+            'fullname' => 'First duplicate stable identity',
+        ]);
+        // Core create_course rejects duplicates, but restored/imported data can
+        // contain them because course.idnumber has only a non-unique index.
+        $second = $DB->get_record('course', ['id' => (int) $first->id], '*', MUST_EXIST);
+        unset($second->id);
+        $second->shortname = 'RTC-DUPLICATE-73107-B';
+        $second->fullname = 'Second duplicate stable identity';
+        $secondid = (int) $DB->insert_record('course', $second);
+
+        try {
+            \local_rtcsync_external::upsert_course($this->versionedCoursePayload(73107, 1));
+            $this->fail('A version fence must not choose one of multiple Moodle courses with the same stable idnumber.');
+        } catch (\invalid_parameter_exception $exception) {
+            $this->assertStringContainsString('matches multiple Moodle courses', $exception->getMessage());
+        }
+
+        $this->assertSame(2, $DB->count_records('course', ['idnumber' => $idnumber]));
+        $this->assertFalse($DB->record_exists('local_rtcsync_coursesync', ['idnumber' => $idnumber]));
+        $this->assertFalse($DB->record_exists('course_categories', [
+            'idnumber' => 'rtc-versioned-test:73107',
+        ]));
+        $this->assertSame('First duplicate stable identity', (string) $DB->get_field(
+            'course',
+            'fullname',
+            ['id' => (int) $first->id],
+            MUST_EXIST
+        ));
+        $this->assertSame('Second duplicate stable identity', (string) $DB->get_field(
+            'course',
+            'fullname',
+            ['id' => $secondid],
+            MUST_EXIST
+        ));
+    }
+
+    public function test_failed_higher_course_revision_rolls_back_course_category_and_revision_state(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $payload = $this->versionedCoursePayload(73105, 4);
+        $first = \local_rtcsync_external::upsert_course($payload);
+        $competitor = $this->getDataGenerator()->create_course(['shortname' => 'RTC-COLLISION-73105']);
+        $failed = $this->versionedCoursePayload(73105, 5, [
+            'shortname' => (string) $competitor->shortname,
+            'category_idnumber' => 'rtc-rollback-only:73105',
+            'category_name' => 'Must be rolled back with failed course update',
+        ]);
+
+        $failure = null;
+        try {
+            \local_rtcsync_external::upsert_course($failed);
+        } catch (\Throwable $exception) {
+            $failure = $exception;
+        }
+        $this->assertNotNull($failure, 'The conflicting shortname must fail the higher revision mutation.');
+        $this->assertNotSame($failed['fullname'], (string) $DB->get_field(
+            'course',
+            'fullname',
+            ['id' => (int) $first['id']],
+            MUST_EXIST
+        ));
+
+        $this->assertFalse($DB->record_exists('course_categories', ['idnumber' => 'rtc-rollback-only:73105']));
+        $this->assertSame(4, (int) $DB->get_field(
+            'local_rtcsync_coursesync',
+            'sourcerevision',
+            ['idnumber' => $payload['idnumber']],
+            MUST_EXIST
+        ));
+    }
+
     /** Apply an explicitly reviewed module identity fixture. */
     private function reconcileDeliveryModule(\stdClass $course, int $cmid, string $decision, int $deliveryid): void
     {
@@ -1423,6 +1933,36 @@ final class externallib_test extends \advanced_testcase
             (int) $DB->get_field('course', 'category', ['id' => $credit['courseid']], MUST_EXIST),
         );
     }
+
+    public function test_course_upsert_waits_for_stable_identity_lock_before_first_create(): void
+    {
+        global $CFG, $DB;
+
+        $this->resetAfterTest();
+        $CFG->lock_factory = '\\core\\lock\\file_lock_factory';
+        $this->setAdminUser();
+        $idnumber = 'rtc-subject:73016';
+        $lockfactory = \core\lock\lock_config::get_lock_factory('local_rtcsync_course_identity');
+        $lock = $lockfactory->get_lock($idnumber, 0);
+        $this->assertNotFalse($lock);
+
+        $timedout = false;
+        try {
+            \local_rtcsync_external::upsert_course([
+                'fullname' => 'Course Identity Lock',
+                'shortname' => 'RTC-COURSE-IDENTITY-LOCK-73016',
+                'idnumber' => $idnumber,
+            ]);
+        } catch (\moodle_exception $exception) {
+            $timedout = $exception->errorcode === 'locktimeout';
+        } finally {
+            $lock->release();
+        }
+
+        $this->assertTrue($timedout, 'A competing first upsert must serialize before lookup and create.');
+        $this->assertSame(0, $DB->count_records('course', ['idnumber' => $idnumber]));
+    }
+
     public function test_read_rejects_more_than_one_hundred_identifiers(): void
     {
         $this->resetAfterTest();
