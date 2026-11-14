@@ -2513,8 +2513,12 @@ final class delivery_activity_access
     /** Invalidate course modinfo and course-list caches after changing visibility. */
     private static function refresh_course_visibility_cache(int $courseid): void
     {
-        rebuild_course_cache($courseid, true);
-        \cache_helper::purge_by_event('changesincourse');
+        try {
+            rebuild_course_cache($courseid, true);
+        } finally {
+            // Keep hidden-course listings consistent even if rebuilding course modinfo fails.
+            \cache_helper::purge_by_event('changesincourse');
+        }
     }
 
     /** Suspend managed Student manual enrolments without deleting markers or roles. */

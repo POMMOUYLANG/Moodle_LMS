@@ -273,20 +273,29 @@ final class delivery_activity_access_test extends \advanced_testcase
         ], MUST_EXIST));
 
         $originaldatabase = $DB;
-        $faultdatabase = new delivery_activity_visibility_restore_fault_database($originaldatabase, false, true);
+        $faultdatabase = new delivery_activity_visibility_restore_fault_database(
+            $originaldatabase,
+            false,
+            true,
+            (int) $course->id,
+            true
+        );
+        $coursecatcache = \cache::make('core', 'coursecat');
+        $coursecatcachekey = 'rtcsync-cache-failure-' . (int) $course->id;
+        $coursecatcache->set($coursecatcachekey, 'stale visible course result');
         $DB = $faultdatabase;
         $failure = null;
         try {
             \local_rtcsync\local\delivery_activity_access::prepare_course((int) $course->id);
-        } catch (\coding_exception $exception) {
+        } catch (\moodle_exception $exception) {
             $failure = $exception;
         } finally {
             $DB = $originaldatabase;
         }
 
-        $this->assertInstanceOf(\coding_exception::class, $failure);
-        $this->assertStringContainsString('Simulated course cache invalidation failure', $failure->getMessage());
+        $this->assertInstanceOf(\moodle_exception::class, $failure);
         $this->assertSame(2, $faultdatabase->cacherevisionupdateattempts);
+        $this->assertFalse($coursecatcache->get($coursecatcachekey));
         $this->assertSame(0, (int) $DB->get_field('course', 'visible', ['id' => (int) $course->id], MUST_EXIST));
         $this->assertSame(0, (int) $DB->get_field('local_rtcsync_deliverycourse', 'ready', [
             'courseid' => (int) $course->id,
