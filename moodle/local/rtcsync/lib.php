@@ -3,6 +3,26 @@
 defined('MOODLE_INTERNAL') || die();
 
 /**
+ * Keep Moodle from deleting a course that contains RTC delivery state.
+ *
+ * Stock Moodle calls this legacy pre-delete callback before its newer
+ * before_course_deleted hook. Prefer the latter when it exists, and retain this
+ * callback for older core versions without either cancellable hook.
+ *
+ * @param stdClass $course Course being deleted.
+ */
+function local_rtcsync_pre_course_delete(stdClass $course): void {
+    if (class_exists(\core_course\hook\before_course_data_purge::class)
+            || class_exists(\core_course\hook\before_course_deleted::class)) {
+        return;
+    }
+
+    if (\local_rtcsync\hook_callbacks::course_deletion_requires_protection((int) ($course->id ?? 0))) {
+        throw new moodle_exception('coursepurgestopped', 'core');
+    }
+}
+
+/**
  * Keep Moodle from deleting activity data that may back delivery history.
  *
  * Moodle removes module attempts and grade items after this callback. A
@@ -13,6 +33,10 @@ defined('MOODLE_INTERNAL') || die();
  */
 function local_rtcsync_pre_course_module_delete(stdClass $cm): void {
     global $DB;
+
+    if (class_exists(\core_course\hook\before_course_data_purge::class)) {
+        return;
+    }
 
     if (empty($cm->course) || empty($cm->id)
             || !\local_rtcsync\hook_callbacks::module_deletion_requires_protection(

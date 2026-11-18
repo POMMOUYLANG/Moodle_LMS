@@ -5,7 +5,9 @@ namespace local_rtcsync;
 use core\hook\output\before_footer_html_generation;
 use core\hook\output\before_standard_head_html_generation;
 use core\hook\after_config;
+use core_course\hook\before_course_deleted;
 use core_course\hook\before_course_data_purge;
+use core_enrol\hook\before_user_enrolment_removed;
 
 defined('MOODLE_INTERNAL') || die();
 
@@ -43,29 +45,66 @@ final class hook_callbacks
 
         if ($muststop) {
             if ($hook->operation === before_course_data_purge::OPERATION_ACTIVITY_DELETE) {
-                self::clear_pending_module_deletion($hook);
+                self::clear_pending_module_deletion(
+                    $hook->courseid,
+                    (int) ($hook->options['cmid'] ?? 0)
+                );
             }
             $hook->stop_propagation();
         }
     }
 
+    /**
+     * Protect course content on Moodle releases that expose the core pre-delete hook.
+     *
+     * @param before_course_deleted $hook
+     */
+    public static function before_course_deleted(before_course_deleted $hook): void
+    {
+        $courseid = (int) ($hook->course->id ?? 0);
+        if ($courseid <= 0 || self::course_has_delivery_history_to_preserve($courseid)) {
+            // This hook is not cancellable by the core emitter, so stop the operation by throwing.
+            throw new \moodle_exception('coursepurgestopped', 'core');
+        }
+    }
+
+    /**
+     * Protect grades before Moodle removes a user's final course enrolment.
+     *
+     * @param before_user_enrolment_removed $hook
+     */
+    public static function before_user_enrolment_removed(before_user_enrolment_removed $hook): void
+    {
+        $courseid = (int) ($hook->enrolinstance->courseid ?? 0);
+        $userid = (int) ($hook->userenrolmentinstance->userid ?? 0);
+        $userenrolmentid = (int) ($hook->userenrolmentinstance->id ?? 0);
+        if (self::user_unenrol_would_purge_delivery_grade_candidates($courseid, $userid, $userenrolmentid)) {
+            throw new \moodle_exception('coursepurgestopped', 'core');
+        }
+    }
+
+    /** Return whether a course has RTC data which must survive course deletion. */
+    public static function course_deletion_requires_protection(int $courseid): bool
+    {
+        return $courseid <= 0 || self::course_has_delivery_history_to_preserve($courseid);
+    }
+
     /** Restore a queued activity's normal visibility when its deletion is vetoed. */
-    private static function clear_pending_module_deletion(before_course_data_purge $hook): void
+    private static function clear_pending_module_deletion(int $courseid, int $cmid): void
     {
         global $DB;
 
-        $cmid = (int) ($hook->options['cmid'] ?? 0);
         if ($cmid <= 0) {
             return;
         }
 
         $cm = $DB->get_record('course_modules', [
             'id' => $cmid,
-            'course' => $hook->courseid,
+            'course' => $courseid,
         ], 'id,deletioninprogress', IGNORE_MISSING);
         if ($cm && !empty($cm->deletioninprogress)) {
             $DB->set_field('course_modules', 'deletioninprogress', 0, ['id' => $cmid]);
-            rebuild_course_cache($hook->courseid, true);
+            rebuild_course_cache($courseid, true);
         }
     }
 

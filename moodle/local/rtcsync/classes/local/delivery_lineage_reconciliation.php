@@ -189,7 +189,7 @@ final class delivery_lineage_reconciliation
                     }
 
                     $transaction->allow_commit();
-                } catch (\Exception $exception) {
+                } catch (\Throwable $exception) {
                     $transaction->rollback($exception);
                 }
                 $summary = self::summary_from_operations($fresh['modules'], $fresh['gradeitems']);

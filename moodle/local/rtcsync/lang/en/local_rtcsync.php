@@ -58,3 +58,5 @@ $string['deliverymoduledeletionblocked'] = 'This activity is in a delivery-aware
 $string['deliveryhistorymarkermismatch'] = 'The stored delivery history marker is bound to a different delivery. No marker was cleared.';
 $string['taskdeliveryactivitybackfill'] = 'Secure delivery-managed course activities';
 $string['deliveryactivitybackfillfailed'] = 'Delivery activity backfill failed for course(s): {$a}.';
+$string['eventwebservicecallcorrelated'] = 'RTC Sync web service call correlated';
+$string['eventwebservicecallcorrelateddesc'] = 'Moodle received an RTC Sync web service call with correlation ID {$a->correlation_id} for function {$a->function}.';

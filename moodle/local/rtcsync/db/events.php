@@ -18,4 +18,9 @@ $observers = [
         'callback' => '\\local_rtcsync\\observer::course_module_updated',
         'internal' => true,
     ],
+    [
+        'eventname' => '\\core\\event\\webservice_function_called',
+        'callback' => '\\local_rtcsync\\observer::webservice_function_called',
+        'internal' => true,
+    ],
 ];

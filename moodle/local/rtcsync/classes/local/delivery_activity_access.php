@@ -48,6 +48,12 @@ final class delivery_activity_access
     {
         global $DB;
 
+        // A synced subject may receive its first module event before its access-state row exists.
+        $courseidnumber = $DB->get_field('course', 'idnumber', ['id' => $courseid], IGNORE_MISSING);
+        if (str_starts_with((string) $courseidnumber, 'rtc-subject:')) {
+            return true;
+        }
+
         return $DB->record_exists('local_rtcsync_deliverycourse', ['courseid' => $courseid])
             || $DB->record_exists_sql(
                 "SELECT 1
@@ -1811,7 +1817,8 @@ final class delivery_activity_access
                 'SELECT COALESCE(MAX(id), 0) FROM {course_modules} WHERE course = :courseid',
                 ['courseid' => $courseid]
             );
-            if ($maxcmid <= (int) $state->lastcmid) {
+            $actualvisibility = (int) $DB->get_field('course', 'visible', ['id' => $courseid], MUST_EXIST);
+            if ($maxcmid <= (int) $state->lastcmid && $actualvisibility === (int) $state->coursevisible) {
                 return true;
             }
             $state->ready = 0;

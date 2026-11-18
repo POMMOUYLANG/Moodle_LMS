@@ -3,26 +3,76 @@
 declare(strict_types=1);
 
 define('CLI_SCRIPT', true);
+$barrierdir = (string) ($argv[2] ?? '');
+$workername = (string) ($argv[3] ?? '');
+$dataroot = (string) ($argv[5] ?? '');
+$lockroot = (string) ($argv[7] ?? '');
+if (!in_array($workername, ['higher', 'lower'], true) || !is_dir($barrierdir)) {
+    throw new RuntimeException('Invalid course revision race worker identity or barrier directory.');
+}
+$resolvedlockroot = realpath($lockroot);
+$resolveddataroot = realpath($dataroot);
+if (!is_string($resolvedlockroot) || !is_string($resolveddataroot) || !is_writable($resolvedlockroot)) {
+    throw new RuntimeException('The worker-local Moodle lock directory is unavailable.');
+}
+$datarootprefix = rtrim($resolveddataroot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+if ($resolvedlockroot === $resolveddataroot || strpos($resolvedlockroot, $datarootprefix) === 0) {
+    throw new RuntimeException('The worker-local Moodle lock directory must be outside the PHPUnit dataroot.');
+}
+
 $moodleroot = dirname(__DIR__, 4);
-require($moodleroot . '/config.php');
+$configsource = is_file($moodleroot . '/config.php')
+    ? file_get_contents($moodleroot . '/config.php')
+    : false;
+if (!is_string($configsource) || strpos($configsource, '$CFG->phpunit_prefix') === false) {
+    // Moodle 4.5+ keeps config.php above its public web root.
+    $moodleroot = dirname($moodleroot);
+    $configsource = is_file($moodleroot . '/config.php')
+        ? file_get_contents($moodleroot . '/config.php')
+        : false;
+}
+if (!is_string($configsource)) {
+    throw new RuntimeException('Could not read the Moodle configuration for the race worker.');
+}
+$runtimeconfig = [
+    'prefix' => (string) ($argv[4] ?? ''),
+    'dataroot' => $dataroot,
+    'wwwroot' => (string) ($argv[6] ?? ''),
+];
+foreach ($runtimeconfig as $name => $value) {
+    $pattern = '/\$CFG->' . preg_quote($name, '/') . '[ \t]*=[^\r\n]*;/';
+    $replacement = '$CFG->' . $name . ' = ' . var_export($value, true) . ';';
+    $configsource = preg_replace($pattern, $replacement, $configsource, 1, $replacements);
+    if (!is_string($configsource) || $replacements !== 1) {
+        throw new RuntimeException('Could not apply the PHPUnit ' . $name . ' setting to the race worker.');
+    }
+}
+$setupstatement = "require_once(__DIR__ . '/lib/setup.php');";
+$lockconfiguration = '$CFG->lock_factory = ' . var_export('\\core\\lock\\file_lock_factory', true) . ";\n"
+    . '$CFG->file_lock_root = ' . var_export($resolvedlockroot, true) . ";\n";
+$configsource = str_replace($setupstatement, $lockconfiguration . $setupstatement, $configsource, $setupreplacements);
+if ($setupreplacements !== 1) {
+    throw new RuntimeException('Could not set the worker-local file-lock root before Moodle setup.');
+}
+$workerconfig = $moodleroot . '/config-rtc-race-' . preg_replace('/[^a-z0-9_-]/i', '', (string) ($argv[3] ?? '')) . '.php';
+if (file_put_contents($workerconfig, $configsource, LOCK_EX) === false) {
+    throw new RuntimeException('Could not create the race worker PHPUnit configuration.');
+}
+try {
+    require($workerconfig);
+} finally {
+    @unlink($workerconfig);
+}
 
 global $CFG, $DB;
 
 require_once($CFG->dirroot . '/local/rtcsync/externallib.php');
 
 $payload = json_decode(base64_decode($argv[1] ?? '', true) ?: '', true, 512, JSON_THROW_ON_ERROR);
-$barrierdir = (string) ($argv[2] ?? '');
-$workername = (string) ($argv[3] ?? '');
 $idnumber = (string) ($payload['idnumber'] ?? '');
-$lockroot = $barrierdir . '/locks-' . $workername;
-if (!mkdir($lockroot, 0770, true) && !is_dir($lockroot)) {
-    throw new RuntimeException('Could not create the worker-local Moodle lock directory.');
-}
 
 // Give each process an independent file-lock root to reproduce separate nodes.
 $CFG->lock_factory = '\core\lock\file_lock_factory';
-$CFG->file_lock_root = $lockroot;
-$CFG->preventfilelocking = false;
 \core\session\manager::set_user(get_admin());
 
 /** Pause after reading the initial sync row so the parent can order the commits. */

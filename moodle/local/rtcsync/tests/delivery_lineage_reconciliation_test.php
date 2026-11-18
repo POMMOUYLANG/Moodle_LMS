@@ -843,14 +843,25 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
             (int) $user->id
         );
 
-        $currentaudit = $DB->get_record('local_rtcsync_lineageaudit', [
-            'manifestid' => 'current-release',
-            'courseid' => (int) $target['course']->id,
-            'recordtype' => 'module',
-            'targetid' => (int) $target['cm']->id,
-            'decision' => 'current',
-            'deliveryids' => json_encode([(int) $target['deliveryid']]),
-        ], '*', MUST_EXIST);
+        $currentaudit = $DB->get_record_sql(
+            'SELECT *
+               FROM {local_rtcsync_lineageaudit}
+              WHERE manifestid = :manifestid
+                AND courseid = :courseid
+                AND recordtype = :recordtype
+                AND targetid = :targetid
+                AND decision = :decision
+                AND ' . $DB->sql_compare_text('deliveryids') . ' = :deliveryids',
+            [
+                'manifestid' => 'current-release',
+                'courseid' => (int) $target['course']->id,
+                'recordtype' => 'module',
+                'targetid' => (int) $target['cm']->id,
+                'decision' => 'current',
+                'deliveryids' => json_encode([(int) $target['deliveryid']]),
+            ],
+            MUST_EXIST
+        );
         $DB->delete_records('local_rtcsync_lineageaudit', ['id' => (int) $currentaudit->id]);
         $this->assertFalse(delivery_activity_access::student_module_content_is_in_current_delivery(
             (int) $target['course']->id,
@@ -1317,6 +1328,65 @@ final class delivery_lineage_reconciliation_test extends \advanced_testcase
         $this->assertEquals($before, $after);
         $this->assertFalse($DB->record_exists('local_rtcsync_linemanifest', ['manifestid' => 'failed-apply-manifest']));
         $this->assertSame(1, $DB->count_records('local_rtcsync_lineageaudit', ['manifestid' => 'failed-apply-manifest']));
+    }
+
+    public function test_failed_apply_rolls_back_mapping_and_manifest_for_throwable_audit_failure(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $target = $this->createTarget('failed-apply-throwable', 910012);
+        $json = $this->manifest($target, 'current', null, 'failed-apply-throwable-manifest');
+        $preview = delivery_lineage_reconciliation::preview($json);
+        $this->assertTrue($preview['valid'], implode('; ', $preview['errors']));
+        $before = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $target['cm']->id], '*', MUST_EXIST);
+
+        $realdb = $DB;
+        $faultdb = new class($realdb) {
+            /** @var moodle_database */
+            private $database;
+
+            public function __construct($database) {
+                $this->database = $database;
+            }
+
+            public function __call(string $name, array $arguments) {
+                if ($name === 'insert_record'
+                        && ($arguments[0] ?? null) === 'local_rtcsync_lineageaudit') {
+                    throw new \Error('Injected non-Exception failure during lineage apply.');
+                }
+
+                return $this->database->{$name}(...$arguments);
+            }
+
+            public function __get(string $name) {
+                return $this->database->{$name};
+            }
+
+            public function __isset(string $name): bool {
+                return isset($this->database->{$name});
+            }
+        };
+
+        $DB = $faultdb;
+        $failed = false;
+        try {
+            $this->applyManifest($json, $preview['plan_sha256']);
+        } catch (\Error $exception) {
+            $failed = true;
+        } finally {
+            $DB = $realdb;
+        }
+
+        $this->assertTrue($failed, 'The injected throwable must escape lineage apply.');
+        $after = $DB->get_record('local_rtcsync_deliverycm', ['cmid' => (int) $target['cm']->id], '*', MUST_EXIST);
+        $this->assertEquals($before, $after);
+        $this->assertFalse($DB->record_exists('local_rtcsync_linemanifest', [
+            'manifestid' => 'failed-apply-throwable-manifest',
+        ]));
+        $this->assertSame(0, $DB->count_records('local_rtcsync_lineageaudit', [
+            'manifestid' => 'failed-apply-throwable-manifest',
+        ]));
     }
 
     public function test_conflicting_stale_and_ambiguous_manifests_fail_validation(): void

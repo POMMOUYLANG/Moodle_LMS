@@ -754,7 +754,7 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
         $coursesync->add_field('sourcerevision', XMLDB_TYPE_INTEGER, '18', null, XMLDB_NOTNULL);
         $coursesync->add_field('idempotencykey', XMLDB_TYPE_CHAR, '128', null, XMLDB_NOTNULL);
         $coursesync->add_field('payloadhash', XMLDB_TYPE_CHAR, '64', null, XMLDB_NOTNULL);
-        $coursesync->add_field('fencetoken', XMLDB_TYPE_CHAR, '32', null, XMLDB_NOTNULL, null, '');
+        $coursesync->add_field('fencetoken', XMLDB_TYPE_CHAR, '32', null, XMLDB_NOTNULL, null, str_repeat('0', 32));
         $coursesync->add_field('coursevisible', XMLDB_TYPE_INTEGER, '1', null, XMLDB_NOTNULL, null, '1');
         $coursesync->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
         $coursesync->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
@@ -779,13 +779,47 @@ function xmldb_local_rtcsync_upgrade(int $oldversion): bool
             null,
             XMLDB_NOTNULL,
             null,
-            '',
+            str_repeat('0', 32),
             'payloadhash'
         );
         if ($dbman->table_exists($coursesync) && !$dbman->field_exists($coursesync, $fencetoken)) {
             $dbman->add_field($coursesync, $fencetoken);
         }
         upgrade_plugin_savepoint(true, 2026110800, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026111600) {
+        // The compatibility release has no schema change, but still advances the installed plugin version.
+        upgrade_plugin_savepoint(true, 2026111600, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026111601) {
+        $dbman = $DB->get_manager();
+        $coursesync = new xmldb_table('local_rtcsync_coursesync');
+        $fencetoken = new xmldb_field(
+            'fencetoken',
+            XMLDB_TYPE_CHAR,
+            '32',
+            null,
+            XMLDB_NOTNULL,
+            null,
+            str_repeat('0', 32),
+            'payloadhash'
+        );
+
+        if ($dbman->table_exists($coursesync) && $dbman->field_exists($coursesync, $fencetoken)) {
+            // Older installs used an empty default. Replace existing empty
+            // tokens with an inert sentinel before changing the column default.
+            $DB->set_field('local_rtcsync_coursesync', 'fencetoken', str_repeat('0', 32), ['fencetoken' => '']);
+            $dbman->change_field_default($coursesync, $fencetoken);
+        }
+
+        upgrade_plugin_savepoint(true, 2026111601, 'local', 'rtcsync');
+    }
+
+    if ($oldversion < 2026111700) {
+        // The correlation observer adds no domain schema; this savepoint refreshes plugin callbacks.
+        upgrade_plugin_savepoint(true, 2026111700, 'local', 'rtcsync');
     }
 
     return true;

@@ -29,7 +29,7 @@ final class delivery_activity_backfill_test extends \advanced_testcase
         set_config('enableavailability', 1);
         $now = time();
         $course = $this->getDataGenerator()->create_course([
-            'idnumber' => 'rtc-subject:delivery-backfill-replay',
+            'idnumber' => 'rtc-fixture:delivery-backfill-replay',
             'visible' => 1,
         ]);
         $firstmodule = $this->getDataGenerator()->create_module('quiz', [
@@ -62,10 +62,23 @@ final class delivery_activity_backfill_test extends \advanced_testcase
         $DB->set_field('course_modules', 'availability', $firstavailability, ['id' => $firstcmid]);
         $DB->set_field('course_modules', 'groupingid', (int) $secondgrouping->id, ['id' => $secondcmid]);
         $DB->set_field('course_modules', 'availability', $secondavailability, ['id' => $secondcmid]);
+        // Build the interrupted state before marking the course as managed.
+        // Otherwise the module-created observer completes the backfill while
+        // the test is still constructing its fixture.
+        $DB->set_field('course', 'idnumber', 'rtc-subject:delivery-backfill-replay', ['id' => (int) $course->id]);
+        $DB->set_field('course', 'visible', 0, ['id' => (int) $course->id]);
+        $DB->insert_record('local_rtcsync_deliverycourse', (object) [
+            'courseid' => (int) $course->id,
+            'coursevisible' => 1,
+            'ready' => 0,
+            'lastcmid' => 0,
+            'timecreated' => $now,
+            'timemodified' => $now,
+        ]);
 
         \local_rtcsync\local\delivery_activity_access::ensure_grouping_ui_enabled((int) $course->id);
         $firstmanifestid = hash('sha256', 'reviewed backfill replay fixture');
-        $DB->insert_record('local_rtcsync_deliverycm', (object) [
+        $reviewedmapping = (object) [
             'cmid' => $firstcmid,
             'courseid' => (int) $course->id,
             'deliveryid' => $firstdeliveryid,
@@ -76,7 +89,22 @@ final class delivery_activity_backfill_test extends \advanced_testcase
             'lineagemanifestid' => $firstmanifestid,
             'timecreated' => $now,
             'timemodified' => $now,
-        ]);
+        ];
+        // Module creation in a delivery-managed course may already have created
+        // an unreviewed guard mapping. Reuse that row to model a reviewed mapping
+        // without conflicting with the unique cmid index.
+        $existingmapping = $DB->get_record(
+            'local_rtcsync_deliverycm',
+            ['cmid' => $firstcmid],
+            'id',
+            IGNORE_MISSING
+        );
+        if ($existingmapping) {
+            $reviewedmapping->id = (int) $existingmapping->id;
+            $DB->update_record('local_rtcsync_deliverycm', $reviewedmapping);
+        } else {
+            $DB->insert_record('local_rtcsync_deliverycm', $reviewedmapping);
+        }
 
         // Reproduce a persisted prefix of a page that was interrupted before
         // its page cursor could be checkpointed. This is the same per-module
@@ -106,14 +134,18 @@ final class delivery_activity_backfill_test extends \advanced_testcase
         $concurrentlock = $lockfactory->get_lock('course:' . (int) $course->id, 0);
         $this->assertNotFalse($concurrentlock);
         $timedout = false;
+        ob_start();
         try {
             (new \local_rtcsync\task\delivery_activity_backfill())->execute();
         } catch (\moodle_exception $exception) {
-            $timedout = $exception->errorcode === 'locktimeout';
+            $timedout = $exception->errorcode === 'deliveryactivitybackfillfailed'
+                && str_contains((string) $exception->debuginfo, 'locktimeout');
         } finally {
+            $taskoutput = (string) ob_get_clean();
             $concurrentlock->release();
         }
         $this->assertTrue($timedout, 'A competing scheduler attempt must wait for the course access lock.');
+        $this->assertStringContainsString('locktimeout', $taskoutput);
         $this->assertSame(0, (int) $DB->get_field('local_rtcsync_deliverycourse', 'ready', ['courseid' => (int) $course->id]));
         $this->assertSame(0, (int) $DB->get_field('local_rtcsync_deliverycourse', 'lastcmid', ['courseid' => (int) $course->id]));
         $this->assertSame(0, (int) $DB->get_field('course', 'visible', ['id' => (int) $course->id]));
@@ -123,7 +155,7 @@ final class delivery_activity_backfill_test extends \advanced_testcase
         // A ready course with its own exact mapping must not be touched by a
         // retry that only selects pending delivery-course states.
         $unrelatedcourse = $this->getDataGenerator()->create_course([
-            'idnumber' => 'rtc-subject:unrelated-backfill-replay',
+            'idnumber' => 'rtc-fixture:unrelated-backfill-replay',
             'visible' => 1,
         ]);
         $unrelatedmodule = $this->getDataGenerator()->create_module('quiz', [
@@ -141,6 +173,9 @@ final class delivery_activity_backfill_test extends \advanced_testcase
         $unrelatedavailability = $this->groupingAvailability((int) $unrelatedgrouping->id);
         $DB->set_field('course_modules', 'groupingid', (int) $unrelatedgrouping->id, ['id' => $unrelatedcmid]);
         $DB->set_field('course_modules', 'availability', $unrelatedavailability, ['id' => $unrelatedcmid]);
+        $DB->set_field('course', 'idnumber', 'rtc-subject:unrelated-backfill-replay', [
+            'id' => (int) $unrelatedcourse->id,
+        ]);
         $DB->insert_record('local_rtcsync_deliverycourse', (object) [
             'courseid' => (int) $unrelatedcourse->id,
             'coursevisible' => 1,

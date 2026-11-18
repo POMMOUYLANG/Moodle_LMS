@@ -139,10 +139,18 @@ final class externallib_test extends \advanced_testcase
 
     public function test_versioned_course_replay_requires_course_update_capability(): void
     {
+        global $DB;
+
         $this->resetAfterTest();
         $this->setAdminUser();
         $payload = $this->versionedCoursePayload(73106, 2);
         $created = \local_rtcsync_external::upsert_course($payload);
+        // This case targets course:update, so model a fully prepared visible
+        // course and leave the guard-lock behavior to its dedicated tests.
+        $DB->set_field('local_rtcsync_deliverycourse', 'ready', 1, ['courseid' => (int) $created['id']]);
+        $DB->set_field('local_rtcsync_deliverycourse', 'coursevisible', 1, ['courseid' => (int) $created['id']]);
+        $DB->set_field('course', 'visible', 1, ['id' => (int) $created['id']]);
+        rebuild_course_cache((int) $created['id'], true);
 
         $operator = $this->getDataGenerator()->create_user();
         $systemcontext = \context_system::instance();
@@ -150,8 +158,14 @@ final class externallib_test extends \advanced_testcase
         $categorycontext = \context_coursecat::instance((int) $created['categoryid']);
         $roleid = create_role('RTC category-only sync operator', 'rtc_cat_only_sync', '');
         assign_capability('moodle/category:manage', CAP_ALLOW, $roleid, $systemcontext->id);
+        // Let the participant pass the delivery-guard check; this test isolates
+        // the separate course:update authorization boundary.
+        assign_capability('moodle/course:ignoreavailabilityrestrictions', CAP_ALLOW, $roleid, $systemcontext->id);
         assign_capability('moodle/course:create', CAP_ALLOW, $roleid, $categorycontext->id);
         role_assign($roleid, (int) $operator->id, $systemcontext->id);
+        // A real participant record is required to pass Moodle 5.3's hidden
+        // course login check before testing the narrower update capability.
+        $this->getDataGenerator()->enrol_user((int) $operator->id, (int) $created['id'], 'student');
         accesslib_clear_all_caches_for_unit_testing();
 
         $this->assertTrue(has_capability('moodle/category:manage', $systemcontext, $operator));
@@ -245,12 +259,19 @@ final class externallib_test extends \advanced_testcase
         $restored = $this->versionedCoursePayload(73103, 12, ['visible' => 1]);
         $higher = \local_rtcsync_external::upsert_course($restored);
         $this->assertSame(1, $higher['applied']);
-        $this->assertSame(1, (int) $DB->get_field(
+        // The new requested visibility is retained, but an incomplete delivery
+        // guard keeps the course hidden until a later committed backfill.
+        $this->assertSame(0, (int) $DB->get_field(
             'course',
             'visible',
             ['id' => (int) $applied['id']],
             MUST_EXIST
         ));
+        $guardstate = $DB->get_record('local_rtcsync_deliverycourse', [
+            'courseid' => (int) $applied['id'],
+        ], '*', MUST_EXIST);
+        $this->assertSame(1, (int) $guardstate->coursevisible);
+        $this->assertSame(0, (int) $guardstate->ready);
     }
 
     public function test_mysql_course_revision_claim_serializes_competing_writes_and_first_row_races(): void
@@ -351,10 +372,14 @@ final class externallib_test extends \advanced_testcase
 
         $workers = [];
         try {
+            // Initialise Moodle's cache config before workers bootstrap concurrently.
+            // The cache config writer uses the shared cachelock_file directory.
+            \core_cache\config::instance();
+
             $workers['higher'] = $this->start_course_revision_race_worker($barrierdir, 'higher', $higher);
             $workers['lower'] = $this->start_course_revision_race_worker($barrierdir, 'lower', $lower);
-            $this->wait_for_course_revision_race_file($barrierdir . '/higher.ready');
-            $this->wait_for_course_revision_race_file($barrierdir . '/lower.ready');
+            $this->wait_for_course_revision_race_file($barrierdir . '/higher.ready', $workers['higher'], 'higher');
+            $this->wait_for_course_revision_race_file($barrierdir . '/lower.ready', $workers['lower'], 'lower');
 
             file_put_contents($barrierdir . '/higher.release', 'go', LOCK_EX);
             $higherresult = $this->finish_course_revision_race_worker($workers['higher']);
@@ -369,12 +394,32 @@ final class externallib_test extends \advanced_testcase
                 $this->stop_course_revision_race_worker($worker);
             }
             unset($worker);
+            foreach (['higher', 'lower'] as $name) {
+                $lockroot = $this->course_revision_race_worker_lock_root($barrierdir, $name);
+                if (is_dir($lockroot)) {
+                    remove_dir($lockroot);
+                }
+            }
         }
+    }
+
+    /** Return a per-worker lock root outside the PHPUnit dataroot. */
+    private function course_revision_race_worker_lock_root(string $barrierdir, string $name): string
+    {
+        return rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR
+            . 'rtc-moodle-course-race-lock-' . hash('sha256', $barrierdir . "\0" . $name);
     }
 
     /** Start one isolated PHP worker with its own local file-lock directory. */
     private function start_course_revision_race_worker(string $barrierdir, string $name, array $payload): array
     {
+        global $CFG;
+
+        $lockroot = $this->course_revision_race_worker_lock_root($barrierdir, $name);
+        if (!mkdir($lockroot, 0770, true)) {
+            throw new \RuntimeException('Could not create the worker-local Moodle lock directory.');
+        }
+
         $workerpath = __DIR__ . '/fixtures/course_revision_race_worker.php';
         $payloadjson = json_encode($payload, JSON_THROW_ON_ERROR);
         $command = [
@@ -383,6 +428,10 @@ final class externallib_test extends \advanced_testcase
             base64_encode($payloadjson),
             $barrierdir,
             $name,
+            (string) $CFG->prefix,
+            (string) $CFG->dataroot,
+            (string) $CFG->wwwroot,
+            $lockroot,
         ];
         $descriptors = [
             0 => ['pipe', 'r'],
@@ -395,6 +444,8 @@ final class externallib_test extends \advanced_testcase
             throw new \RuntimeException('Could not start a course revision race worker.');
         }
         fclose($pipes[0]);
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
 
         return [
             'process' => $process,
@@ -404,13 +455,27 @@ final class externallib_test extends \advanced_testcase
     }
 
     /** Wait for one worker's barrier or result file without touching the database. */
-    private function wait_for_course_revision_race_file(string $path): void
+    private function wait_for_course_revision_race_file(string $path, array &$worker, string $name): void
     {
         $deadline = microtime(true) + 60;
         while (!is_file($path) && microtime(true) < $deadline) {
+            $status = proc_get_status($worker['process']);
+            if (!$status['running']) {
+                $stdout = stream_get_contents($worker['pipes'][1]);
+                $stderr = stream_get_contents($worker['pipes'][2]);
+                $this->fail('Course revision race worker ' . $name . ' exited before its barrier '
+                    . '(exit ' . $status['exitcode'] . '). Output: ' . $stdout . "\n" . $stderr);
+            }
             usleep(10000);
         }
-        $this->assertFileExists($path, 'A course revision race worker did not reach its barrier in time.');
+        if (!is_file($path)) {
+            $status = proc_get_status($worker['process']);
+            $stdout = stream_get_contents($worker['pipes'][1]);
+            $stderr = stream_get_contents($worker['pipes'][2]);
+            $this->fail('A course revision race worker did not reach its barrier in time. '
+                . 'Worker ' . $name . ' running=' . ($status['running'] ? 'yes' : 'no')
+                . ', exit=' . $status['exitcode'] . '. Output: ' . $stdout . "\n" . $stderr);
+        }
     }
 
     /** Collect a completed worker result and close its process resources. */
@@ -563,6 +628,7 @@ final class externallib_test extends \advanced_testcase
         $first = \local_rtcsync_external::upsert_course($payload);
         $competitor = $this->getDataGenerator()->create_course(['shortname' => 'RTC-COLLISION-73105']);
         $failed = $this->versionedCoursePayload(73105, 5, [
+            'fullname' => 'This higher-revision fullname must roll back',
             'shortname' => (string) $competitor->shortname,
             'category_idnumber' => 'rtc-rollback-only:73105',
             'category_name' => 'Must be rolled back with failed course update',
@@ -1017,7 +1083,7 @@ final class externallib_test extends \advanced_testcase
 
         $this->resetAfterTest();
         $this->setAdminUser();
-        $course = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:11']);
+        $course = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-fixture:activity-grade-read']);
         $student = $this->createManagedUser(['idnumber' => 'rtc-user:22']);
         $unmanagedstudent = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:23']);
         $mismarkedstudent = $this->getDataGenerator()->create_user(['idnumber' => 'rtc-user:24']);
@@ -1062,6 +1128,8 @@ final class externallib_test extends \advanced_testcase
             'timecreated' => time(),
             'timemodified' => time(),
         ]);
+        // Keep module-created observers out of this legacy-course read fixture.
+        $DB->set_field('course', 'idnumber', 'rtc-subject:11', ['id' => (int) $course->id]);
 
         $result = \local_rtcsync_external::get_managed_state(
             'activitygrades',
@@ -4456,6 +4524,87 @@ final class externallib_test extends \advanced_testcase
         $this->assertSame(0, (int) $unchangeditem->hidden);
     }
 
+    public function test_delivery_score_replays_same_payload_after_transient_moodle_grade_lock_failure(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:320']);
+        $this->createDeliveryGrouping($course, 718);
+        $user = $this->createManagedUser();
+        $idnumber = 'rtc-subject-score:320:delivery:718';
+        $item = new \grade_item([
+            'courseid' => (int) $course->id,
+            'itemname' => 'Temporarily locked delivery score',
+            'itemtype' => 'manual',
+            'itemmodule' => null,
+            'iteminstance' => null,
+            'itemnumber' => 0,
+            'idnumber' => $idnumber,
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ], false);
+        $item->insert('grade-replay-test');
+        $DB->set_field('grade_items', 'locked', 1, ['id' => (int) $item->id]);
+
+        $payload = [
+            'courseid' => (int) $course->id,
+            'userid' => (int) $user->id,
+            'itemname' => 'Delivery score replay',
+            'idnumber' => $idnumber,
+            'deliveryid' => 718,
+            'grade' => 64.0,
+            'grademax' => 100.0,
+        ];
+
+        try {
+            \local_rtcsync_external::upsert_grade($payload);
+            $this->fail('A temporarily locked Moodle grade item must fail before the sync is committed.');
+        } catch (\moodle_exception $exception) {
+            $this->assertSame('gradeupdatefailed', $exception->errorcode);
+        }
+
+        $this->assertSame('Temporarily locked delivery score', (string) $DB->get_field(
+            'grade_items',
+            'itemname',
+            ['id' => (int) $item->id]
+        ));
+        $this->assertFalse($DB->record_exists('grade_grades', [
+            'itemid' => (int) $item->id,
+            'userid' => (int) $user->id,
+        ]));
+        $this->assertFalse($DB->record_exists('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+        ]));
+
+        // Moodle has released the temporary lock; replay the identical request.
+        $DB->set_field('grade_items', 'locked', 0, ['id' => (int) $item->id]);
+        $firstreplay = \local_rtcsync_external::upsert_grade($payload);
+        $duplicateReplay = \local_rtcsync_external::upsert_grade($payload);
+
+        $this->assertSame((int) $item->id, (int) $firstreplay['itemid']);
+        $this->assertSame($firstreplay['itemid'], $duplicateReplay['itemid']);
+        $this->assertSame(64.0, (float) $DB->get_field('grade_grades', 'finalgrade', [
+            'itemid' => (int) $item->id,
+            'userid' => (int) $user->id,
+        ]));
+        $this->assertSame(1, $DB->count_records('grade_items', [
+            'courseid' => (int) $course->id,
+            'idnumber' => $idnumber,
+        ]));
+        $this->assertSame(1, $DB->count_records('grade_grades', [
+            'itemid' => (int) $item->id,
+            'userid' => (int) $user->id,
+        ]));
+        $this->assertSame(1, $DB->count_records('local_rtcsync_deliverygrade', [
+            'gradeitemid' => (int) $item->id,
+            'courseid' => (int) $course->id,
+            'deliveryid' => 718,
+        ]));
+    }
+
     public function test_sync_does_not_verify_a_legacy_delivery_grade_mapping(): void
     {
         global $DB;
@@ -4502,6 +4651,129 @@ final class externallib_test extends \advanced_testcase
         $mapping = $DB->get_record('local_rtcsync_deliverygrade', ['gradeitemid' => (int) $item->id], '*', MUST_EXIST);
         $this->assertSame(0, (int) $mapping->lineageverified);
         $this->assertNull($mapping->lineagemanifestid);
+    }
+
+    public function test_grade_item_disposition_added_after_preflight_blocks_sync_write(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $course = $this->createManagedCourse(['idnumber' => 'rtc-subject:325']);
+        $this->createDeliveryGrouping($course, 725);
+        $user = $this->createManagedUser();
+        $idnumber = 'rtc-subject-score:325:delivery:725';
+
+        $realdb = $DB;
+        $faultdb = new class($realdb, (int) $course->id, (int) $user->id, $idnumber) {
+            /** @var moodle_database */
+            private $database;
+
+            /** @var int */
+            private $courseid;
+
+            /** @var int */
+            private $userid;
+
+            /** @var string */
+            private $idnumber;
+
+            /** @var bool */
+            private $injectiontriggered = false;
+
+            /** @var int */
+            public $injectedgradeitemid = 0;
+
+            public function __construct($database, int $courseid, int $userid, string $idnumber) {
+                $this->database = $database;
+                $this->courseid = $courseid;
+                $this->userid = $userid;
+                $this->idnumber = $idnumber;
+            }
+
+            public function __call(string $name, array $arguments) {
+                $result = $this->database->{$name}(...$arguments);
+                if ($name === 'get_recordset_select'
+                        && ($arguments[0] ?? null) === 'grade_items'
+                        && !$this->injectiontriggered
+                        && in_array($this->idnumber, $arguments[2] ?? [], true)
+                        && !$result->valid()) {
+                    // Simulate a reviewed quarantine appearing after the API's
+                    // first lookup but before its final write-time lookup.
+                    $this->injectiontriggered = true;
+                    $item = new \grade_item([
+                        'courseid' => $this->courseid,
+                        'itemname' => 'Concurrent quarantined delivery score',
+                        'itemtype' => 'manual',
+                        'itemmodule' => null,
+                        'iteminstance' => null,
+                        'itemnumber' => 0,
+                        'idnumber' => $this->idnumber,
+                        'gradetype' => GRADE_TYPE_VALUE,
+                        'grademax' => 100,
+                        'grademin' => 0,
+                    ], false);
+                    $item->insert('concurrent-admin-test');
+                    $item->update_final_grade($this->userid, 54.0, 'concurrent-admin-test');
+                    $this->injectedgradeitemid = (int) $item->id;
+                    $manifestid = 'concurrent-quarantined-delivery-score';
+                    $this->database->insert_record('local_rtcsync_lineageaudit', (object) [
+                        'manifestid' => $manifestid,
+                        'manifesthash' => hash('sha256', $manifestid),
+                        'courseid' => $this->courseid,
+                        'recordtype' => 'gradeitem',
+                        'targetid' => $this->injectedgradeitemid,
+                        'decision' => 'quarantine',
+                        'deliveryids' => '[]',
+                        'sourceidentity' => '{}',
+                        'targetidentity' => '{}',
+                        'reason' => 'Keep the concurrent legacy grade quarantined.',
+                        'entryhash' => hash('sha256', $manifestid . ':quarantine:' . $item->id),
+                        'resultstate' => '{}',
+                        'parententryhash' => null,
+                        'parentresultstate' => null,
+                        'timecreated' => time(),
+                    ]);
+                }
+
+                return $result;
+            }
+
+            public function __get(string $name) {
+                return $this->database->{$name};
+            }
+
+            public function __isset(string $name): bool {
+                return isset($this->database->{$name});
+            }
+        };
+
+        $DB = $faultdb;
+        $failure = null;
+        try {
+            \local_rtcsync_external::upsert_grade([
+                'courseid' => (int) $course->id,
+                'userid' => (int) $user->id,
+                'itemname' => 'Attempted quarantined score rewrite',
+                'idnumber' => $idnumber,
+                'deliveryid' => 725,
+                'grade' => 88.0,
+                'grademax' => 200,
+                'hidden' => 1,
+            ]);
+        } catch (\invalid_parameter_exception $exception) {
+            $failure = $exception;
+        } finally {
+            $DB = $realdb;
+        }
+
+        $this->assertInstanceOf(\invalid_parameter_exception::class, $failure);
+        $this->assertStringContainsString('matching audited map', $failure->getMessage());
+        $this->assertGreaterThan(0, $faultdb->injectedgradeitemid);
+        $this->assertFalse($DB->record_exists('grade_items', ['id' => $faultdb->injectedgradeitemid]));
+        $this->assertFalse($DB->record_exists('local_rtcsync_deliverygrade', [
+            'gradeitemid' => $faultdb->injectedgradeitemid,
+        ]));
     }
 
     public function test_delivery_score_does_not_mutate_a_reviewed_dispositioned_grade_item(): void
@@ -4920,6 +5192,17 @@ final class externallib_test extends \advanced_testcase
         $user = $this->createManagedUser();
         $this->createDeliveryGrouping($course, 714);
         $this->createDuplicateDeliveryGrouping($course, 714);
+        // This course has no activities to backfill. Seed it as already ready
+        // so the test's outer PHPUnit transaction does not defer final readiness.
+        $now = time();
+        $DB->insert_record('local_rtcsync_deliverycourse', (object) [
+            'courseid' => (int) $course->id,
+            'coursevisible' => (int) $course->visible,
+            'ready' => 1,
+            'lastcmid' => 0,
+            'timecreated' => $now,
+            'timemodified' => $now,
+        ]);
 
         try {
             \local_rtcsync_external::upsert_grade([

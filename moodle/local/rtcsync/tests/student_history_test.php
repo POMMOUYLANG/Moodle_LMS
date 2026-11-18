@@ -14,6 +14,14 @@ defined('MOODLE_INTERNAL') || die();
 #[CoversClass(\local_rtcsync\local\student_history::class)]
 final class student_history_test extends \advanced_testcase
 {
+    /** Use Moodle's stable public course-module deletion API across core versions. */
+    private function deleteCourseModule(int $cmid): void
+    {
+        global $CFG;
+        require_once($CFG->dirroot . '/course/lib.php');
+        \course_delete_module($cmid);
+    }
+
     /**
      * Create an RTC-managed Moodle student with a suspended manual course enrolment.
      *
@@ -1684,17 +1692,23 @@ final class student_history_test extends \advanced_testcase
 
         $this->setAdminUser();
         try {
-            course_delete_module($cmid);
+            $this->deleteCourseModule($cmid);
             $this->fail('A delivery-aware activity with historical lineage must not be deleted.');
         } catch (\moodle_exception $exception) {
-            $this->assertSame('coursepurgestopped', $exception->errorcode);
+            $this->assertContains($exception->errorcode, [
+                'coursepurgestopped',
+                'deliverymoduledeletionblocked',
+            ]);
         }
         $DB->set_field('course_modules', 'deletioninprogress', 1, ['id' => $cmid]);
         try {
-            course_delete_module($cmid);
+            $this->deleteCourseModule($cmid);
             $this->fail('A queued deletion of a delivery-aware activity must also be rejected.');
         } catch (\moodle_exception $exception) {
-            $this->assertSame('coursepurgestopped', $exception->errorcode);
+            $this->assertContains($exception->errorcode, [
+                'coursepurgestopped',
+                'deliverymoduledeletionblocked',
+            ]);
         }
         $this->assertTrue($DB->record_exists('course_modules', ['id' => $cmid]));
         $this->assertSame(0, (int) $DB->get_field('course_modules', 'deletioninprogress', ['id' => $cmid]));
@@ -2403,7 +2417,7 @@ final class student_history_test extends \advanced_testcase
 
         $this->resetAfterTest();
         $course = $this->getDataGenerator()->create_course([
-            'idnumber' => 'rtc-subject:delivery-backfill',
+            'idnumber' => 'rtc-fixture:delivery-backfill',
             'visible' => 1,
         ]);
         $user = $this->getDataGenerator()->create_user([
@@ -2447,6 +2461,11 @@ final class student_history_test extends \advanced_testcase
             'course' => (int) $course->id,
             'name' => 'Untagged second',
             'grade' => 100,
+        ]);
+        // Create activities before activating the observer-driven guard, so
+        // prepare_course() itself exercises the bounded 1+1+final page flow.
+        $DB->set_field('course', 'idnumber', 'rtc-subject:delivery-backfill', [
+            'id' => (int) $course->id,
         ]);
 
         $this->assertFalse(\local_rtcsync\local\delivery_activity_access::prepare_course((int) $course->id, 1));

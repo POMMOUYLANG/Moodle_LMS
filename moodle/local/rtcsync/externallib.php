@@ -1,5 +1,11 @@
 <?php
 
+use core_external\external_api;
+use core_external\external_function_parameters;
+use core_external\external_multiple_structure;
+use core_external\external_single_structure;
+use core_external\external_value;
+
 defined('MOODLE_INTERNAL') || die();
 
 global $CFG;
@@ -526,6 +532,27 @@ class local_rtcsync_external extends external_api
         ];
     }
 
+    /** Create a Moodle user with the non-deprecated API when the installed core provides it. */
+    private static function create_moodle_user(\stdClass $user, bool $updatepassword): int
+    {
+        if (method_exists(\core\user::class, 'create_user')) {
+            return \core\user::create_user($user, $updatepassword);
+        }
+
+        return user_create_user($user, $updatepassword);
+    }
+
+    /** Update a Moodle user with the non-deprecated API when the installed core provides it. */
+    private static function update_moodle_user(\stdClass $user, bool $updatepassword): void
+    {
+        if (method_exists(\core\user::class, 'update_user')) {
+            \core\user::update_user($user, $updatepassword);
+            return;
+        }
+
+        user_update_user($user, $updatepassword);
+    }
+
     public static function upsert_user_parameters(): external_function_parameters
     {
         return new external_function_parameters([
@@ -817,7 +844,7 @@ class local_rtcsync_external extends external_api
                 require_capability('moodle/user:update', $systemcontext);
                 $record->id = $existing->id;
                 $record->timemodified = time();
-                user_update_user($record, false);
+                self::update_moodle_user($record, false);
                 $saved = $DB->get_record('user', ['id' => $existing->id], '*', MUST_EXIST);
             } else {
                 require_capability('moodle/user:create', $systemcontext);
@@ -829,7 +856,7 @@ class local_rtcsync_external extends external_api
                 $record->country = '';
                 $record->timezone = !empty($CFG->timezone) ? $CFG->timezone : '99';
                 $record->lang = !empty($CFG->lang) ? $CFG->lang : 'en';
-                $record->id = user_create_user($record, false);
+                $record->id = self::create_moodle_user($record, false);
                 $saved = $DB->get_record('user', ['id' => $record->id], '*', MUST_EXIST);
             }
 
@@ -1225,38 +1252,42 @@ class local_rtcsync_external extends external_api
             // Open the transaction only after acquiring the course lock, so a
             // grouping sync cannot hold the lock while waiting on this write.
             $transaction = $DB->start_delegated_transaction();
-            $plugin->enrol_user(
-                $instance,
-                (int) $enrolment['userid'],
-                (int) $role->id,
-                0,
-                0,
-                $status
-            );
-            if ($hasHistoryMarker) {
-                if ($accesslockheld) {
-                    $historyresult = \local_rtcsync\local\student_history::sync_marker_locked(
-                        (int) $enrolment['userid'],
-                        (int) $course->id,
-                        $historyaccess,
-                        $historysourcetype,
-                        $historysourceid,
-                        $deliveryid,
-                        $expectedscoperevision
-                    );
-                } else {
-                    $historyresult = \local_rtcsync\local\student_history::sync_marker(
-                        (int) $enrolment['userid'],
-                        (int) $course->id,
-                        $historyaccess,
-                        $historysourcetype,
-                        $historysourceid,
-                        $deliveryid,
-                        $expectedscoperevision
-                    );
+            try {
+                $plugin->enrol_user(
+                    $instance,
+                    (int) $enrolment['userid'],
+                    (int) $role->id,
+                    0,
+                    0,
+                    $status
+                );
+                if ($hasHistoryMarker) {
+                    if ($accesslockheld) {
+                        $historyresult = \local_rtcsync\local\student_history::sync_marker_locked(
+                            (int) $enrolment['userid'],
+                            (int) $course->id,
+                            $historyaccess,
+                            $historysourcetype,
+                            $historysourceid,
+                            $deliveryid,
+                            $expectedscoperevision
+                        );
+                    } else {
+                        $historyresult = \local_rtcsync\local\student_history::sync_marker(
+                            (int) $enrolment['userid'],
+                            (int) $course->id,
+                            $historyaccess,
+                            $historysourcetype,
+                            $historysourceid,
+                            $deliveryid,
+                            $expectedscoperevision
+                        );
+                    }
                 }
+                $transaction->allow_commit();
+            } catch (\Throwable $exception) {
+                $transaction->rollback($exception);
             }
-            $transaction->allow_commit();
         };
 
         if ($activeSubjectEnrolment) {
@@ -1283,6 +1314,12 @@ class local_rtcsync_external extends external_api
         } else if ($subjectCourseEnrolment) {
             // Suspended subject-course writes also serialize with regrouping
             // and lockdown, but do not require a ready course.
+            \local_rtcsync\local\delivery_activity_access::with_course_access_lock(
+                (int) $course->id,
+                static fn() => $writeenrolment(true)
+            );
+        } else if ($hasHistoryMarker) {
+            // Marker writes and exact-source clears stay locked through commit; rejected writes roll back first.
             \local_rtcsync\local\delivery_activity_access::with_course_access_lock(
                 (int) $course->id,
                 static fn() => $writeenrolment(true)
@@ -1409,7 +1446,8 @@ class local_rtcsync_external extends external_api
             $transaction->allow_commit();
         };
 
-        if ($subjectCourse) {
+        if ($subjectCourse || $hasHistorySource) {
+            // Keep source-scoped clears under the course lock through the outer transaction commit.
             \local_rtcsync\local\delivery_activity_access::with_course_access_lock(
                 (int) $course->id,
                 static fn() => $writeunenrolment(true)
@@ -1734,64 +1772,18 @@ class local_rtcsync_external extends external_api
         }
 
         $transaction = $DB->start_delegated_transaction();
+        try {
         $existingitem = grade_item::fetch([
             'courseid' => (int) $course->id,
             'idnumber' => $idnumber !== '' ? $idnumber : 'rtc-final-score',
         ]);
-        if ($existingitem && (string) $existingitem->itemtype !== 'manual') {
-            throw new invalid_parameter_exception(
-                'RTC score items must be manual grade items; activity grades require their own reviewed delivery lineage.'
-            );
-        }
-        $existingdeliverymapping = $existingitem
-            ? $DB->get_record('local_rtcsync_deliverygrade', ['gradeitemid' => (int) $existingitem->id], '*', IGNORE_MISSING)
-            : false;
-        if ($existingdeliverymapping) {
-            if ($deliveryid <= 0) {
-                throw new invalid_parameter_exception(
-                    'A grade item with delivery lineage cannot be updated without its matching positive delivery ID.'
-                );
-            }
-            if ((int) $existingdeliverymapping->courseid !== (int) $course->id
-                    || (int) $existingdeliverymapping->deliveryid !== $deliveryid) {
-                throw new invalid_parameter_exception(
-                    'The requested delivery does not match the grade item’s stored delivery association.'
-                );
-            }
-        }
-        $latestgradeaudit = false;
         if ($existingitem) {
-            $gradeaudits = $DB->get_records('local_rtcsync_lineageaudit', [
-                'courseid' => (int) $course->id,
-                'recordtype' => 'gradeitem',
-                'targetid' => (int) $existingitem->id,
-            ], 'id DESC', 'id,manifestid,decision,deliveryids', 0, 1);
-            $latestgradeaudit = $gradeaudits ? reset($gradeaudits) : false;
-        }
-        $mappingmanifestid = $existingdeliverymapping
-            ? (string) ($existingdeliverymapping->lineagemanifestid ?? '')
-            : '';
-        $hasmappingmanifest = $existingdeliverymapping
-            && $existingdeliverymapping->lineagemanifestid !== null;
-        // A null-manifest legacy row may receive current values but stays unverified.
-        // Once review recorded a decision, only its exact audited map remains writable.
-        if ($latestgradeaudit || $hasmappingmanifest) {
-            if (!$existingdeliverymapping
-                    || !$latestgradeaudit
-                    || trim($mappingmanifestid) === ''
-                    || $mappingmanifestid !== (string) $latestgradeaudit->manifestid
-                    || (int) $existingdeliverymapping->lineageverified !== 1
-                    || $deliveryid <= 0
-                    || (string) $latestgradeaudit->decision !== 'map'
-                    || (string) $latestgradeaudit->deliveryids !== json_encode([$deliveryid])) {
-                throw new invalid_parameter_exception(
-                    'A grade item with a reviewed lineage decision requires a matching audited map before it can be updated.'
-                );
-            }
-        }
-        if ($existingitem && $existingitem->is_locked((int) $grade['userid'])) {
-            // Avoid changing grade item metadata before Moodle rejects a locked grade.
-            throw new \moodle_exception('gradeupdatefailed', 'local_rtcsync');
+            self::validate_existing_delivery_grade_item(
+                $existingitem,
+                (int) $course->id,
+                (int) $grade['userid'],
+                $deliveryid
+            );
         }
 
         $value = $clear === 1 ? null : $grade['grade'];
@@ -1814,12 +1806,16 @@ class local_rtcsync_external extends external_api
             }
         }
 
+        $createdgradeitem = false;
         $item = self::ensure_grade_item(
             (int) $course->id,
             $idnumber,
             trim($grade['itemname']) ?: 'RTC Final Score',
             (float) $grade['grademax'],
-            (int) $grade['hidden'] === 1
+            (int) $grade['hidden'] === 1,
+            (int) $grade['userid'],
+            $deliveryid,
+            $createdgradeitem
         );
 
         $gradeupdated = $item->update_final_grade(
@@ -1838,7 +1834,7 @@ class local_rtcsync_external extends external_api
                 (int) $item->id,
                 (int) $course->id,
                 $deliveryid,
-                !$existingitem
+                $createdgradeitem
             );
         }
 
@@ -1852,6 +1848,9 @@ class local_rtcsync_external extends external_api
             'cleared' => $clear,
             'deliveryid' => $deliveryid,
         ];
+        } catch (\Throwable $exception) {
+            $transaction->rollback($exception);
+        }
             }
         );
     }
@@ -2893,22 +2892,92 @@ class local_rtcsync_external extends external_api
         return $instance;
     }
 
+    private static function validate_existing_delivery_grade_item(
+        grade_item $item,
+        int $courseid,
+        int $userid,
+        int $deliveryid
+    ): void {
+        global $DB;
+
+        if ((string) $item->itemtype !== 'manual') {
+            throw new invalid_parameter_exception(
+                'RTC score items must be manual grade items; activity grades require their own reviewed delivery lineage.'
+            );
+        }
+
+        $existingdeliverymapping = $DB->get_record(
+            'local_rtcsync_deliverygrade',
+            ['gradeitemid' => (int) $item->id],
+            '*',
+            IGNORE_MISSING
+        );
+        if ($existingdeliverymapping) {
+            if ($deliveryid <= 0) {
+                throw new invalid_parameter_exception(
+                    'A grade item with delivery lineage cannot be updated without its matching positive delivery ID.'
+                );
+            }
+            if ((int) $existingdeliverymapping->courseid !== $courseid
+                    || (int) $existingdeliverymapping->deliveryid !== $deliveryid) {
+                throw new invalid_parameter_exception(
+                    'The requested delivery does not match the grade item’s stored delivery association.'
+                );
+            }
+        }
+
+        $gradeaudits = $DB->get_records('local_rtcsync_lineageaudit', [
+            'courseid' => $courseid,
+            'recordtype' => 'gradeitem',
+            'targetid' => (int) $item->id,
+        ], 'id DESC', 'id,manifestid,decision,deliveryids', 0, 1);
+        $latestgradeaudit = $gradeaudits ? reset($gradeaudits) : false;
+        $mappingmanifestid = $existingdeliverymapping
+            ? (string) ($existingdeliverymapping->lineagemanifestid ?? '')
+            : '';
+        $hasmappingmanifest = $existingdeliverymapping
+            && $existingdeliverymapping->lineagemanifestid !== null;
+        // A null-manifest legacy row may receive current values but stays unverified.
+        // Once review recorded a decision, only its exact audited map remains writable.
+        if ($latestgradeaudit || $hasmappingmanifest) {
+            if (!$existingdeliverymapping
+                    || !$latestgradeaudit
+                    || trim($mappingmanifestid) === ''
+                    || $mappingmanifestid !== (string) $latestgradeaudit->manifestid
+                    || (int) $existingdeliverymapping->lineageverified !== 1
+                    || $deliveryid <= 0
+                    || (string) $latestgradeaudit->decision !== 'map'
+                    || (string) $latestgradeaudit->deliveryids !== json_encode([$deliveryid])) {
+                throw new invalid_parameter_exception(
+                    'A grade item with a reviewed lineage decision requires a matching audited map before it can be updated.'
+                );
+            }
+        }
+
+        if ($item->is_locked($userid)) {
+            // Avoid changing grade item metadata before Moodle rejects a locked grade.
+            throw new \moodle_exception('gradeupdatefailed', 'local_rtcsync');
+        }
+    }
+
     private static function ensure_grade_item(
         int $courseid,
         string $idnumber,
         string $itemname,
         float $grademax,
-        bool $hidden
+        bool $hidden,
+        int $userid,
+        int $deliveryid,
+        bool &$created
     ): grade_item {
         $idnumber = $idnumber ?: 'rtc-final-score';
         $item = grade_item::fetch(['courseid' => $courseid, 'idnumber' => $idnumber]);
+        $created = false;
 
-        // Check at the final lookup immediately before any grade item write,
-        // including when a concurrent Moodle edit races the earlier preflight.
-        if ($item && (string) $item->itemtype !== 'manual') {
-            throw new invalid_parameter_exception(
-                'RTC score items must be manual grade items; activity grades require their own reviewed delivery lineage.'
-            );
+        // Recheck type, lineage decisions, and lock state on the final lookup:
+        // an administrator may create or review an item after the optimistic preflight.
+        if ($item) {
+            self::validate_existing_delivery_grade_item($item, $courseid, $userid, $deliveryid);
         }
 
         if (!$item) {
@@ -2925,6 +2994,7 @@ class local_rtcsync_external extends external_api
                 'grademin' => 0,
             ], false);
             $item->insert('local_rtcsync');
+            $created = true;
         } else {
             $item->itemname = $itemname;
             $item->gradetype = GRADE_TYPE_VALUE;

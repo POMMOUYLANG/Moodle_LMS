@@ -28,12 +28,26 @@ final class course_purge_protection_test extends advanced_testcase
     /** Route the core hook through RTC Sync's production callback. */
     private function redirectPurgeHookToRtcSync(): void
     {
+        if (!class_exists(before_course_data_purge::class)) {
+            return;
+        }
+
         $this->redirectHook(
             before_course_data_purge::class,
             static function (before_course_data_purge $hook): void {
                 \local_rtcsync\hook_callbacks::before_course_data_purge($hook);
             }
         );
+    }
+
+    /** Skip scenarios without a supported operation-cancelling purge hook. */
+    private function requireGenericPurgeHook(): void
+    {
+        if (!class_exists(before_course_data_purge::class)) {
+            $this->markTestSkipped(
+                'This purge path has no supported operation-cancelling hook in the installed Moodle core.'
+            );
+        }
     }
 
     /** Mark a course as delivery-aware using the plugin's persisted state. */
@@ -67,14 +81,22 @@ final class course_purge_protection_test extends advanced_testcase
         ]);
     }
 
+    /** Use Moodle's stable public course-module deletion API across core versions. */
+    private function deleteCourseModule(int $cmid): void
+    {
+        global $CFG;
+        require_once($CFG->dirroot . '/course/lib.php');
+        \course_delete_module($cmid);
+    }
+
     /** Assert the public core emitter throws the expected cancellation exception. */
-    private function assertPurgeBlocked(callable $purge): void
+    private function assertPurgeBlocked(callable $purge, array $allowederrorcodes = ['coursepurgestopped']): void
     {
         try {
             $purge();
             $this->fail('Course data purge should have been stopped by RTC Sync.');
         } catch (moodle_exception $exception) {
-            $this->assertSame('coursepurgestopped', $exception->errorcode);
+            $this->assertContains($exception->errorcode, $allowederrorcodes);
         }
     }
 
@@ -100,6 +122,7 @@ final class course_purge_protection_test extends advanced_testcase
 
     public function test_restore_overwrite_is_blocked_for_delivery_grouping_before_content_removal(): void
     {
+        $this->requireGenericPurgeHook();
         global $DB;
 
         $this->resetAfterTest();
@@ -124,6 +147,7 @@ final class course_purge_protection_test extends advanced_testcase
 
     public function test_course_reset_is_blocked_for_delivery_state_before_grade_or_role_reset(): void
     {
+        $this->requireGenericPurgeHook();
         global $DB;
 
         $this->resetAfterTest();
@@ -158,9 +182,9 @@ final class course_purge_protection_test extends advanced_testcase
         $DB->set_field('course_modules', 'deletioninprogress', 1, ['id' => (int) $page->cmid]);
         $this->redirectPurgeHookToRtcSync();
 
-        $this->assertPurgeBlocked(static function () use ($page): void {
-            course_delete_module((int) $page->cmid);
-        });
+        $this->assertPurgeBlocked(function () use ($page): void {
+            $this->deleteCourseModule((int) $page->cmid);
+        }, ['coursepurgestopped', 'deliverymoduledeletionblocked']);
 
         $this->assertTrue($DB->record_exists('course_modules', ['id' => (int) $page->cmid]));
         $this->assertSame(0, (int) $DB->get_field('course_modules', 'deletioninprogress', ['id' => (int) $page->cmid]));
@@ -194,7 +218,7 @@ final class course_purge_protection_test extends advanced_testcase
         $DB->delete_records('local_rtcsync_deliverycm', ['id' => (int) $unrelatedmapping->id]);
         $this->redirectPurgeHookToRtcSync();
 
-        course_delete_module((int) $unrelatedpage->cmid);
+        $this->deleteCourseModule((int) $unrelatedpage->cmid);
 
         $this->assertFalse($DB->record_exists('course_modules', ['id' => (int) $unrelatedpage->cmid]));
         $this->assertTrue($DB->record_exists('course_modules', ['id' => (int) $historypage->cmid]));
@@ -225,7 +249,7 @@ final class course_purge_protection_test extends advanced_testcase
 
         $activitycourse = $this->getDataGenerator()->create_course();
         $page = $this->getDataGenerator()->create_module('page', ['course' => $activitycourse->id]);
-        course_delete_module((int) $page->cmid);
+        $this->deleteCourseModule((int) $page->cmid);
         $this->assertFalse($DB->record_exists('course_modules', ['id' => (int) $page->cmid]));
 
         $resetcourse = $this->getDataGenerator()->create_course();
@@ -259,10 +283,13 @@ final class course_purge_protection_test extends advanced_testcase
         $this->assertFalse($DB->record_exists('grade_items', ['id' => (int) $gradeitem->id]));
     }
 
-    public function test_unmapped_rtc_delivery_grade_identifier_also_blocks_purge(): void
+    public function test_unmapped_rtc_delivery_grade_identifier_blocks_course_delete(): void
     {
+        global $DB;
+
         $this->resetAfterTest();
         $course = $this->getDataGenerator()->create_course();
+        $user = $this->getDataGenerator()->create_user();
         $item = new \grade_item([
             'courseid' => (int) $course->id,
             'itemname' => 'Unmapped RTC delivery score',
@@ -276,19 +303,23 @@ final class course_purge_protection_test extends advanced_testcase
             'grademin' => 0,
         ], false);
         $item->insert('course-purge-protection-test');
+        $item->update_final_grade((int) $user->id, 82.0, 'course-purge-protection-test');
 
-        $hook = new before_course_data_purge(
-            (int) $course->id,
-            before_course_data_purge::OPERATION_DELETE,
-            []
-        );
-        hook_callbacks::before_course_data_purge($hook);
+        $this->assertPurgeBlocked(static function () use ($course): void {
+            delete_course((int) $course->id, false);
+        });
 
-        $this->assertTrue($hook->isPropagationStopped());
+        $this->assertTrue($DB->record_exists('course', ['id' => (int) $course->id]));
+        $this->assertTrue($DB->record_exists('grade_items', ['id' => (int) $item->id]));
+        $this->assertSame(82.0, (float) $DB->get_field('grade_grades', 'finalgrade', [
+            'itemid' => (int) $item->id,
+            'userid' => (int) $user->id,
+        ]));
     }
 
     public function test_delivery_grade_item_delete_is_blocked_before_grade_rows_are_removed(): void
     {
+        $this->requireGenericPurgeHook();
         global $DB;
 
         $this->resetAfterTest();
@@ -527,6 +558,7 @@ final class course_purge_protection_test extends advanced_testcase
 
     public function test_released_student_history_alone_blocks_purge(): void
     {
+        $this->requireGenericPurgeHook();
         global $DB;
 
         $this->resetAfterTest();

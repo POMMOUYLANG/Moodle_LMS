@@ -16,6 +16,9 @@ final class delivery_activity_visibility_restore_fault_database
     private $throwonvisibilityupdate;
 
     /** @var bool */
+    private $nooponvisibilityupdate;
+
+    /** @var bool */
     private $throwoncacherevisionupdate;
 
     /** @var int */
@@ -35,10 +38,12 @@ final class delivery_activity_visibility_restore_fault_database
         bool $throwonvisibilityupdate = false,
         bool $throwoncacherevisionupdate = false,
         int $cacherevisioncourseid = 0,
-        bool $throwoncacherevisionpersistently = false
+        bool $throwoncacherevisionpersistently = false,
+        bool $nooponvisibilityupdate = false
     ) {
         $this->database = $database;
         $this->throwonvisibilityupdate = $throwonvisibilityupdate;
+        $this->nooponvisibilityupdate = $nooponvisibilityupdate;
         $this->throwoncacherevisionupdate = $throwoncacherevisionupdate;
         $this->cacherevisioncourseid = $cacherevisioncourseid;
         $this->throwoncacherevisionpersistently = $throwoncacherevisionpersistently;
@@ -70,7 +75,9 @@ final class delivery_activity_visibility_restore_fault_database
             if ($this->throwonvisibilityupdate) {
                 throw new \coding_exception('Unexpected visibility restore inside an outer transaction.');
             }
-            return false;
+            if ($this->nooponvisibilityupdate) {
+                return false;
+            }
         }
 
         return call_user_func_array([$this->database, $name], $arguments);
@@ -111,7 +118,7 @@ final class delivery_activity_access_test extends \advanced_testcase
         }
 
         $course = $this->getDataGenerator()->create_course([
-            'idnumber' => 'rtc-subject:70032',
+            'idnumber' => 'unmanaged:visibility-restore',
             'visible' => 1,
         ]);
         $firstmodule = $this->getDataGenerator()->create_module('page', [
@@ -122,6 +129,7 @@ final class delivery_activity_access_test extends \advanced_testcase
             'course' => (int) $course->id,
             'name' => 'Final visibility restoration fixture',
         ]);
+        $DB->set_field('course', 'idnumber', 'rtc-subject:70032', ['id' => (int) $course->id]);
         $firstcmid = (int) $firstmodule->cmid;
         $lastcmid = (int) $lastmodule->cmid;
         $this->assertGreaterThan($firstcmid, $lastcmid);
@@ -137,7 +145,14 @@ final class delivery_activity_access_test extends \advanced_testcase
         ], MUST_EXIST));
 
         $originaldatabase = $DB;
-        $DB = new delivery_activity_visibility_restore_fault_database($originaldatabase);
+        $DB = new delivery_activity_visibility_restore_fault_database(
+            $originaldatabase,
+            false,
+            false,
+            0,
+            false,
+            true
+        );
         $failure = null;
         try {
             \local_rtcsync\local\delivery_activity_access::prepare_course((int) $course->id, 2);
@@ -176,6 +191,72 @@ final class delivery_activity_access_test extends \advanced_testcase
         ], MUST_EXIST));
         $this->assertUnreviewedModuleGuard($firstcmid);
         $this->assertUnreviewedModuleGuard($lastcmid);
+    }
+
+    public function test_ready_fast_path_retries_visibility_restore_after_silent_failure(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        set_config('enableavailability', 1);
+        if (!\local_rtcsync\local\delivery_activity_access::supports_standard_grouping_restrictions()) {
+            $this->markTestSkipped('Standard grouping restrictions are required for course preparation.');
+        }
+
+        $course = $this->getDataGenerator()->create_course([
+            'idnumber' => 'unmanaged:ready-visibility-restore',
+            'visible' => 1,
+        ]);
+        $module = $this->getDataGenerator()->create_module('page', [
+            'course' => (int) $course->id,
+            'name' => 'Ready fast-path visibility fixture',
+        ]);
+        $DB->set_field('course', 'idnumber', 'rtc-subject:ready-visibility-restore', ['id' => (int) $course->id]);
+        $this->assertTrue(\local_rtcsync\local\delivery_activity_access::prepare_course((int) $course->id, 2));
+
+        $DB->set_field('course', 'visible', 0, ['id' => (int) $course->id]);
+        $this->assertSame(1, (int) $DB->get_field('local_rtcsync_deliverycourse', 'ready', [
+            'courseid' => (int) $course->id,
+        ], MUST_EXIST));
+        $this->assertSame(1, (int) $DB->get_field('local_rtcsync_deliverycourse', 'coursevisible', [
+            'courseid' => (int) $course->id,
+        ], MUST_EXIST));
+
+        $originaldatabase = $DB;
+        $faultdatabase = new delivery_activity_visibility_restore_fault_database(
+            $originaldatabase,
+            false,
+            false,
+            0,
+            false,
+            true
+        );
+        $DB = $faultdatabase;
+        $failure = null;
+        try {
+            \local_rtcsync\local\delivery_activity_access::prepare_course((int) $course->id, 2);
+        } catch (\coding_exception $exception) {
+            $failure = $exception;
+        } finally {
+            $DB = $originaldatabase;
+        }
+
+        $this->assertTrue($faultdatabase->visibilityupdateattempted);
+        $this->assertInstanceOf(\coding_exception::class, $failure);
+        $this->assertStringContainsString('Could not restore course visibility', $failure->getMessage());
+        $this->assertSame(0, (int) $DB->get_field('course', 'visible', ['id' => (int) $course->id], MUST_EXIST));
+        $this->assertSame(0, (int) $DB->get_field('local_rtcsync_deliverycourse', 'ready', [
+            'courseid' => (int) $course->id,
+        ], MUST_EXIST));
+        $this->assertSame((int) $module->cmid, (int) $DB->get_field('local_rtcsync_deliverycourse', 'lastcmid', [
+            'courseid' => (int) $course->id,
+        ], MUST_EXIST));
+
+        $this->assertTrue(\local_rtcsync\local\delivery_activity_access::prepare_course((int) $course->id, 2));
+        $this->assertSame(1, (int) $DB->get_field('course', 'visible', ['id' => (int) $course->id], MUST_EXIST));
+        $this->assertSame(1, (int) $DB->get_field('local_rtcsync_deliverycourse', 'ready', [
+            'courseid' => (int) $course->id,
+        ], MUST_EXIST));
     }
 
     public function test_module_event_defers_first_visibility_restore_until_outer_transaction_commits(): void
@@ -367,6 +448,8 @@ final class delivery_activity_access_test extends \advanced_testcase
         );
         $DB = $faultdatabase;
         $failure = null;
+        // Backfill deliberately logs per-course failures; assert the diagnostic rather than leave it risky output.
+        $this->expectOutputRegex('/^Delivery activity backfill failed for course \\d+:/m');
         try {
             \local_rtcsync\local\delivery_activity_access::backfill_pending_courses(10, 100);
         } catch (\moodle_exception $exception) {
@@ -404,7 +487,7 @@ final class delivery_activity_access_test extends \advanced_testcase
         global $DB;
 
         $this->resetAfterTest();
-        $course = $this->getDataGenerator()->create_course(['idnumber' => 'rtc-subject:70031']);
+        $course = $this->getDataGenerator()->create_course(['idnumber' => 'unmanaged:tracked-module']);
         $student = $this->getDataGenerator()->create_user();
         $studentroleid = (int) $DB->get_field('role', 'id', ['shortname' => 'student'], MUST_EXIST);
         $this->getDataGenerator()->enrol_user((int) $student->id, (int) $course->id, $studentroleid);
@@ -412,6 +495,7 @@ final class delivery_activity_access_test extends \advanced_testcase
             'course' => (int) $course->id,
             'name' => 'Tracked but not ready activity',
         ]);
+        $DB->set_field('course', 'idnumber', 'rtc-subject:70031', ['id' => (int) $course->id]);
         $cmid = (int) $quiz->cmid;
         $now = time();
 

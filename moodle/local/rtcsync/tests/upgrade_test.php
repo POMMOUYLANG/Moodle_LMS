@@ -197,6 +197,143 @@ final class upgrade_test extends \advanced_testcase
         $this->assertSame($this->latest_plugin_version(), (string) get_config('local_rtcsync', 'version'));
     }
 
+    public function test_upgrade_2026111600_replaces_empty_course_fence_tokens_and_default(): void
+    {
+        global $CFG, $DB;
+
+        $this->assertSame('phpunit-db', (string) $CFG->dbhost);
+        $this->assertSame('rtc_moodle_phpunit', (string) $CFG->dbname);
+        $this->resetAfterTest();
+        require_once($CFG->libdir . '/upgradelib.php');
+        require_once($CFG->dirroot . '/local/rtcsync/db/upgrade.php');
+
+        $sentinel = str_repeat('0', 32);
+        $suffix = bin2hex(random_bytes(4));
+        $dbman = $DB->get_manager();
+        $coursesync = new \xmldb_table('local_rtcsync_coursesync');
+        $currentdefault = new \xmldb_field(
+            'fencetoken',
+            XMLDB_TYPE_CHAR,
+            '32',
+            null,
+            XMLDB_NOTNULL,
+            null,
+            $sentinel,
+            'payloadhash'
+        );
+        $latestversion = $this->latest_plugin_version();
+        $recordids = [];
+
+        try {
+            $this->assertTrue($dbman->table_exists($coursesync));
+            $this->assertTrue($dbman->field_exists($coursesync, new \xmldb_field('fencetoken')));
+
+            // XMLDB normalizes an empty CHAR default to NULL, so use exact MySQL DDL to model v2026110800.
+            $DB->execute("ALTER TABLE {local_rtcsync_coursesync} ALTER COLUMN fencetoken SET DEFAULT ''");
+
+            $emptytoken = (object) [
+                'idnumber' => 'rtc-subject:legacy-empty-fence-explicit-' . $suffix,
+                'courseid' => 0,
+                'sourcerevision' => 0,
+                'idempotencykey' => '',
+                'payloadhash' => '',
+                'fencetoken' => '',
+                'coursevisible' => 1,
+                'timecreated' => time(),
+                'timemodified' => time(),
+            ];
+            $emptytokenid = $DB->insert_record('local_rtcsync_coursesync', $emptytoken);
+            $recordids[] = $emptytokenid;
+
+            $legacydefaulttoken = (object) [
+                'idnumber' => 'rtc-subject:legacy-empty-fence-default-' . $suffix,
+                'courseid' => 0,
+                'sourcerevision' => 0,
+                'idempotencykey' => '',
+                'payloadhash' => '',
+                'coursevisible' => 1,
+                'timecreated' => time(),
+                'timemodified' => time(),
+            ];
+            $legacydefaulttokenid = $DB->insert_record('local_rtcsync_coursesync', $legacydefaulttoken);
+            $recordids[] = $legacydefaulttokenid;
+            $this->assertSame('', (string) $DB->get_field(
+                'local_rtcsync_coursesync',
+                'fencetoken',
+                ['id' => $legacydefaulttokenid],
+                MUST_EXIST
+            ), 'The legacy schema default must produce an empty token before the migration runs.');
+
+            $existingtoken = str_repeat('a', 32);
+            $nonemptytoken = (object) [
+                'idnumber' => 'rtc-subject:legacy-nonempty-fence-' . $suffix,
+                'courseid' => 0,
+                'sourcerevision' => 0,
+                'idempotencykey' => '',
+                'payloadhash' => '',
+                'fencetoken' => $existingtoken,
+                'coursevisible' => 1,
+                'timecreated' => time(),
+                'timemodified' => time(),
+            ];
+            $nonemptytokenid = $DB->insert_record('local_rtcsync_coursesync', $nonemptytoken);
+            $recordids[] = $nonemptytokenid;
+
+            set_config('version', '2026111600', 'local_rtcsync');
+            $this->assertTrue(xmldb_local_rtcsync_upgrade(2026111600));
+
+            foreach ([$emptytokenid, $legacydefaulttokenid] as $id) {
+                $this->assertSame($sentinel, (string) $DB->get_field(
+                    'local_rtcsync_coursesync',
+                    'fencetoken',
+                    ['id' => $id],
+                    MUST_EXIST
+                ));
+            }
+            $this->assertSame($existingtoken, (string) $DB->get_field(
+                'local_rtcsync_coursesync',
+                'fencetoken',
+                ['id' => $nonemptytokenid],
+                MUST_EXIST
+            ), 'The migration must preserve a nonempty existing fence token.');
+
+            $newtoken = (object) [
+                'idnumber' => 'rtc-subject:new-fence-default-' . $suffix,
+                'courseid' => 0,
+                'sourcerevision' => 0,
+                'idempotencykey' => '',
+                'payloadhash' => '',
+                'coursevisible' => 1,
+                'timecreated' => time(),
+                'timemodified' => time(),
+            ];
+            $newid = $DB->insert_record('local_rtcsync_coursesync', $newtoken);
+            $recordids[] = $newid;
+            $this->assertSame($sentinel, (string) $DB->get_field(
+                'local_rtcsync_coursesync',
+                'fencetoken',
+                ['id' => $newid],
+                MUST_EXIST
+            ));
+            $this->assertSame($latestversion, (string) get_config('local_rtcsync', 'version'));
+        } finally {
+            try {
+                foreach ($recordids as $id) {
+                    $DB->delete_records('local_rtcsync_coursesync', ['id' => $id]);
+                }
+            } finally {
+                try {
+                    if ($dbman->table_exists($coursesync)
+                        && $dbman->field_exists($coursesync, new \xmldb_field('fencetoken'))) {
+                        $dbman->change_field_default($coursesync, $currentdefault);
+                    }
+                } finally {
+                    set_config('version', $latestversion, 'local_rtcsync');
+                }
+            }
+        }
+    }
+
     public function test_upgrade_2026102600_creates_and_recreates_delivery_membership_schema(): void
     {
         global $CFG, $DB;
@@ -630,13 +767,18 @@ final class upgrade_test extends \advanced_testcase
             }
 
             $course = $this->getDataGenerator()->create_course([
-                'idnumber' => 'rtc-subject:upgrade-duplicate-module-mapping',
+                'idnumber' => 'rtc-fixture:upgrade-duplicate-module-mapping',
             ]);
             $module = $this->getDataGenerator()->create_module('quiz', [
                 'course' => (int) $course->id,
                 'name' => 'Duplicate legacy mapping fixture',
             ]);
             $cmid = (int) $module->cmid;
+            // Avoid observer-created guard state; this test injects the legacy
+            // duplicate rows directly before exercising the index repair.
+            $DB->set_field('course', 'idnumber', 'rtc-subject:upgrade-duplicate-module-mapping', [
+                'id' => (int) $course->id,
+            ]);
 
             $table = new \xmldb_table('local_rtcsync_deliverycm');
             foreach ($DB->get_indexes('local_rtcsync_deliverycm') as $indexname => $index) {

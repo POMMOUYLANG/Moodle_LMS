@@ -2,6 +2,16 @@
 
 This local plugin exposes Moodle web-service functions used by RTC to mirror academic data into Moodle.
 
+## Moodle core compatibility
+
+The plugin metadata declares a minimum Moodle core version of `2025041400`
+(Moodle 5.0.0). The core included in this checkout is Moodle 5.0.2 (version
+`2025041402`), which meets that install floor. The minimum-version declaration
+is not a tested-version matrix and does not establish compatibility with later
+Moodle releases. Before selecting another core release, verify the target's
+PHP and database requirements and run the RTC Sync test suite and plugin-upgrade
+path against that exact release.
+
 ## What RTC Syncs
 
 - RTC subject -> Moodle course
@@ -224,3 +234,40 @@ chain head; `1` reports drift or audit inconsistencies; `2` means the import is
 unknown, invalid, or lacks a complete apply-time result or source-artifact
 verification. Verification is read-only and does not authenticate the backup,
 approver, approval reference, or operator declaration.
+
+## Moodle 5.3.1 purge-protection limits
+
+The Moodle 5.3.1 profile was inspected from the checksum-verified stock
+archive. It does not include `core_course\hook\before_course_data_purge`, so
+the generic purge callback registered conditionally in `db/hooks.php` is not
+available there. The Moodle [Hooks API](https://moodledev.io/docs/5.3/apis/core/hooks)
+allows plugins to register callbacks for hooks core actually dispatches.
+`StoppableEventInterface` stops later callbacks in that dispatch; the core
+operation itself is cancellable only if its emitter checks the stopped state
+and aborts before mutating data.
+
+| Preservation case | Moodle 5.3.1 call path | Plugin-only cancellation |
+| --- | --- | --- |
+| Restore overwrite | `backup/controller/restore_controller.class.php` calls `restore_dbops::delete_course_content()`, which delegates to `remove_course_contents()` in `lib/moodlelib.php`. This removes grades, blocks, module data, and other course content without a pre-purge hook. | No supported veto. Core needs a stoppable hook before the delegate runs and must abort the restore when stopped. Until then, do not overwrite an RTC-managed course; restore into a new course under the approved recovery process. |
+| Course reset | `course/reset.php` and `core_course\task\reset_course::execute()` reach `reset_course_userdata()` in `lib/moodlelib.php`. It triggers `core\event\course_reset_started`, then begins reset work; the event is not a stoppable hook. | No supported veto. Core needs a `before_course_reset` stoppable hook and an abort branch before reset mutations. Until then, exclude RTC-managed courses from every reset route, including UI, scheduled, web-service, and CLI routes. |
+| Unmapped RTC score identifier during course deletion | `delete_course()` in `lib/moodlelib.php` dispatches `core_course\hook\before_course_deleted` before marking the course for deletion. The hook implements `StoppableEventInterface`, but Moodle 5.3.1 does not check `isPropagationStopped()` after dispatch. | RTC's existing callback fails closed by throwing before the course is marked. The regression now exercises real `delete_course()` and checks the course and score item remain. This exception path is not a documented cancellation contract; core must honor the stopped state and return before deletion for supported cancellation. |
+| Standalone grade-item deletion | `grade_item::delete()` in `lib/grade/grade_item.php` deletes grade rows and the item, then triggers `core\event\grade_item_deleted` within its transaction. There is no pre-delete hook; the event follows the destructive calls. | No supported veto. Core needs a stoppable pre-delete hook before `delete_all_grades()` and must abort the method when stopped. Until then, do not manually delete grade items belonging to RTC-managed courses through any UI, API, or CLI path. |
+| Released history alone | The preservation test uses the course-reset operation. The history row is stored in `local_rtcsync_history` without a delivery-course marker; the reset path remains `reset_course_userdata()`. | Same reset-hook requirement. The course-deletion callback's history check does not protect the separate reset operation. |
+
+Until core provides those operation-level abort checks or an approved gate is
+enforced across all entry points, treat restore-overwrite, course reset,
+course deletion, and grade-item deletion on courses with RTC delivery state,
+released history, or an RTC score identifier as restricted operations. The
+unmapped-score regression targets the real course-delete path and confirms the
+course and score item remain when the RTC callback fails closed.
+
+Current isolated Moodle 5.3.1 verification (16 November 2026): the full RTC
+Sync PHPUnit suite passed **215 tests, 2,140 assertions, 0 failures, 0 errors,
+and 0 notices**, with four skipped tests for restore overwrite, course reset,
+standalone grade-item deletion, and released-history-only reset. Those skips
+are release blockers because stock Moodle has no supported cancellable
+pre-operation hook for those paths. RTC Sync release **1.12.16**
+(`2026111601`) also replaces legacy empty course-fence tokens with an inert
+32-character sentinel and updates the database default; its upgrade regression
+passed. Full logs and profile cleanup evidence are in
+`../../../outputs/moodle531-compat-20261116/PROFILE-REPORT.md`.

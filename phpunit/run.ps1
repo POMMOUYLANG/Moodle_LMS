@@ -7,6 +7,8 @@ param(
 
     [string]$TestFilter = '',
 
+    [string]$JUnitOutputPath = '',
+
     [switch]$ListTests,
 
     [switch]$DiagnoseNotices,
@@ -43,6 +45,29 @@ if ($ExpectedProjectName -cne $composeProjectName) {
 }
 if ($ExpectedDatabaseName -cne $databaseName) {
     throw "Refusing to run PHPUnit: pass -ExpectedDatabaseName '$databaseName' to confirm the dedicated schema."
+}
+if (-not [string]::IsNullOrWhiteSpace($JUnitOutputPath)) {
+    $isJUnitTestFile = $TestFile -match '^local/rtcsync/tests/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.php$'
+    $isJUnitTestTarget = $TestFile -ceq 'local/rtcsync/tests' -or $isJUnitTestFile
+    if ($Action -ne 'Test' -or -not $isJUnitTestTarget -or
+            $TestFilter -ne '' -or $ListTests -or $DiagnoseNotices) {
+        throw 'JUnit export is only supported for one RTC Sync PHPUnit test file or the unfiltered directory suite.'
+    }
+    $resolvedJUnitOutputPath = [System.IO.Path]::GetFullPath($JUnitOutputPath)
+    $outputsRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'outputs'))
+    $outputsPrefix = $outputsRoot.TrimEnd([char[]]@('\', '/')) + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedJUnitOutputPath.StartsWith($outputsPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+            [System.IO.Path]::GetExtension($resolvedJUnitOutputPath) -cne '.xml' -or
+            [System.IO.Path]::GetFileName($resolvedJUnitOutputPath) -notmatch '^rtcsync-[A-Za-z0-9._-]+\.xml$') {
+        throw 'JUnitOutputPath must be a new rtcsync-*.xml file inside this checkout''s outputs directory.'
+    }
+    if (-not (Test-Path -LiteralPath (Split-Path -Parent $resolvedJUnitOutputPath) -PathType Container)) {
+        throw 'The JUnit output directory must already exist.'
+    }
+    if (Test-Path -LiteralPath $resolvedJUnitOutputPath) {
+        throw 'The JUnit output path already exists; choose a new evidence filename.'
+    }
+    $junitFileName = [System.IO.Path]::GetFileName($resolvedJUnitOutputPath)
 }
 if ($Action -eq 'Initialize' -and -not $AllowDatabaseReset) {
     throw 'Initialize can rebuild the PHPUnit schema. Pass -AllowDatabaseReset only after confirming the isolated profile name and schema.'
@@ -142,6 +167,9 @@ if ($Action -eq 'Initialize') {
     if ($TestFilter -ne '') {
         $composeArgs += @('--filter', $TestFilter)
     }
+    if (-not [string]::IsNullOrWhiteSpace($JUnitOutputPath)) {
+        $composeArgs += @('--log-junit', "/var/phpunit-state/$junitFileName")
+    }
 }
 
 $dockerCommand = Get-Command docker.exe -CommandType Application -ErrorAction SilentlyContinue |
@@ -238,7 +266,9 @@ if ($containerIds.Count -eq 1) {
     }
     try {
         $containerLabels = $containerLabelsJson | ConvertFrom-Json
-        $containerEnvironment = @($containerEnvironmentJson | ConvertFrom-Json)
+        $containerEnvironment = @(
+            $containerEnvironmentJson | ConvertFrom-Json | ForEach-Object { $_ }
+        )
         $containerMounts = @($containerMountsJson | ConvertFrom-Json)
         $containerNetworks = $containerNetworksJson | ConvertFrom-Json
         $containerPortBindings = $containerPortBindingsJson | ConvertFrom-Json
@@ -488,6 +518,40 @@ try {
 
     & $dockerPath @composeArgs
     $composeExitCode = $LASTEXITCODE
+    if (-not [string]::IsNullOrWhiteSpace($JUnitOutputPath)) {
+        $junitContainerPath = "/var/phpunit-state/$junitFileName"
+        $junitExportArgs = $composeBaseArgs + @(
+            'run', '--rm', '--pull', 'never', '--no-deps', '-T',
+            '--entrypoint', 'cat', 'phpunit-runner', $junitContainerPath
+        )
+        $junitXml = (& $dockerPath @junitExportArgs | Out-String)
+        $junitExportExitCode = $LASTEXITCODE
+        if ($junitExportExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($junitXml)) {
+            throw 'The guarded PHPUnit run completed, but its JUnit report could not be exported from the isolated state volume.'
+        }
+        try {
+            $junitDocument = New-Object System.Xml.XmlDocument
+            $junitDocument.LoadXml($junitXml)
+        } catch {
+            throw 'The guarded PHPUnit run produced an invalid JUnit XML report.'
+        }
+        if ($junitDocument.DocumentElement.LocalName -notin @('testsuites', 'testsuite')) {
+            throw 'The guarded PHPUnit run produced XML without a PHPUnit test suite root.'
+        }
+        $junitBytes = [System.Text.Encoding]::UTF8.GetBytes($junitXml)
+        $junitStream = [System.IO.File]::Open(
+            $resolvedJUnitOutputPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        try {
+            $junitStream.Write($junitBytes, 0, $junitBytes.Length)
+        } finally {
+            $junitStream.Dispose()
+        }
+        Write-Output "JUnit report exported: $resolvedJUnitOutputPath"
+    }
 } finally {
     foreach ($variableName in $inheritedPhpunitVariables.Keys) {
         [Environment]::SetEnvironmentVariable(
