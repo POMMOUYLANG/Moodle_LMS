@@ -193,6 +193,79 @@ final class delivery_activity_access_test extends \advanced_testcase
         $this->assertUnreviewedModuleGuard($lastcmid);
     }
 
+    public function test_visibility_restore_noop_never_invokes_ready_access_callback(): void
+    {
+        global $DB;
+
+        $this->resetAfterTest();
+        set_config('enableavailability', 1);
+        if (!\local_rtcsync\local\delivery_activity_access::supports_standard_grouping_restrictions()) {
+            $this->markTestSkipped('Standard grouping restrictions are required for course preparation.');
+        }
+
+        $course = $this->getDataGenerator()->create_course([
+            'idnumber' => 'unmanaged:visibility-restore-callback',
+            'visible' => 1,
+        ]);
+        $module = $this->getDataGenerator()->create_module('page', [
+            'course' => (int) $course->id,
+            'name' => 'Visibility restore callback fixture',
+        ]);
+        $DB->set_field('course', 'idnumber', 'rtc-subject:visibility-restore-callback', ['id' => (int) $course->id]);
+        $courseid = (int) $course->id;
+        $cmid = (int) $module->cmid;
+
+        // Persist the guard page while the course is locked and not ready.
+        $this->assertFalse(\local_rtcsync\local\delivery_activity_access::prepare_course($courseid, 1));
+        $this->assertSame(0, (int) $DB->get_field('course', 'visible', ['id' => $courseid], MUST_EXIST));
+
+        $originaldatabase = $DB;
+        $DB = new delivery_activity_visibility_restore_fault_database(
+            $originaldatabase,
+            false,
+            false,
+            0,
+            false,
+            true
+        );
+        $callbackinvoked = false;
+        $failure = null;
+        try {
+            \local_rtcsync\local\delivery_activity_access::with_ready_course(
+                $courseid,
+                static function() use (&$callbackinvoked): void {
+                    $callbackinvoked = true;
+                }
+            );
+        } catch (\coding_exception $exception) {
+            $failure = $exception;
+        } finally {
+            $DB = $originaldatabase;
+        }
+
+        $this->assertInstanceOf(\coding_exception::class, $failure);
+        $this->assertStringContainsString('Could not restore course visibility', $failure->getMessage());
+        $this->assertFalse($callbackinvoked, 'The ready-only callback must not run after a failed visibility restore.');
+        $this->assertSame(0, (int) $DB->get_field('course', 'visible', ['id' => $courseid], MUST_EXIST));
+        $state = $DB->get_record('local_rtcsync_deliverycourse', ['courseid' => $courseid], '*', MUST_EXIST);
+        $this->assertSame(0, (int) $state->ready);
+        $this->assertSame(1, (int) $state->coursevisible);
+        $this->assertSame($cmid, (int) $state->lastcmid);
+
+        $callbackinvoked = false;
+        \local_rtcsync\local\delivery_activity_access::with_ready_course(
+            $courseid,
+            static function() use (&$callbackinvoked): void {
+                $callbackinvoked = true;
+            }
+        );
+        $this->assertTrue($callbackinvoked);
+        $this->assertSame(1, (int) $DB->get_field('course', 'visible', ['id' => $courseid], MUST_EXIST));
+        $this->assertSame(1, (int) $DB->get_field('local_rtcsync_deliverycourse', 'ready', [
+            'courseid' => $courseid,
+        ], MUST_EXIST));
+    }
+
     public function test_ready_fast_path_retries_visibility_restore_after_silent_failure(): void
     {
         global $DB;

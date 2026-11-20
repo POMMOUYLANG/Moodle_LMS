@@ -2028,6 +2028,11 @@ final class externallib_test extends \advanced_testcase
         }
 
         $this->assertTrue($timedout, 'A competing first upsert must serialize before lookup and create.');
+        try {
+            $this->assertSame(503, http_response_code(), 'REST clients must recognize lock contention as retryable.');
+        } finally {
+            http_response_code(200);
+        }
         $this->assertSame(0, $DB->count_records('course', ['idnumber' => $idnumber]));
     }
 
@@ -4058,6 +4063,11 @@ final class externallib_test extends \advanced_testcase
         }
 
         $this->assertTrue($timedout, 'Teacher unassign must wait for the same course lock as active Student writes.');
+        try {
+            $this->assertSame(503, http_response_code(), 'REST clients must recognize lock contention as retryable.');
+        } finally {
+            http_response_code(200);
+        }
         $context = \context_course::instance((int) $course->id);
         $teacherrole = $DB->get_record('role', ['shortname' => 'editingteacher'], '*', MUST_EXIST);
         $this->assertTrue($DB->record_exists('role_assignments', [

@@ -349,14 +349,15 @@ class local_rtcsync_external extends external_api
                     } catch (local_rtcsync_course_sync_retry_exception $exception) {
                         if ($attempt >= 2) {
                             if ($exception->getPrevious()) {
+                                \local_rtcsync\local\retryable_webservice_error::mark_service_unavailable();
                                 throw $exception->getPrevious();
                             }
-                            throw new \moodle_exception('locktimeout');
+                            throw \local_rtcsync\local\retryable_webservice_error::lock_timeout();
                         }
                     }
                 }
 
-                throw new \moodle_exception('locktimeout');
+                throw \local_rtcsync\local\retryable_webservice_error::lock_timeout();
             }
         );
     }
@@ -911,7 +912,7 @@ class local_rtcsync_external extends external_api
             foreach ($lockkeys as $lockkey) {
                 $lock = $factory->get_lock($lockkey, 1);
                 if (!$lock) {
-                    throw new \moodle_exception('locktimeout');
+                    throw \local_rtcsync\local\retryable_webservice_error::lock_timeout();
                 }
                 $locks[] = $lock;
             }
@@ -929,7 +930,7 @@ class local_rtcsync_external extends external_api
         $factory = \core\lock\lock_config::get_lock_factory('local_rtcsync_course_identity');
         $lock = $factory->get_lock($idnumber, 1);
         if (!$lock) {
-            throw new \moodle_exception('locktimeout');
+            throw \local_rtcsync\local\retryable_webservice_error::lock_timeout();
         }
 
         try {

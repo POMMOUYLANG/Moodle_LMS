@@ -2015,7 +2015,7 @@ final class delivery_activity_access
         $factory = \core\lock\lock_config::get_lock_factory(self::LOCK_TYPE);
         $lock = $factory->get_lock('course:' . $courseid, self::LOCK_WAIT_SECONDS);
         if (!$lock) {
-            throw new \moodle_exception('locktimeout');
+            throw retryable_webservice_error::lock_timeout();
         }
         try {
             return $callback();

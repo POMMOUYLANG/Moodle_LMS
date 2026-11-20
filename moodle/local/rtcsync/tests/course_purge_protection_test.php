@@ -564,6 +564,11 @@ final class course_purge_protection_test extends advanced_testcase
         $this->resetAfterTest();
         $course = $this->getDataGenerator()->create_course();
         $user = $this->getDataGenerator()->create_user();
+        $roleid = (int) $DB->get_field('role', 'id', ['shortname' => 'student'], MUST_EXIST);
+        $this->getDataGenerator()->enrol_user($user->id, $course->id, $roleid);
+        $coursecontext = \context_course::instance($course->id);
+        assign_capability('mod/forum:viewdiscussion', CAP_PREVENT, $roleid, $coursecontext->id);
+        $this->assertFalse(has_capability('mod/forum:viewdiscussion', $coursecontext, $user->id));
         $DB->insert_record('local_rtcsync_history', (object) [
             'userid' => (int) $user->id,
             'courseid' => (int) $course->id,
@@ -574,13 +579,21 @@ final class course_purge_protection_test extends advanced_testcase
             'timemodified' => time(),
         ]);
 
-        $hook = new before_course_data_purge(
-            (int) $course->id,
-            before_course_data_purge::OPERATION_RESET,
-            []
-        );
-        hook_callbacks::before_course_data_purge($hook);
+        $this->redirectPurgeHookToRtcSync();
+        $this->assertPurgeBlocked(static function() use ($course): void {
+            reset_course_userdata((object) [
+                'id' => (int) $course->id,
+                'reset_roles_overrides' => true,
+            ]);
+        });
 
-        $this->assertTrue($hook->isPropagationStopped());
+        $this->assertFalse(has_capability('mod/forum:viewdiscussion', $coursecontext, $user->id));
+        $this->assertTrue($DB->record_exists('local_rtcsync_history', [
+            'userid' => (int) $user->id,
+            'courseid' => (int) $course->id,
+            'sourcetype' => 'legacy',
+            'sourceid' => 900004,
+            'deliveryid' => null,
+        ]));
     }
 }
