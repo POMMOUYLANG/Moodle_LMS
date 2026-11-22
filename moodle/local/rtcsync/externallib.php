@@ -2782,12 +2782,24 @@ class local_rtcsync_external extends external_api
         $category = $DB->get_record('course_categories', ['idnumber' => $idnumber], '*', IGNORE_MISSING);
         if (!$category) {
             // Adopt an existing manually-created node instead of duplicating
-            // the legacy Program -> Year -> Semester tree.
-            $category = $DB->get_record('course_categories', [
-                'name' => $name,
-                'parent' => $parentid,
-            ], '*', IGNORE_MISSING);
-            if ($category && (string) $category->idnumber !== $idnumber) {
+            // the legacy Program -> Year -> Semester tree. Only a node whose
+            // idnumber is still empty is legacy: a same-named sibling that
+            // already carries any idnumber (for example another RTC program
+            // with the same name) is a different identity and must never be
+            // adopted or rewritten, otherwise two programs steal one node
+            // from each other on every sync. Moodle allows duplicate names;
+            // the idnumber stays unique, so a new node is created instead.
+            $legacy = $DB->get_records_select(
+                'course_categories',
+                "name = :name AND parent = :parent AND (idnumber IS NULL OR idnumber = '')",
+                ['name' => $name, 'parent' => $parentid],
+                'id ASC',
+                '*',
+                0,
+                1
+            );
+            $category = $legacy ? reset($legacy) : false;
+            if ($category) {
                 $category->idnumber = $idnumber;
                 $DB->update_record('course_categories', $category);
             }
